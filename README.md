@@ -67,6 +67,13 @@ iola context init
 iola cron list
 iola daemon status
 iola rpc call status
+iola settings list
+iola mcp serve --stdio
+iola usage summary
+iola budget status
+iola subagents list
+iola trajectory last
+iola review config
 ```
 
 Локальная модель через Ollama:
@@ -92,6 +99,7 @@ iola version --check
 - [Skills и toolsets](https://github.com/adm-iola/iola-cli/wiki/Skills-и-toolsets)
 - [Локальные файлы](https://github.com/adm-iola/iola-cli/wiki/Локальные-файлы)
 - [Рабочая среда агента](https://github.com/adm-iola/iola-cli/wiki/Рабочая-среда-агента)
+- [Платформа агента](https://github.com/adm-iola/iola-cli/wiki/Платформа-агента)
 - [Расширения и локальные данные](https://github.com/adm-iola/iola-cli/wiki/Расширения-и-локальные-данные)
 - [Архивы и мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Архивы-и-мастер-настройки)
 - [Daemon, RPC и cron](https://github.com/adm-iola/iola-cli/wiki/Daemon-RPC-и-cron)
@@ -106,13 +114,15 @@ iola version --check
 - AI-профили для Ollama, OpenAI, OpenRouter и Codex CLI;
 - локальный tool-agent для слабых моделей;
 - skills, toolsets, permissions, memory, hooks и готовые agents;
+- subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
+- полноценный локальный MCP server по stdio/http: tools, resources и prompts;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
 - staged changes, импорт локальных CSV/JSON, индекс локальных документов, report packs, plugins и локальный MCP endpoint;
 - чтение и индексирование `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.md`, `.txt`, `.csv`, `.json`, `.html`;
 - работа с архивами через 7-Zip: `.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.tgz`, `.bz2`, `.xz` и другие;
-- расширенный `iola onboard` с установкой 7-Zip, Ollama, Codex CLI и настройкой выбранных компонентов.
-- cron-задачи, локальный daemon и RPC для автоматизаций;
+- расширенный `iola onboard` с установкой 7-Zip, Ollama, Codex CLI и настройкой выбранных компонентов;
+- cron-задачи, локальный daemon, web dashboard и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
 - интеграция с публичным MCP-сервером Йошкар-Олы.

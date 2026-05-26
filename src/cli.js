@@ -18,12 +18,15 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 7;
+const DB_SCHEMA_VERSION = 8;
+const PROJECT_IOLA_DIR = path.join(process.cwd(), ".iola");
+const PROJECT_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "config.json");
+const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
-const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "AfterSync", "BeforeExport", "SessionEnd"];
+const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUILTIN_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
@@ -81,6 +84,23 @@ const FEATURES = {
   events: { stage: "experimental", defaultEnabled: true, description: "JSONL-события выполнения ask." },
   "mcp-management": { stage: "stable", defaultEnabled: true, description: "Команды управления MCP-интеграциями." },
   "web-search": { stage: "experimental", defaultEnabled: false, description: "Резерв под web-search режимы AI." },
+};
+const SKILL_BUNDLES = {
+  analyst: {
+    description: "Аналитик открытых данных: поиск, карточки, отчеты и память.",
+    skills: ["open-data", "reports", "local-model"],
+    requirements: ["Локальная SQLite-БД", "публичный API"],
+  },
+  documents: {
+    description: "Работа с локальными документами, индексом, архивами и выгрузками.",
+    skills: ["open-data", "reports"],
+    requirements: ["files mode read-only/workspace-write", "7-Zip для архивов"],
+  },
+  "local-agent": {
+    description: "Локальная модель Ollama с проверочным reasoning и локальными tools.",
+    skills: ["local-model", "open-data"],
+    requirements: ["Ollama", "локальная модель"],
+  },
 };
 const DEFAULT_AI_CONFIG = {
   api: {
@@ -239,6 +259,7 @@ const COMMANDS = new Map([
   ["resume", resumeSession],
   ["fork", forkSession],
   ["features", handleFeatures],
+  ["settings", handleSettings],
   ["wiki", handleWiki],
   ["context", handleContext],
   ["skills", handleSkills],
@@ -254,7 +275,11 @@ const COMMANDS = new Map([
   ["tasks", handleTasks],
   ["artifacts", handleArtifacts],
   ["snapshot", handleSnapshot],
+  ["sandbox", handleSandbox],
   ["trace", handleTrace],
+  ["trajectory", handleTrajectory],
+  ["usage", handleUsage],
+  ["budget", handleBudget],
   ["policy", handlePolicy],
   ["export", handleExport],
   ["cron", handleCron],
@@ -264,6 +289,8 @@ const COMMANDS = new Map([
   ["memory", handleMemory],
   ["hooks", handleHooks],
   ["agents", handleAgents],
+  ["subagents", handleSubagents],
+  ["review", handleReview],
   ["mcp", handleMcp],
   ["cache", handleCache],
   ["sync", handleSync],
@@ -353,12 +380,14 @@ Usage:
   iola history [--limit 20]
   iola history clear
   iola sessions [--limit 20]
+  iola sessions replay SESSION_ID
   iola resume SESSION_ID [TEXT]
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
+  iola settings list|get|validate|doctor|init
   iola wiki [open|links]
   iola context list|show|init
-  iola skills list|show|paths|enable|disable
+  iola skills list|show|paths|enable|disable|bundles|bundle|doctor
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
   iola archive doctor|list|test|extract|create|index
@@ -371,17 +400,23 @@ Usage:
   iola tasks list|add|done|run
   iola artifacts list|show|open
   iola snapshot create|list|restore
+  iola sandbox fork|run|diff|apply
   iola trace last|show
+  iola trajectory export|last
+  iola usage summary|models|sessions
+  iola budget status|set
   iola policy use safe|analyst|developer|full
   iola export REPORT --format docx|xlsx --output FILE
   iola cron list|add|delete|run|tick
   iola daemon start|status
   iola rpc call METHOD [ARGS] [--json]
   iola permissions list|allow|deny
-  iola memory show|add|set|clear|export
-  iola hooks list|add|delete|run
+  iola memory show|add|set|clear|export|curate|duplicates|prune
+  iola hooks list|events|add|delete|run|trust|audit
   iola agents list|run
-  iola mcp list|status|install|remove|serve
+  iola subagents list|run|parallel|add
+  iola review config|data|docs|report
+  iola mcp list|status|install|remove|serve [--stdio]
   iola cache status|warm|clear
   iola sync [--dataset schools|kindergartens]
   iola sync status
@@ -975,6 +1010,14 @@ function showBanner() {
   console.log("открытые данные • MCP • локальный AI");
 }
 
+function getPackageVersion() {
+  try {
+    return JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8")).version;
+  } catch {
+    return "0.0.0";
+  }
+}
+
 async function showVersion(args = []) {
   const options = parseOptions(args);
   const packageJson = await import("../package.json", { with: { type: "json" } });
@@ -1512,6 +1555,17 @@ async function handleSessions(args) {
     return;
   }
 
+  if (action === "replay") {
+    const sessionId = Number(args[1]);
+    if (!sessionId) throw new Error("Пример: iola sessions replay 1");
+    const rows = getSessionMessages(sessionId);
+    for (const row of rows) {
+      console.log(`\n[${row.role}] ${row.created_at}`);
+      console.log(row.content);
+    }
+    return;
+  }
+
   const rows = listSessions(Number(options.limit || 20));
 
   if (options.json) {
@@ -1587,6 +1641,61 @@ async function handleFeatures(args) {
   throw new Error("Команды features: list, enable NAME, disable NAME.");
 }
 
+async function handleSettings(args) {
+  const [action = "list", key] = args;
+  const layers = await loadConfigLayers();
+  const effective = await loadConfig();
+
+  if (action === "list" || action === "ls" || action === "doctor") {
+    const rows = layers.map((layer) => ({
+      scope: layer.scope,
+      file: layer.file,
+      exists: layer.exists ? "yes" : "no",
+      valid: layer.errors.length ? "no" : "yes",
+      errors: layer.errors.join("; ") || "-",
+    }));
+    printTable(rows, [["scope", "Слой"], ["exists", "Есть"], ["valid", "Валиден"], ["file", "Файл"], ["errors", "Ошибки"]]);
+    return;
+  }
+
+  if (action === "get") {
+    if (!key) {
+      printJson(effective);
+      return;
+    }
+    const value = getConfigValue(effective, key);
+    if (typeof value === "object") printJson(value);
+    else console.log(value ?? "-");
+    return;
+  }
+
+  if (action === "validate") {
+    const errors = validateConfig(effective);
+    if (errors.length) {
+      printTable(errors.map((error) => ({ error })), [["error", "Ошибка"]]);
+      process.exitCode = 1;
+      return;
+    }
+    console.log("Конфигурация валидна.");
+    return;
+  }
+
+  if (action === "init") {
+    await mkdir(PROJECT_IOLA_DIR, { recursive: true });
+    if (!existsSync(PROJECT_CONFIG_FILE)) {
+      await writeFile(PROJECT_CONFIG_FILE, `${JSON.stringify({ files: { workspaceRoot: "." } }, null, 2)}\n`, "utf8");
+    }
+    if (!existsSync(LOCAL_CONFIG_FILE)) {
+      await writeFile(LOCAL_CONFIG_FILE, `${JSON.stringify({ local: true }, null, 2)}\n`, "utf8");
+    }
+    console.log(`Создан project config: ${PROJECT_CONFIG_FILE}`);
+    console.log(`Создан local config: ${LOCAL_CONFIG_FILE}`);
+    return;
+  }
+
+  throw new Error("Команды settings: list, get [KEY], validate, doctor, init.");
+}
+
 async function handleWiki(args) {
   const [action = "links"] = args;
   const base = "https://github.com/adm-iola/iola-cli/wiki";
@@ -1599,6 +1708,7 @@ async function handleWiki(args) {
     ["Skills и toolsets", `${base}/Skills-и-toolsets`],
     ["Локальные файлы", `${base}/Локальные-файлы`],
     ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
+    ["Платформа агента", `${base}/Платформа-агента`],
     ["Расширения и локальные данные", `${base}/Расширения-и-локальные-данные`],
     ["Архивы и мастер настройки", `${base}/Архивы-и-мастер-настройки`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
@@ -1701,6 +1811,41 @@ async function handleSkills(args) {
     return;
   }
 
+  if (action === "bundles") {
+    const enabled = new Set(config.skills?.enabled || []);
+    const rows = Object.entries(SKILL_BUNDLES).map(([bundle, meta]) => ({
+      bundle,
+      enabled: meta.skills.every((skill) => enabled.has(skill)) ? "yes" : "partial/no",
+      skills: meta.skills.join(", "),
+      description: meta.description,
+    }));
+    printTable(rows, [["bundle", "Bundle"], ["enabled", "Вкл"], ["skills", "Skills"], ["description", "Описание"]]);
+    return;
+  }
+
+  if (action === "bundle") {
+    const [operation, bundleName] = args.slice(1);
+    if (operation !== "enable" || !SKILL_BUNDLES[bundleName]) {
+      throw new Error(`Пример: iola skills bundle enable analyst. Доступно: ${Object.keys(SKILL_BUNDLES).join(", ")}`);
+    }
+    const enabled = new Set(config.skills?.enabled || []);
+    for (const skill of SKILL_BUNDLES[bundleName].skills) enabled.add(skill);
+    await saveConfig({ skills: { ...(config.skills || {}), enabled: [...enabled] } });
+    console.log(`Skill bundle включен: ${bundleName}`);
+    return;
+  }
+
+  if (action === "doctor") {
+    const skills = listSkills(config);
+    const enabled = new Set(config.skills?.enabled || []);
+    const rows = [
+      ...skills.map((skill) => ({ item: skill.name, type: "skill", status: enabled.has(skill.name) ? "enabled" : "available", detail: skill.file })),
+      ...Object.entries(SKILL_BUNDLES).map(([bundle, meta]) => ({ item: bundle, type: "bundle", status: meta.skills.every((skill) => enabled.has(skill)) ? "enabled" : "not-complete", detail: meta.requirements.join(", ") })),
+    ];
+    printTable(rows, [["type", "Тип"], ["item", "Имя"], ["status", "Статус"], ["detail", "Детали"]]);
+    return;
+  }
+
   if (action === "show") {
     const skill = findSkill(name, config);
     if (!skill) throw new Error(`Skill не найден: ${name}`);
@@ -1718,7 +1863,7 @@ async function handleSkills(args) {
     return;
   }
 
-  throw new Error("Команды skills: list, paths, show NAME, enable NAME, disable NAME.");
+  throw new Error("Команды skills: list, paths, show NAME, enable NAME, disable NAME, bundles, bundle enable NAME, doctor.");
 }
 
 async function handleTools(args) {
@@ -2161,6 +2306,38 @@ async function handleSnapshot(args) {
   throw new Error("Команды snapshot: create, list, restore ID.");
 }
 
+async function handleSandbox(args) {
+  const [action = "fork", ...rest] = args;
+  if (action === "fork") {
+    const result = await createSandboxCopy(rest[0]);
+    printKeyValue(result);
+    return;
+  }
+  if (action === "run") {
+    const command = rest.join(" ").trim();
+    if (!command) throw new Error('Пример: iola sandbox run "npm test"');
+    const sandbox = await createSandboxCopy();
+    const parts = splitCommandLine(command);
+    console.log(`Sandbox: ${sandbox.path}`);
+    await runCommand(parts[0], parts.slice(1), { inherit: true, cwd: sandbox.path });
+    return;
+  }
+  if (action === "diff") {
+    const sandboxPath = rest[0];
+    if (!sandboxPath) throw new Error("Пример: iola sandbox diff PATH");
+    await runCommand("git", ["diff", "--no-index", process.cwd(), sandboxPath], { inherit: true }).catch(() => {});
+    return;
+  }
+  if (action === "apply") {
+    const sandboxPath = rest[0];
+    if (!sandboxPath) throw new Error("Пример: iola sandbox apply PATH");
+    await cp(sandboxPath, process.cwd(), { recursive: true, force: true });
+    console.log(`Sandbox применен: ${sandboxPath}`);
+    return;
+  }
+  throw new Error("Команды sandbox: fork [NAME], run COMMAND, diff PATH, apply PATH.");
+}
+
 async function handleTrace(args) {
   const [action = "last", id] = args;
   if (action === "last") {
@@ -2172,6 +2349,61 @@ async function handleTrace(args) {
     return;
   }
   throw new Error("Команды trace: last [LIMIT], show RUN_ID.");
+}
+
+async function handleTrajectory(args) {
+  const [action = "export", ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "last") {
+    const rows = buildTrajectoryRows(Number(options.limit || rest[0] || 20));
+    if (options.json) printJson(rows);
+    else printTable(rows, [["type", "Тип"], ["id", "ID"], ["created_at", "Дата"], ["summary", "Сводка"]]);
+    return;
+  }
+  if (action === "export") {
+    const format = options.format || "jsonl";
+    const output = options.output || path.join(process.cwd(), `iola-trajectory-${Date.now()}.${format}`);
+    const rows = buildTrajectoryRows(Number(options.limit || 500));
+    const text = format === "json" ? `${JSON.stringify(rows, null, 2)}\n` : rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+    await writeFile(output, text, "utf8");
+    saveArtifact("trajectory", path.basename(output), output, { format, rows: rows.length });
+    console.log(`Trajectory экспортирована: ${output}`);
+    return;
+  }
+  throw new Error("Команды trajectory: last [--limit N], export [--format jsonl|json] [--output FILE].");
+}
+
+async function handleUsage(args) {
+  const [action = "summary"] = args;
+  if (action === "summary") {
+    printKeyValue(getUsageSummary());
+    return;
+  }
+  if (action === "models") {
+    printTable(getUsageByModel(), [["provider", "Провайдер"], ["model", "Модель"], ["requests", "Запросы"], ["tokens", "Токены"], ["cost", "USD"]]);
+    return;
+  }
+  if (action === "sessions") {
+    printTable(getUsageBySession(), [["session_id", "Сессия"], ["requests", "Запросы"], ["tokens", "Токены"], ["cost", "USD"]]);
+    return;
+  }
+  throw new Error("Команды usage: summary, models, sessions.");
+}
+
+async function handleBudget(args) {
+  const [action = "status", scope = "daily", amount] = args;
+  if (action === "status") {
+    printTable(listBudgets(), [["scope", "Область"], ["amount_usd", "Лимит USD"], ["spent_usd", "Потрачено"], ["updated_at", "Обновлено"]]);
+    return;
+  }
+  if (action === "set") {
+    const value = Number(amount || args[2]);
+    if (!value || value < 0) throw new Error("Пример: iola budget set daily 5");
+    setBudget(scope, value);
+    console.log(`Budget сохранен: ${scope}=${value} USD`);
+    return;
+  }
+  throw new Error("Команды budget: status, set daily AMOUNT.");
 }
 
 async function handlePolicy(args) {
@@ -2445,7 +2677,26 @@ async function handleMemory(args) {
     return;
   }
 
-  throw new Error("Команды memory: show, add TEXT, suggest, approve ID, reject ID, delete ID, clear, export [FILE].");
+  if (action === "duplicates" || action === "curate") {
+    const rows = findMemoryDuplicates();
+    if (options.json) printJson(rows);
+    else printTable(rows, [["keeper_id", "Оставить"], ["duplicate_id", "Дубликат"], ["content", "Текст"]]);
+    return;
+  }
+
+  if (action === "prune") {
+    const rows = findMemoryDuplicates();
+    if (!options.yes) {
+      printTable(rows, [["keeper_id", "Оставить"], ["duplicate_id", "Удалить"], ["content", "Текст"]]);
+      console.log("Для удаления дубликатов запустите: iola memory prune --yes");
+      return;
+    }
+    for (const row of rows) deleteMemory(row.duplicate_id);
+    console.log(`Удалено дубликатов памяти: ${rows.length}`);
+    return;
+  }
+
+  throw new Error("Команды memory: show, add TEXT, suggest, approve ID, reject ID, delete ID, clear, export [FILE], curate, duplicates, prune --yes.");
 }
 
 async function handleHooks(args) {
@@ -2465,6 +2716,22 @@ async function handleHooks(args) {
 
   if (action === "events") {
     printTable(HOOK_EVENTS.map((name) => ({ name })), [["name", "Событие"]]);
+    return;
+  }
+
+  if (action === "trust") {
+    await saveConfig({ hooksTrusted: true });
+    console.log("Hooks помечены как доверенные для текущего пользователя.");
+    return;
+  }
+
+  if (action === "audit") {
+    const rows = Object.entries(config.hooks || {}).map(([hookEvent, commands]) => ({
+      event: hookEvent,
+      commands: commands.length,
+      trusted: config.hooksTrusted ? "yes" : "no",
+    }));
+    printTable(rows, [["event", "Событие"], ["commands", "Команд"], ["trusted", "Доверено"]]);
     return;
   }
 
@@ -2499,7 +2766,7 @@ async function handleHooks(args) {
     return;
   }
 
-  throw new Error("Команды hooks: list, events, add EVENT COMMAND, delete EVENT INDEX, run EVENT.");
+  throw new Error("Команды hooks: list, events, add EVENT COMMAND, delete EVENT INDEX, run EVENT, trust, audit.");
 }
 
 async function handleAgents(args) {
@@ -2548,8 +2815,132 @@ async function handleAgents(args) {
   throw new Error("Команды agents: list, run NAME TEXT.");
 }
 
+async function handleSubagents(args) {
+  const [action = "list", name, ...rest] = args;
+  const config = await loadConfig();
+  const custom = config.subagents || {};
+  const agents = { ...AGENTS, ...custom };
+
+  if (action === "list" || action === "ls") {
+    const rows = Object.entries(agents).map(([agent, meta]) => ({
+      agent,
+      profile: meta.profile || "active",
+      tools: meta.tools ? "yes" : "no",
+      source: AGENTS[agent] ? "builtin" : "user",
+      description: meta.description || "-",
+    }));
+    printTable(rows, [["agent", "Subagent"], ["profile", "Профиль"], ["tools", "Tools"], ["source", "Источник"], ["description", "Описание"]]);
+    return;
+  }
+
+  if (action === "add") {
+    const options = parseOptions(rest);
+    if (!name) throw new Error("Пример: iola subagents add culture --profile local --prompt \"...\"");
+    const prompt = options.prompt || options.command || options._.join(" ");
+    const next = {
+      ...custom,
+      [name]: {
+        profile: options.profile || null,
+        tools: Boolean(options.tools),
+        prefix: prompt ? `${prompt} ` : "",
+        description: options.description || prompt || "Пользовательский subagent",
+      },
+    };
+    await saveConfig({ subagents: next });
+    console.log(`Subagent добавлен: ${name}`);
+    return;
+  }
+
+  if (action === "run") {
+    if (!agents[name]) throw new Error(`Subagent неизвестен: ${name}. Доступно: ${Object.keys(agents).join(", ")}`);
+    await runSubagent(name, agents[name], rest);
+    return;
+  }
+
+  if (action === "parallel") {
+    const names = String(name || "").split(",").map((item) => item.trim()).filter(Boolean);
+    const question = rest.join(" ").trim();
+    if (!names.length || !question) throw new Error('Пример: iola subagents parallel data-analyst,reviewer "проверь школы"');
+    for (const agentName of names) {
+      if (!agents[agentName]) throw new Error(`Subagent неизвестен: ${agentName}`);
+      console.log(`\n## ${agentName}`);
+      await runSubagent(agentName, agents[agentName], [question, "--no-history"]);
+    }
+    return;
+  }
+
+  throw new Error("Команды subagents: list, add NAME --profile PROFILE --prompt TEXT, run NAME TEXT, parallel a,b TEXT.");
+}
+
+async function runSubagent(name, agent, rest) {
+  const options = parseOptions(rest);
+  const question = options._.join(" ").trim();
+  if (!question) throw new Error(`Пример: iola subagents run ${name} "найди школы"`);
+  const askArgs = [agent.prefix ? `${agent.prefix}${question}` : question, "--agent", name];
+  if (agent.profile || options.profile) askArgs.push("--profile", options.profile || agent.profile);
+  if (agent.tools || options.tools) askArgs.push("--tools");
+  if (agent.reasoning || options.reasoning) askArgs.push("--reasoning", options.reasoning || agent.reasoning);
+  if (options.files) askArgs.push("--files");
+  if (options.events) askArgs.push("--events");
+  if (options["no-history"]) askArgs.push("--no-history");
+  await aiAsk(askArgs);
+}
+
+async function handleReview(args) {
+  const [action = "config", target, ...rest] = args;
+  const options = parseOptions([target, ...rest].filter(Boolean));
+  const actualTarget = options._[0];
+  if (action === "config") {
+    const errors = validateConfig(await loadConfig());
+    const rows = errors.length ? errors.map((error) => ({ level: "error", message: error })) : [{ level: "ok", message: "Конфигурация валидна" }];
+    printTable(rows, [["level", "Уровень"], ["message", "Сообщение"]]);
+    return;
+  }
+  if (action === "data") {
+    await ensureLocalData();
+    const rows = runQuality(actualTarget || "all");
+    if (options.json) printJson(rows);
+    else printTable(rows, [["check", "Проверка"], ["count", "Кол-во"], ["sample", "Пример"]]);
+    return;
+  }
+  if (action === "docs") {
+    const rows = actualTarget ? await reviewDocumentFolder(actualTarget, options) : searchDocs(options.query || "", Number(options.limit || 20));
+    if (options.json) printJson(rows);
+    else printTable(rows, [["file", "Файл"], ["issue", "Замечание"], ["detail", "Детали"]]);
+    return;
+  }
+  if (action === "report") {
+    if (!actualTarget) throw new Error("Пример: iola review report отчет.docx");
+    const text = await extractReadableText(path.resolve(actualTarget));
+    const rows = [
+      { file: actualTarget, issue: text.trim() ? "ok" : "empty", detail: text.trim() ? "Текст извлечен" : "Не удалось извлечь текст" },
+      { file: actualTarget, issue: /источник|данн/i.test(text) ? "ok" : "missing-source", detail: "Проверьте указание источника данных" },
+    ];
+    printTable(rows, [["file", "Файл"], ["issue", "Замечание"], ["detail", "Детали"]]);
+    return;
+  }
+  throw new Error("Команды review: config, data [scope], docs [PATH], report FILE.");
+}
+
+async function reviewDocumentFolder(target, options = {}) {
+  const previous = await loadConfig();
+  const rows = [];
+  try {
+    await saveConfig({ files: { ...(previous.files || {}), workspaceRoot: path.resolve(target), mode: "read-only" } });
+    await setFilesMode("read-only", await loadConfig());
+    const files = await filesTree(".", { depth: Number(options.depth || 5), limit: Number(options.limit || 200) });
+    for (const file of files.filter((item) => item.type === "file" && INDEXABLE_EXTENSIONS.test(item.path))) {
+      rows.push({ file: file.path, issue: "indexable", detail: "Документ можно читать и индексировать" });
+    }
+  } finally {
+    await saveConfig({ files: previous.files, permissions: previous.permissions, toolsets: previous.toolsets }).catch(() => {});
+  }
+  return rows;
+}
+
 async function handleMcp(args) {
-  const [action = "status", target = "codex"] = args;
+  const [action = "status", target = "codex", ...rest] = args;
+  const options = parseOptions([target, ...rest]);
 
   if (action === "status") {
     const [health, version] = await Promise.all([
@@ -2585,6 +2976,10 @@ async function handleMcp(args) {
 
   if (action === "serve") {
     const config = await loadConfig();
+    if (options.stdio || target === "--stdio" || target === "stdio") {
+      await startMcpStdio();
+      return;
+    }
     await startMcpServer(config.daemon?.host || "127.0.0.1", Number(config.daemon?.port || DAEMON_PORT) + 1);
     return;
   }
@@ -3508,6 +3903,24 @@ function initDatabase() {
         command TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        provider TEXT,
+        model TEXT,
+        profile TEXT,
+        input_chars INTEGER NOT NULL DEFAULT 0,
+        output_chars INTEGER NOT NULL DEFAULT 0,
+        estimated_tokens INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_usd REAL NOT NULL DEFAULT 0,
+        session_id INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_events_created_at ON usage_events(created_at DESC);
+      CREATE TABLE IF NOT EXISTS budgets (
+        scope TEXT PRIMARY KEY,
+        amount_usd REAL NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
     rebuildFtsIfEmpty(db);
     db.prepare(`
@@ -3564,6 +3977,7 @@ function getDbStatus() {
       const artifacts = db.prepare("SELECT COUNT(*) AS count FROM artifacts").get();
       const docs = db.prepare("SELECT COUNT(*) AS count FROM doc_index").get();
       const custom = db.prepare("SELECT COUNT(*) AS count FROM custom_records").get();
+      const usage = db.prepare("SELECT COUNT(*) AS count FROM usage_events").get();
       return {
         status: "ok",
         file: DB_FILE,
@@ -3579,6 +3993,7 @@ function getDbStatus() {
         artifacts: artifacts?.count ?? 0,
         indexed_docs: docs?.count ?? 0,
         custom_records: custom?.count ?? 0,
+        usage_events: usage?.count ?? 0,
       };
     } finally {
       db.close();
@@ -3747,6 +4162,16 @@ function printSessionMessages(sessionId) {
     ["role", "Роль"],
     ["content", "Текст"],
   ]);
+}
+
+function getSessionMessages(sessionId) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, role, content, created_at FROM session_messages WHERE session_id = ? ORDER BY id ASC").all(sessionId);
+  } finally {
+    db.close();
+  }
 }
 
 function forkSessionInDb(sessionId) {
@@ -4239,6 +4664,21 @@ function deleteMemory(id) {
   }
 }
 
+function findMemoryDuplicates() {
+  const rows = listMemory(1000).reverse();
+  const seen = new Map();
+  const duplicates = [];
+  for (const row of rows) {
+    const normalized = row.content.trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
+    if (seen.has(normalized)) {
+      duplicates.push({ keeper_id: seen.get(normalized).id, duplicate_id: row.id, content: row.content });
+    } else {
+      seen.set(normalized, row);
+    }
+  }
+  return duplicates;
+}
+
 function clearMemory() {
   initDatabase();
   const db = openDatabase();
@@ -4569,6 +5009,7 @@ async function aiAsk(args, context = {}) {
   const providerConfig = resolveAiProfile(config, options);
   if (providerConfig.provider === "codex") await assertPermission("codex");
   if (providerConfig.provider !== "ollama") await assertPermission("externalAi");
+  if (options["stream-json"]) options.events = true;
   if (options.tools && providerConfig.provider === "ollama") {
     return localToolAsk(question, providerConfig, options);
   }
@@ -4598,6 +5039,13 @@ async function aiAsk(args, context = {}) {
     recordAskHistory({ question, answer, providerConfig, dataContext, error: "", sessionId });
     appendSessionExchange(sessionId, question, answer, dataContext, "");
   }
+  recordUsage({
+    providerConfig,
+    question,
+    answer,
+    sessionId,
+    profile: providerConfig.name,
+  });
   await maybeSuggestMemory(question, answer, providerConfig);
 
   emitEvent(options, "answer", { length: answer.length, sessionId });
@@ -4642,6 +5090,7 @@ function resolveAiProfile(config, options = {}) {
 }
 
 async function localToolAsk(question, providerConfig, options) {
+  if (options["stream-json"]) options.events = true;
   await ensureLocalData();
   const plan = await buildLocalToolPlan(question, providerConfig, options);
   const validated = validateToolPlan(plan, options);
@@ -4667,6 +5116,7 @@ async function localToolAsk(question, providerConfig, options) {
       sessionId: null,
     });
   }
+  recordUsage({ providerConfig, question, answer, sessionId: null, profile: providerConfig.name });
 
   emitEvent(options, "tool_plan", { plan: validated, runId });
   saveArtifact("tool-result", question.slice(0, 80), "", { runId, plan: validated, outputs: result.outputs });
@@ -4772,6 +5222,7 @@ async function executeToolPlan(plan, options = {}) {
     let status = "ok";
     let summary = "";
     await assertPermission(step.tool);
+    await runHooks("PreToolUse", { tool: step.tool, args: step.args || {} });
     await runHooks("BeforeTool", { tool: step.tool, args: step.args || {} });
     try {
       if (step.tool === "search_local") {
@@ -4818,10 +5269,12 @@ async function executeToolPlan(plan, options = {}) {
       status = "error";
       summary = error instanceof Error ? error.message : String(error);
       recordToolTrace(options.runId || "manual", step.tool, step.args || {}, status, summary);
+      await runHooks("OnError", { tool: step.tool, args: step.args || {}, error: summary });
       throw error;
     }
     recordToolTrace(options.runId || "manual", step.tool, step.args || {}, status, summary);
     await runHooks("AfterTool", { tool: step.tool, rows: current.length });
+    await runHooks("PostToolUse", { tool: step.tool, rows: current.length });
   }
   return { rows: current, outputs };
 }
@@ -4849,7 +5302,12 @@ async function runHooks(event, payload = {}) {
   const config = await loadConfig();
   const commands = config.hooks?.[event] || [];
   for (const command of commands) {
-    const parts = splitCommandLine(command);
+    const [maybeFilter, ...rest] = String(command).split(":");
+    const commandText = payload.tool && rest.length > 0 && ALL_LOCAL_TOOLS.includes(maybeFilter.trim())
+      ? (maybeFilter.trim() === payload.tool ? rest.join(":").trim() : "")
+      : command;
+    if (!commandText) continue;
+    const parts = splitCommandLine(commandText);
     if (parts.length === 0) continue;
     await runCommand(parts[0], parts.slice(1), {
       inherit: true,
@@ -5445,12 +5903,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -5840,6 +6298,13 @@ async function startDaemon(host, port) {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${host}:${port}`);
+
+      if (req.method === "GET" && url.pathname === "/") {
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(renderDaemonDashboard(host, port));
+        return;
+      }
+
       res.setHeader("content-type", "application/json; charset=utf-8");
 
       if (req.method === "GET" && url.pathname === "/health") {
@@ -5849,6 +6314,26 @@ async function startDaemon(host, port) {
 
       if (req.method === "GET" && url.pathname === "/status") {
         res.end(JSON.stringify({ status: "running", db: getDbStatus(), sync: getSyncStatus() }));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/status") {
+        res.end(JSON.stringify({ db: getDbStatus(), sync: getSyncStatus(), usage: getUsageSummary() }));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/tasks") {
+        res.end(JSON.stringify(listTasks()));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/artifacts") {
+        res.end(JSON.stringify(listArtifacts()));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/trace") {
+        res.end(JSON.stringify(listTrace(50)));
         return;
       }
 
@@ -5879,22 +6364,19 @@ async function startDaemon(host, port) {
 
 async function startMcpServer(host, port) {
   const server = createServer(async (req, res) => {
+    let payload = {};
     try {
       res.setHeader("content-type", "application/json; charset=utf-8");
       if (req.method !== "POST") {
-        res.end(JSON.stringify({ name: "iola-local-mcp", tools: ["status", "search", "card", "quality", "files.search", "index.search"] }));
+        res.end(JSON.stringify({ name: "iola-local-mcp", protocol: "2024-11-05", tools: mcpTools().map((tool) => tool.name) }));
         return;
       }
-      const payload = JSON.parse(await readRequestBody(req) || "{}");
-      const method = payload.method === "tools/call" ? payload.params?.name : payload.method;
-      const args = payload.params?.arguments || payload.params || {};
-      let result;
-      if (method === "index.search") result = searchDocs(args.query || "", Number(args.limit || 20));
-      else result = await executeRpc(method, { ...args, _: [] });
+      payload = JSON.parse(await readRequestBody(req) || "{}");
+      const result = await handleMcpMessage(payload);
       res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id || null, result }));
     } catch (error) {
       res.statusCode = 500;
-      res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { message: error instanceof Error ? error.message : String(error) } }));
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id || null, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }));
     }
   });
   await new Promise((resolve, reject) => {
@@ -5903,6 +6385,142 @@ async function startMcpServer(host, port) {
   });
   console.log(`iola local MCP запущен: http://${host}:${port}`);
   await new Promise(() => {});
+}
+
+function renderDaemonDashboard(host, port) {
+  const status = getDbStatus();
+  const sync = getSyncStatus();
+  const usage = getUsageSummary();
+  return `<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>iola daemon</title>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;margin:32px;background:#f8fafc;color:#0f172a}
+h1{margin:0 0 8px;font-size:28px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:20px}
+.card{background:white;border:1px solid #dbe3ef;border-radius:8px;padding:16px}
+.k{color:#64748b;font-size:12px;text-transform:uppercase}.v{font-size:24px;font-weight:700;margin-top:4px}
+a{color:#0b62d6}
+code{background:#eef2f7;padding:2px 5px;border-radius:4px}
+</style>
+<h1>iola daemon</h1>
+<div>Локальная панель CLI-проекта Йошкар-Олы: <code>http://${host}:${port}</code></div>
+<div class="grid">
+<div class="card"><div class="k">DB</div><div class="v">${status.status}</div><p>schema ${status.schema}, records ${status.local_records}</p></div>
+<div class="card"><div class="k">Sync</div><div class="v">${sync.last_status || "none"}</div><p>${sync.last_dataset || "-"} ${sync.last_records || 0}</p></div>
+<div class="card"><div class="k">Usage</div><div class="v">${usage.requests}</div><p>${usage.estimated_tokens} tokens</p></div>
+<div class="card"><div class="k">API</div><p><a href="/api/status">/api/status</a></p><p><a href="/api/tasks">/api/tasks</a></p><p><a href="/api/artifacts">/api/artifacts</a></p><p><a href="/api/trace">/api/trace</a></p></div>
+</div>
+</html>`;
+}
+
+async function startMcpStdio() {
+  const rl = readline.createInterface({ input, terminal: false });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    let payload = {};
+    try {
+      payload = JSON.parse(line);
+      const result = await handleMcpMessage(payload);
+      process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: payload.id || null, result })}\n`);
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: payload.id || null, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } })}\n`);
+    }
+  }
+}
+
+async function handleMcpMessage(payload) {
+  const method = payload.method;
+  if (method === "initialize") {
+    return {
+      protocolVersion: "2024-11-05",
+      serverInfo: { name: "iola-local-mcp", version: getPackageVersion() },
+      capabilities: { tools: {}, resources: {}, prompts: {} },
+    };
+  }
+  if (method === "tools/list") return { tools: mcpTools() };
+  if (method === "tools/call") {
+    const result = await callMcpTool(payload.params?.name, payload.params?.arguments || {});
+    return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }] };
+  }
+  if (method === "resources/list") return { resources: mcpResources() };
+  if (method === "resources/read") {
+    const text = await readMcpResource(payload.params?.uri);
+    return { contents: [{ uri: payload.params?.uri, mimeType: "application/json", text }] };
+  }
+  if (method === "prompts/list") return { prompts: mcpPrompts() };
+  if (method === "prompts/get") return getMcpPrompt(payload.params?.name, payload.params?.arguments || {});
+  if (method === "notifications/initialized") return {};
+  throw new Error(`MCP method неизвестен: ${method}`);
+}
+
+function mcpTools() {
+  const schema = (properties = {}) => ({ type: "object", properties, additionalProperties: false });
+  return [
+    { name: "status", description: "Статус локальной БД, sync и активного AI-профиля.", inputSchema: schema() },
+    { name: "search", description: "Поиск по локальным открытым данным Йошкар-Олы.", inputSchema: schema({ query: { type: "string" }, dataset: { type: "string" }, limit: { type: "number" } }) },
+    { name: "card", description: "Карточка объекта по названию или ИНН.", inputSchema: schema({ query: { type: "string" } }) },
+    { name: "quality", description: "Проверки качества данных.", inputSchema: schema({ scope: { type: "string" } }) },
+    { name: "sync", description: "Обновление локальной копии слоя.", inputSchema: schema({ dataset: { type: "string" } }) },
+    { name: "files.tree", description: "Дерево файлов разрешенного workspace.", inputSchema: schema({ path: { type: "string" }, depth: { type: "number" }, limit: { type: "number" } }) },
+    { name: "files.read", description: "Чтение файла разрешенного workspace.", inputSchema: schema({ path: { type: "string" }, maxBytes: { type: "number" } }) },
+    { name: "files.search", description: "Поиск текста в файлах workspace.", inputSchema: schema({ query: { type: "string" }, path: { type: "string" }, limit: { type: "number" } }) },
+    { name: "index.search", description: "Поиск по индексу локальных документов.", inputSchema: schema({ query: { type: "string" }, limit: { type: "number" } }) },
+    { name: "report", description: "Запуск встроенного отчета.", inputSchema: schema({ name: { type: "string" }, format: { type: "string" }, output: { type: "string" } }) },
+  ];
+}
+
+function mcpResources() {
+  return [
+    { uri: "iola://status", name: "Статус CLI", mimeType: "application/json" },
+    { uri: "iola://sync", name: "Статус синхронизации", mimeType: "application/json" },
+    { uri: "iola://settings", name: "Эффективные настройки", mimeType: "application/json" },
+    { uri: "iola://skills", name: "Skills", mimeType: "application/json" },
+    { uri: "iola://memory", name: "Память агента", mimeType: "application/json" },
+    { uri: "iola://artifacts", name: "Artifacts", mimeType: "application/json" },
+  ];
+}
+
+function mcpPrompts() {
+  return [
+    { name: "data-question", description: "Ответить строго по открытым данным Йошкар-Олы.", arguments: [{ name: "question", required: true }] },
+    { name: "document-review", description: "Проверить документ на полноту и источники.", arguments: [{ name: "file", required: true }] },
+    { name: "report-build", description: "Собрать отчет по выбранному слою.", arguments: [{ name: "dataset", required: true }] },
+  ];
+}
+
+async function callMcpTool(name, args = {}) {
+  if (name === "index.search") return searchDocs(args.query || "", Number(args.limit || 20));
+  if (name === "report") {
+    const output = args.output || `${args.name || "education-contacts"}.${args.format || "xlsx"}`;
+    await handleExport([args.name || "education-contacts", "--format", args.format || "xlsx", "--output", output]);
+    return { output };
+  }
+  return executeRpc(name, { ...args, _: [] });
+}
+
+async function readMcpResource(uri) {
+  if (uri === "iola://status") return JSON.stringify({ db: getDbStatus(), sync: getSyncStatus() }, null, 2);
+  if (uri === "iola://sync") return JSON.stringify(getSyncStatus(), null, 2);
+  if (uri === "iola://settings") return JSON.stringify(await loadConfig(), null, 2);
+  if (uri === "iola://skills") return JSON.stringify(listSkills(await loadConfig()), null, 2);
+  if (uri === "iola://memory") return JSON.stringify(listMemory(100), null, 2);
+  if (uri === "iola://artifacts") return JSON.stringify(listArtifacts(), null, 2);
+  throw new Error(`MCP resource неизвестен: ${uri}`);
+}
+
+function getMcpPrompt(name, args = {}) {
+  if (name === "data-question") {
+    return { messages: [{ role: "user", content: { type: "text", text: `Ответь по открытым данным городского округа "Город Йошкар-Ола", не выдумывая сведения: ${args.question || ""}` } }] };
+  }
+  if (name === "document-review") {
+    return { messages: [{ role: "user", content: { type: "text", text: `Проверь документ ${args.file || ""}: полнота, источники, противоречия, ошибки оформления.` } }] };
+  }
+  if (name === "report-build") {
+    return { messages: [{ role: "user", content: { type: "text", text: `Собери практичный отчет по слою ${args.dataset || "schools"} с выводами и источником данных.` } }] };
+  }
+  throw new Error(`MCP prompt неизвестен: ${name}`);
 }
 
 function readRequestBody(req) {
@@ -6338,11 +6956,120 @@ function recordToolTrace(runId, tool, args, status, summary) {
   }
 }
 
+function recordUsage({ providerConfig, question, answer, sessionId, profile }) {
+  try {
+    initDatabase();
+    const inputChars = String(question || "").length;
+    const outputChars = String(answer || "").length;
+    const estimatedTokens = Math.ceil((inputChars + outputChars) / 4);
+    const estimatedCostUsd = estimateCost(providerConfig, estimatedTokens);
+    const db = openDatabase();
+    try {
+      db.prepare(`
+        INSERT INTO usage_events(provider, model, profile, input_chars, output_chars, estimated_tokens, estimated_cost_usd, session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        providerConfig.provider || "",
+        providerConfig.model || "",
+        profile || providerConfig.name || "",
+        inputChars,
+        outputChars,
+        estimatedTokens,
+        estimatedCostUsd,
+        sessionId || null,
+      );
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Usage accounting must not break the main answer path.
+  }
+}
+
+function estimateCost(providerConfig, tokens) {
+  if (!providerConfig || providerConfig.provider === "ollama" || providerConfig.provider === "codex") return 0;
+  const perMillion = providerConfig.provider === "openrouter" ? 0.25 : 0.4;
+  return Math.round((tokens / 1_000_000) * perMillion * 1_000_000) / 1_000_000;
+}
+
+function getUsageSummary() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT COUNT(*) AS requests, COALESCE(SUM(estimated_tokens),0) AS tokens, COALESCE(SUM(estimated_cost_usd),0) AS cost FROM usage_events").get();
+    return { requests: row.requests || 0, estimated_tokens: row.tokens || 0, estimated_cost_usd: Number(row.cost || 0).toFixed(6) };
+  } finally {
+    db.close();
+  }
+}
+
+function getUsageByModel() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare(`
+      SELECT provider, model, COUNT(*) AS requests, COALESCE(SUM(estimated_tokens),0) AS tokens, printf('%.6f', COALESCE(SUM(estimated_cost_usd),0)) AS cost
+      FROM usage_events GROUP BY provider, model ORDER BY requests DESC
+    `).all();
+  } finally {
+    db.close();
+  }
+}
+
+function getUsageBySession() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare(`
+      SELECT COALESCE(session_id, 0) AS session_id, COUNT(*) AS requests, COALESCE(SUM(estimated_tokens),0) AS tokens, printf('%.6f', COALESCE(SUM(estimated_cost_usd),0)) AS cost
+      FROM usage_events GROUP BY session_id ORDER BY requests DESC LIMIT 100
+    `).all();
+  } finally {
+    db.close();
+  }
+}
+
+function listBudgets() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const spent = Number(db.prepare("SELECT COALESCE(SUM(estimated_cost_usd),0) AS spent FROM usage_events WHERE created_at >= datetime('now','-1 day')").get()?.spent || 0);
+    return db.prepare("SELECT scope, amount_usd, updated_at FROM budgets ORDER BY scope").all()
+      .map((row) => ({ ...row, spent_usd: row.scope === "daily" ? spent.toFixed(6) : "-" }));
+  } finally {
+    db.close();
+  }
+}
+
+function setBudget(scope, amountUsd) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO budgets(scope, amount_usd) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET amount_usd = excluded.amount_usd, updated_at = datetime('now')").run(scope, amountUsd);
+  } finally {
+    db.close();
+  }
+}
+
 function listTrace(limit = 20) {
   initDatabase();
   const db = openDatabase();
   try {
     return db.prepare("SELECT id, run_id, tool, status, summary, created_at FROM tool_traces ORDER BY id DESC LIMIT ?").all(limit);
+  } finally {
+    db.close();
+  }
+}
+
+function buildTrajectoryRows(limit = 500) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const history = db.prepare("SELECT id, created_at, 'ask' AS type, question AS summary, provider, model FROM ask_history ORDER BY id DESC LIMIT ?").all(limit);
+    const traces = db.prepare("SELECT id, created_at, 'tool' AS type, tool || ': ' || COALESCE(summary,'') AS summary, status, run_id FROM tool_traces ORDER BY id DESC LIMIT ?").all(limit);
+    return [...history, ...traces]
+      .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
+      .slice(0, limit);
   } finally {
     db.close();
   }
@@ -6376,6 +7103,22 @@ async function createSnapshot() {
   } finally {
     db.close();
   }
+}
+
+async function createSandboxCopy(name = "") {
+  const config = await loadConfig();
+  const workspace = resolveWorkspaceRoot(config);
+  const sandboxesDir = path.join(CONFIG_DIR, "sandboxes");
+  await mkdir(sandboxesDir, { recursive: true });
+  const safeName = name ? String(name).replace(/[^a-zA-Z0-9_-]+/g, "-") : `sandbox-${Date.now()}`;
+  const target = path.join(sandboxesDir, safeName);
+  await rm(target, { recursive: true, force: true });
+  await cp(workspace, target, {
+    recursive: true,
+    filter: (source) => !isBlockedPathForConfig(source, config) && !source.includes(`${path.sep}node_modules${path.sep}`) && !source.includes(`${path.sep}.git${path.sep}`),
+  });
+  const id = saveArtifact("sandbox", safeName, target, { workspace });
+  return { id, workspace, path: target };
 }
 
 function listSnapshots() {
@@ -6653,7 +7396,7 @@ async function executeRpc(method, options = {}) {
   if (method === "index.search") {
     return searchDocs(options.query || options.search || "", Number(options.limit || 20));
   }
-  throw new Error(`RPC method неизвестен: ${method}. Доступно: status, search, card, quality, sync.`);
+  throw new Error(`RPC method неизвестен: ${method}. Доступно: status, search, card, quality, sync, files.tree, files.read, files.search, index.search.`);
 }
 
 async function getLatestNpmVersion(packageName) {
@@ -6780,11 +7523,39 @@ async function writeConfig(value) {
 }
 
 async function loadConfig() {
+  let config = DEFAULT_AI_CONFIG;
+  for (const layer of [CONFIG_FILE, PROJECT_CONFIG_FILE, LOCAL_CONFIG_FILE]) {
+    const value = await readConfigLayer(layer);
+    if (value) config = mergeConfig(config, value);
+  }
+  return config;
+}
+
+async function loadConfigLayers() {
+  const files = [
+    { scope: "defaults", file: "builtin", value: DEFAULT_AI_CONFIG, exists: true },
+    { scope: "user", file: CONFIG_FILE },
+    { scope: "project", file: PROJECT_CONFIG_FILE },
+    { scope: "local", file: LOCAL_CONFIG_FILE },
+  ];
+  const rows = [];
+  for (const layer of files) {
+    if (layer.scope === "defaults") {
+      rows.push({ ...layer, errors: validateConfig(layer.value) });
+      continue;
+    }
+    const value = await readConfigLayer(layer.file);
+    rows.push({ ...layer, exists: Boolean(value), value, errors: value ? validateConfig(mergeConfig(DEFAULT_AI_CONFIG, value)) : [] });
+  }
+  rows.push({ scope: "runtime", file: "process.env", exists: true, value: { IOLA_API_BASE_URL: process.env.IOLA_API_BASE_URL || "", IOLA_MCP_BASE_URL: process.env.IOLA_MCP_BASE_URL || "" }, errors: [] });
+  return rows;
+}
+
+async function readConfigLayer(file) {
   try {
-    const text = await readFile(CONFIG_FILE, "utf8");
-    return mergeConfig(DEFAULT_AI_CONFIG, JSON.parse(text));
+    return JSON.parse(await readFile(file, "utf8"));
   } catch {
-    return DEFAULT_AI_CONFIG;
+    return null;
   }
 }
 
@@ -6836,6 +7607,20 @@ function mergeConfig(base, override) {
       ...base.cron,
       ...(override.cron || {}),
     },
+    hooks: {
+      ...base.hooks,
+      ...(override.hooks || {}),
+    },
+    subagents: {
+      ...(base.subagents || {}),
+      ...(override.subagents || {}),
+    },
+    workspaces: {
+      ...(base.workspaces || {}),
+      ...(override.workspaces || {}),
+    },
+    hooksTrusted: override.hooksTrusted ?? base.hooksTrusted,
+    local: override.local ?? base.local,
   };
 }
 
@@ -6996,6 +7781,7 @@ function runCommand(command, args, options = {}) {
     const child = execFile(command, args, {
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 5,
+      cwd: options.cwd,
       env: {
         ...process.env,
         ...(options.env || {}),
