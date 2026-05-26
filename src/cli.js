@@ -674,7 +674,7 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false };
+  const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false, renderedInputLines: 0 };
   emitKeypressEvents(input);
   const wasRaw = input.isRaw;
   input.setRawMode(true);
@@ -728,11 +728,12 @@ async function startAgentRawInput() {
         const line = state.buffer.trim();
         state.buffer = "";
         state.slashOpen = false;
-        clearAgentInputArea();
+        clearAgentInputArea(state);
         if (!line) {
           render();
           continue;
         }
+        output.write(`iola> ${line}\n`);
         try {
           const shouldExit = await handleAgentLine(line, state);
           if (shouldExit) break;
@@ -1179,29 +1180,49 @@ function currentSlashMatches(state) {
 }
 
 function renderAgentInput(state) {
-  clearAgentInputArea();
+  clearAgentInputArea(state);
   const prompt = "iola> ";
   const lines = state.buffer.split("\n");
-  output.write(`${prompt}${lines[0] || ""}`);
-  for (const line of lines.slice(1)) output.write(`      ${line}\n`);
+  const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1).map((line) => `      ${line}`)];
+  const menuLines = [];
   if (state.slashOpen) {
-    output.write("\n");
     const matches = currentSlashMatches(state);
     if (matches.length === 0) {
-      output.write("  нет команд\n");
+      menuLines.push("  нет команд");
     } else {
       for (let index = 0; index < matches.length; index += 1) {
-        const marker = index === state.selected ? ">" : " ";
-        output.write(`${marker} ${matches[index].command.padEnd(24)} ${matches[index].description}\n`);
+        const selected = index === state.selected;
+        const marker = selected ? ">" : " ";
+        const row = `${marker} ${matches[index].command.padEnd(24)} ${matches[index].description}`;
+        menuLines.push(selected ? colorSlashSelection(row) : `  ${row.slice(2)}`);
       }
-      output.write("  ↑/↓ выбрать • Enter вставить/выполнить • Esc закрыть\n");
+      menuLines.push("  ↑/↓ выбрать • Enter вставить/выполнить • Esc закрыть");
     }
   }
+
+  const renderedLines = [...inputLines, ...menuLines];
+  output.write(renderedLines.join("\n"));
+  if (menuLines.length > 0 && output.isTTY) {
+    output.write(`\x1b[${menuLines.length}A`);
+  }
+  if (output.isTTY) {
+    const cursorColumn = visibleLength(inputLines[inputLines.length - 1]);
+    output.write(`\x1b[${cursorColumn + 1}G`);
+  }
+  state.renderedInputLines = inputLines.length;
 }
 
-function clearAgentInputArea() {
+function clearAgentInputArea(state = null) {
   if (!output.isTTY) return;
-  output.write("\x1b[2K\r");
+  const inputLines = Math.max(1, Number(state?.renderedInputLines || 1));
+  if (inputLines > 1) output.write(`\x1b[${inputLines - 1}A`);
+  output.write("\r\x1b[0J");
+  if (state) state.renderedInputLines = 0;
+}
+
+function colorSlashSelection(row) {
+  if (!output.isTTY || process.env.NO_COLOR === "1") return row;
+  return `\x1b[38;5;213m${row}\x1b[0m`;
 }
 
 function readKeypress() {
