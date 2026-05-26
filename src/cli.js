@@ -847,10 +847,13 @@ async function startAgentRawInput() {
           continue;
         }
         output.write(`> ${line}\n`);
+        const stopActivity = startActivityIndicator("работаю");
         try {
           const shouldExit = await handleAgentLine(line, state);
+          stopActivity();
           if (shouldExit) break;
         } catch (error) {
+          stopActivity();
           console.error(error instanceof Error ? error.message : String(error));
         }
         render();
@@ -1334,6 +1337,27 @@ function clearAgentInputArea(state = null) {
   if (inputLines > 1) output.write(`\x1b[${inputLines - 1}A`);
   output.write("\r\x1b[0J");
   if (state) state.renderedInputLines = 0;
+}
+
+function startActivityIndicator(label = "работаю") {
+  if (!output.isTTY || process.env.NO_COLOR === "1") {
+    output.write(`${label}...\n`);
+    return () => {};
+  }
+  const frames = ["|", "/", "-", "\\"];
+  const started = Date.now();
+  let index = 0;
+  const render = () => {
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    output.write(`\r\x1b[2K${colorMuted(`${frames[index % frames.length]} ${label} ${seconds}s`)}`);
+    index += 1;
+  };
+  render();
+  const timer = setInterval(render, 120);
+  return () => {
+    clearInterval(timer);
+    output.write("\r\x1b[2K");
+  };
 }
 
 function colorSlashSelection(row) {
