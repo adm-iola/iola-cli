@@ -75,6 +75,7 @@ iola help
 
 ```bash
 iola banner
+iola agent
 iola ai doctor
 iola ai setup ollama
 iola health
@@ -90,6 +91,27 @@ iola setup codex
 
 По умолчанию команды выводят компактную таблицу. Для полного ответа API
 используйте `--json`.
+
+## Интерактивный режим
+
+```bash
+iola agent
+```
+
+Внутри agent доступны slash-команды:
+
+```text
+/help
+/health
+/layers
+/schools --limit 10
+/schools get --inn 1215067180
+/kindergartens --search 29
+/search лицей --limit 3
+/mcp-info
+/ai doctor
+/exit
+```
 
 ## Назначение
 

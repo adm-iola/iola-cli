@@ -27,6 +27,7 @@ const COMMANDS = new Map([
   ["help", showHelp],
   ["version", showVersion],
   ["banner", showBanner],
+  ["agent", startAgent],
   ["ai", handleAi],
   ["health", checkHealth],
   ["layers", listLayers],
@@ -54,6 +55,7 @@ async function showHelp() {
 
 Usage:
   iola banner
+  iola agent
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -72,6 +74,119 @@ Environment:
   IOLA_API_BASE_URL   default: ${API_BASE_URL}
   IOLA_MCP_BASE_URL   default: ${MCP_BASE_URL}
 `);
+}
+
+async function startAgent() {
+  showBanner();
+  console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
+
+  const rl = readline.createInterface({ input, output, prompt: "iola> " });
+  let closed = false;
+  rl.on("close", () => {
+    closed = true;
+  });
+  safePrompt(rl);
+
+  for await (const rawLine of rl) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      safePrompt(rl, closed);
+      continue;
+    }
+
+    try {
+      const shouldExit = await handleAgentLine(line);
+      if (shouldExit) {
+        break;
+      }
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+    }
+
+    safePrompt(rl, closed);
+  }
+
+  if (!closed) {
+    rl.close();
+  }
+}
+
+async function handleAgentLine(line) {
+  if (!line.startsWith("/")) {
+    console.log("AI-ответы будут добавлены следующим этапом. Сейчас используйте slash-команды, например /search лицей.");
+    return false;
+  }
+
+  const [command, ...args] = splitCommandLine(line.slice(1));
+
+  if (command === "exit" || command === "quit") {
+    return true;
+  }
+
+  if (command === "help") {
+    printAgentHelp();
+    return false;
+  }
+
+  if (command === "banner") {
+    showBanner();
+    return false;
+  }
+
+  if (command === "ai") {
+    await handleAi(args);
+    return false;
+  }
+
+  const mapped = {
+    health: ["health", args],
+    layers: ["layers", args],
+    schools: ["schools", args],
+    kindergartens: ["kindergartens", args],
+    search: ["search", args],
+    "mcp-info": ["mcp-info", args],
+    setup: ["setup", args],
+  }[command];
+
+  if (!mapped) {
+    console.log(`Неизвестная slash-команда: /${command}`);
+    printAgentHelp();
+    return false;
+  }
+
+  const [cliCommand, cliArgs] = mapped;
+  await COMMANDS.get(cliCommand)(cliArgs);
+  return false;
+}
+
+function printAgentHelp() {
+  console.log(`Slash-команды:
+  /help
+  /health
+  /layers
+  /schools --limit 10
+  /schools get --inn 1215067180
+  /kindergartens --search 29
+  /kindergartens get --inn 1215077421
+  /search лицей --limit 3
+  /mcp-info
+  /ai doctor
+  /ai setup ollama
+  /banner
+  /exit`);
+}
+
+function safePrompt(rl, closed = false) {
+  if (closed) {
+    return;
+  }
+
+  try {
+    rl.prompt();
+  } catch {
+    // The input stream can close while an async slash-command is still running.
+  }
 }
 
 function showBanner() {
@@ -381,6 +496,40 @@ function parseOptions(args) {
     } else {
       result._.push(arg);
     }
+  }
+
+  return result;
+}
+
+function splitCommandLine(line) {
+  const result = [];
+  let current = "";
+  let quote = null;
+
+  for (const char of line) {
+    if ((char === "\"" || char === "'") && quote === null) {
+      quote = char;
+      continue;
+    }
+
+    if (char === quote) {
+      quote = null;
+      continue;
+    }
+
+    if (/\s/.test(char) && quote === null) {
+      if (current) {
+        result.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current) {
+    result.push(current);
   }
 
   return result;
