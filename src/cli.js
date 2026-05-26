@@ -622,6 +622,7 @@ async function runDefaultCli() {
 }
 
 async function startAgent() {
+  setTerminalTitle(`iola - ${path.basename(process.cwd()) || process.cwd()}`);
   await showBanner();
   await ensureAgentAiReady();
   console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
@@ -788,13 +789,7 @@ async function startAgentRawInput() {
       if (key?.name === "return" || key?.name === "enter") {
         const matches = currentSlashMatches(state);
         const selected = matches[state.selected];
-        if (state.slashOpen && selected && state.buffer.trim() !== selected.command) {
-          state.buffer = selected.command;
-          state.slashOpen = false;
-          render();
-          continue;
-        }
-        const line = state.buffer.trim();
+        const line = state.slashOpen && selected ? selected.command : state.buffer.trim();
         state.buffer = "";
         state.slashOpen = false;
         clearAgentInputArea(state);
@@ -820,6 +815,8 @@ async function startAgentRawInput() {
     }
   } finally {
     if (!wasRaw) input.setRawMode(false);
+    clearAgentInputArea(state);
+    output.write("\n");
   }
 }
 
@@ -1253,6 +1250,7 @@ function renderAgentInput(state) {
   const prompt = "iola> ";
   const lines = state.buffer.split("\n");
   const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1).map((line) => `      ${line}`)];
+  const cwdLine = colorMuted(`  ${process.cwd()}`);
   const menuLines = [];
   if (state.slashOpen) {
     const matches = currentSlashMatches(state);
@@ -1269,16 +1267,16 @@ function renderAgentInput(state) {
     }
   }
 
-  const renderedLines = [...inputLines, ...menuLines];
+  const renderedLines = [...inputLines, cwdLine, ...menuLines];
   output.write(renderedLines.join("\n"));
-  if (menuLines.length > 0 && output.isTTY) {
-    output.write(`\x1b[${menuLines.length}A`);
+  if (output.isTTY) {
+    output.write(`\x1b[${1 + menuLines.length}A`);
   }
   if (output.isTTY) {
     const cursorColumn = visibleLength(inputLines[inputLines.length - 1]);
     output.write(`\x1b[${cursorColumn + 1}G`);
   }
-  state.renderedInputLines = inputLines.length;
+  state.renderedInputLines = inputLines.length + 1;
 }
 
 function clearAgentInputArea(state = null) {
@@ -1292,6 +1290,16 @@ function clearAgentInputArea(state = null) {
 function colorSlashSelection(row) {
   if (!output.isTTY || process.env.NO_COLOR === "1") return row;
   return `\x1b[38;5;213m${row}\x1b[0m`;
+}
+
+function colorMuted(row) {
+  if (!output.isTTY || process.env.NO_COLOR === "1") return row;
+  return `\x1b[38;5;245m${row}\x1b[0m`;
+}
+
+function setTerminalTitle(title) {
+  if (!output.isTTY) return;
+  output.write(`\x1b]0;${String(title).replace(/[\x00-\x1f\x7f]/g, "")}\x07`);
 }
 
 function readKeypress() {
