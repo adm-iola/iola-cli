@@ -17,6 +17,16 @@ const DEFAULT_AI_CONFIG = {
     baseUrl: "http://127.0.0.1:11434",
   },
 };
+const DATASETS = {
+  schools: {
+    title: "Школы",
+    endpoint: "schools",
+  },
+  kindergartens: {
+    title: "Детские сады",
+    endpoint: "kindergartens",
+  },
+};
 const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
 │\x1b[38;5;51m   ____ _     ___      ____  ____   ___  _____ _  _______                  \x1b[38;5;45m│
 │\x1b[38;5;51m  / ___| |   |_ _|    |  _ \\|  _ \\ / _ \\| ____| |/ /_   _|                 \x1b[38;5;45m│
@@ -34,11 +44,15 @@ const BANNER = `\x1b[38;5;45m┌────────────────
 const COMMANDS = new Map([
   ["help", showHelp],
   ["version", showVersion],
+  ["update", checkUpdate],
   ["banner", showBanner],
   ["agent", startAgent],
+  ["chat", startAgent],
   ["ai", handleAi],
+  ["init", initCli],
   ["health", checkHealth],
   ["layers", listLayers],
+  ["data", handleData],
   ["schools", listSchools],
   ["kindergartens", listKindergartens],
   ["search", searchAll],
@@ -64,6 +78,10 @@ async function showHelp() {
 Usage:
   iola banner
   iola agent
+  iola chat
+  iola init
+  iola update
+  iola data LAYER [--limit 10] [--search TEXT] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
   iola ai key set openai
@@ -75,11 +93,11 @@ Usage:
   iola ai setup ollama [--yes] [--model MODEL]
   iola health [--json]
   iola layers [--json]
-  iola schools [--limit 10] [--search TEXT] [--json]
+  iola schools [--limit 10] [--search TEXT] [--format table|json|csv]
   iola schools get --inn INN [--json]
-  iola kindergartens [--limit 10] [--search TEXT] [--json]
+  iola kindergartens [--limit 10] [--search TEXT] [--format table|json|csv]
   iola kindergartens get --inn INN [--json]
-  iola search TEXT [--limit 5] [--json]
+  iola search TEXT [--limit 5] [--format table|json|csv]
   iola mcp-info [--json]
   iola setup codex
   iola version
@@ -194,6 +212,16 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "update") {
+    await checkUpdate(args);
+    return false;
+  }
+
+  if (command === "init") {
+    await initCli(args);
+    return false;
+  }
+
   if (command === "ai") {
     await handleAi(args);
     return false;
@@ -202,6 +230,7 @@ async function handleAgentLine(line, state) {
   const mapped = {
     health: ["health", args],
     layers: ["layers", args],
+    data: ["data", args],
     schools: ["schools", args],
     kindergartens: ["kindergartens", args],
     search: ["search", args],
@@ -225,6 +254,7 @@ function printAgentHelp() {
   /help
   /health
   /layers
+  /data schools --limit 10
   /schools --limit 10
   /schools get --inn 1215067180
   /kindergartens --search 29
@@ -244,6 +274,8 @@ function printAgentHelp() {
   /history
   /clear
   /banner
+  /update
+  /init
   /exit
 
 Обычный текст без slash-команды отправляется в настроенный AI-провайдер.`);
@@ -282,9 +314,43 @@ function showBanner() {
   console.log("открытые данные • MCP • локальный AI");
 }
 
-async function showVersion() {
+async function showVersion(args = []) {
+  const options = parseOptions(args);
   const packageJson = await import("../package.json", { with: { type: "json" } });
   console.log(packageJson.default.version);
+
+  if (options.check) {
+    await checkUpdate([]);
+  }
+}
+
+async function checkUpdate() {
+  const packageJson = await import("../package.json", { with: { type: "json" } });
+  const current = packageJson.default.version;
+  const latest = await getLatestNpmVersion(packageJson.default.name);
+
+  if (!latest) {
+    console.log("Не удалось проверить npm-версию.");
+    return;
+  }
+
+  const comparison = compareVersions(latest, current);
+
+  if (comparison > 0) {
+    console.log(`Доступна новая версия: ${latest}`);
+    console.log("Обновление:");
+    console.log(`  npm install -g ${packageJson.default.name}@latest`);
+    console.log("Или запуск без установки:");
+    console.log(`  npx -y ${packageJson.default.name}@latest help`);
+    return;
+  }
+
+  if (comparison < 0) {
+    console.log(`Локальная версия ${current} новее опубликованной npm latest ${latest}.`);
+    return;
+  }
+
+  console.log(`Установлена актуальная версия: ${current}`);
 }
 
 async function checkHealth(args) {
@@ -302,6 +368,41 @@ async function checkHealth(args) {
     skill_version: health.skill_version,
     mcp_endpoint: health.mcp_endpoint,
   });
+}
+
+async function initCli(args = []) {
+  const options = parseOptions(args);
+
+  showBanner();
+  console.log("Проверка окружения");
+  printKeyValue({
+    node: process.version,
+    npm: await getCommandVersion("npm", ["--version"]),
+    api: await probeEndpoint(`${MCP_BASE_URL}/mcp-health`),
+    mcp: MCP_BASE_URL,
+  });
+  console.log("");
+
+  await aiDoctor(options.json ? ["--json"] : []);
+
+  if (!process.stdin.isTTY || options.yes) {
+    console.log("");
+    console.log("Для настройки AI используйте:");
+    console.log("  iola ai setup ollama");
+    console.log("  iola ai key set openai");
+    console.log("  iola ai setup openai --model gpt-4.1-mini");
+    return;
+  }
+
+  console.log("");
+  const configureAi = await confirm("Настроить AI-провайдер сейчас? [Y/n] ");
+
+  if (configureAi) {
+    await aiSetup([]);
+  }
+
+  console.log("");
+  await checkUpdate();
 }
 
 async function handleAi(args) {
@@ -393,7 +494,8 @@ async function aiSetup(args) {
       },
     });
     console.log(`AI-профиль ${provider} сохранен в ${CONFIG_FILE}`);
-    console.log(`Ключ задайте через переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
+    console.log(`Ключ сохраните командой: iola ai key set ${provider}`);
+    console.log(`Также можно использовать переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
     return;
   }
 
@@ -738,12 +840,14 @@ function scoreItem(item, terms, patterns, layer) {
 }
 
 function buildAiMessages(question, dataContext, history) {
+  const sourceLines = buildSourceLines(dataContext);
   const system = [
     "Ты терминальный AI-ассистент CLI-проекта Йошкар-Олы.",
     "Отвечай на русском языке.",
     "Используй только данные из переданного контекста.",
     "Если в контексте нет нужных сведений, прямо напиши, что данных недостаточно.",
     "Не выдумывай адреса, телефоны, лицензии и руководителей.",
+    "Если отвечаешь по конкретным организациям, укажи источник в конце: слой, название и ИНН.",
     "Отвечай кратко и по делу.",
   ].join(" ");
   const contextText = JSON.stringify(dataContext, null, 2);
@@ -754,9 +858,24 @@ function buildAiMessages(question, dataContext, history) {
     ...recentHistory,
     {
       role: "user",
-      content: `Контекст открытых данных городского округа "Город Йошкар-Ола":\n${contextText}\n\nВопрос пользователя: ${question}`,
+      content: `Контекст открытых данных городского округа "Город Йошкар-Ола":\n${contextText}\n\nКраткие источники контекста:\n${sourceLines}\n\nВопрос пользователя: ${question}`,
     },
   ];
+}
+
+function buildSourceLines(dataContext) {
+  const rows = [
+    ...dataContext.schools.map((item) => ({ layer: "schools", ...item })),
+    ...dataContext.kindergartens.map((item) => ({ layer: "kindergartens", ...item })),
+  ];
+
+  if (rows.length === 0) {
+    return "Совпавших организаций нет.";
+  }
+
+  return rows
+    .map((item) => `- ${item.layer}: ${item.name || "-"}; ИНН ${item.inn || "-"}; адрес ${item.address || "-"}`)
+    .join("\n");
 }
 
 async function callAiProvider(config, messages) {
@@ -886,6 +1005,28 @@ async function listKindergartens(args) {
   await listDataset("kindergartens", args);
 }
 
+async function handleData(args) {
+  const [dataset, ...rest] = args;
+
+  if (!dataset) {
+    console.log("Доступные слои:");
+    printTable(Object.entries(DATASETS).map(([id, value]) => ({ id, name: value.title })), [
+      ["id", "ID"],
+      ["name", "Название"],
+    ]);
+    console.log("");
+    console.log("Пример:");
+    console.log("  iola data schools --limit 10");
+    return;
+  }
+
+  if (!DATASETS[dataset]) {
+    throw new Error(`Неизвестный слой: ${dataset}. Доступно: ${Object.keys(DATASETS).join(", ")}`);
+  }
+
+  await listDataset(dataset, rest);
+}
+
 async function listDataset(dataset, args) {
   const options = parseOptions(args);
 
@@ -898,13 +1039,18 @@ async function listDataset(dataset, args) {
   params.set("limit", options.limit || "20");
   params.set("offset", options.offset || "0");
 
-  const data = await fetchJson(`${API_BASE_URL}/${dataset}?${params}`);
+  const data = await fetchJson(`${API_BASE_URL}/${DATASETS[dataset].endpoint}?${params}`);
   const items = normalizeItems(data);
   const filtered = options.search ? filterItems(items, options.search) : items;
   const limited = filtered.slice(0, Number(options.limit || 20));
 
-  if (options.json) {
+  if (options.json || options.format === "json") {
     printJson(limited);
+    return;
+  }
+
+  if (options.format === "csv") {
+    printCsv(limited.map(selectPublicSummary));
     return;
   }
 
@@ -916,7 +1062,7 @@ async function getDatasetItem(dataset, options) {
     throw new Error(`INN is required. Example: iola ${dataset} get --inn 1215067180`);
   }
 
-  const data = await fetchJson(`${API_BASE_URL}/${dataset}?limit=500&offset=0`);
+  const data = await fetchJson(`${API_BASE_URL}/${DATASETS[dataset].endpoint}?limit=500&offset=0`);
   const item = normalizeItems(data).find((entry) => String(entry.inn) === String(options.inn));
 
   if (!item) {
@@ -950,8 +1096,16 @@ async function searchAll(args) {
     kindergartens: filterItems(normalizeItems(kindergartens), query).slice(0, limit),
   };
 
-  if (options.json) {
+  if (options.json || options.format === "json") {
     printJson(result);
+    return;
+  }
+
+  if (options.format === "csv") {
+    printCsv([
+      ...result.schools.map((item) => ({ layer: "schools", ...selectPublicSummary(item) })),
+      ...result.kindergartens.map((item) => ({ layer: "kindergartens", ...selectPublicSummary(item) })),
+    ]);
     return;
   }
 
@@ -981,7 +1135,9 @@ function parseOptions(args) {
     const arg = args[index];
     if (arg === "--json" || arg === "--yes") {
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--inn" || arg === "--model" || arg === "--provider") {
+    } else if (arg === "--check") {
+      result.check = true;
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--format") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -1134,6 +1290,66 @@ async function getOllamaVersion() {
   }
 }
 
+async function getCommandVersion(command, args) {
+  try {
+    const { stdout } = await runCommand(command, args);
+    return stdout.trim() || "installed";
+  } catch {
+    if (process.platform === "win32" && !command.endsWith(".cmd")) {
+      try {
+        const { stdout } = await runCommand(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `${command} ${args.join(" ")}`]);
+        return stdout.trim() || "installed";
+      } catch {
+        return "не найден";
+      }
+    }
+
+    return "не найден";
+  }
+}
+
+async function probeEndpoint(url) {
+  try {
+    const response = await fetch(url, { headers: { accept: "application/json" } });
+    return response.ok ? "доступен" : `${response.status} ${response.statusText}`;
+  } catch {
+    return "недоступен";
+  }
+}
+
+async function getLatestNpmVersion(packageName) {
+  try {
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
+      headers: { accept: "application/json" },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    return payload.version || null;
+  } catch {
+    return null;
+  }
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] || 0) - (rightParts[index] || 0);
+
+    if (diff !== 0) {
+      return diff > 0 ? 1 : -1;
+    }
+  }
+
+  return 0;
+}
+
 function recommendOllamaModel(diagnostics) {
   const ramGb = diagnostics.ramGb || 0;
   const vramGb = diagnostics.gpu.vramGb || 0;
@@ -1204,8 +1420,10 @@ async function confirm(question) {
 }
 
 async function saveConfig(value) {
+  const current = await loadConfig();
+  const merged = mergeConfig(current, value);
   await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(CONFIG_FILE, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(CONFIG_FILE, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
 }
 
 async function loadConfig() {
@@ -1335,6 +1553,24 @@ async function fetchJson(url) {
 
 function printJson(value) {
   console.log(JSON.stringify(value, null, 2));
+}
+
+function printCsv(rows) {
+  if (rows.length === 0) {
+    return;
+  }
+
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  console.log(columns.map(csvCell).join(","));
+
+  for (const row of rows) {
+    console.log(columns.map((column) => csvCell(row[column])).join(","));
+  }
+}
+
+function csvCell(value) {
+  const text = value == null ? "" : String(value);
+  return `"${text.replace(/"/g, "\"\"")}"`;
 }
 
 function printDatasetTable(items) {
