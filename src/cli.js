@@ -848,13 +848,16 @@ async function startAgentRawInput() {
         }
         output.write(`> ${line}\n`);
         const stopActivity = line.startsWith("/") ? () => {} : startActivityIndicator("работаю");
+        const restoreRawInput = line.startsWith("/") ? suspendRawInputForCommand(input) : () => {};
         try {
           const shouldExit = await handleAgentLine(line, state);
           stopActivity();
           flushPendingAgentOutput(state);
+          if (!shouldExit) restoreRawInput();
           if (shouldExit) break;
         } catch (error) {
           stopActivity();
+          restoreRawInput();
           console.error(error instanceof Error ? error.message : String(error));
         }
         render();
@@ -1367,6 +1370,17 @@ function startActivityIndicator(label = "работаю") {
     clearInterval(timer);
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     output.write(`\r\x1b[2K${colorMuted(`─ ${doneLabel} ${seconds}s`)}\n`);
+  };
+}
+
+function suspendRawInputForCommand(stream) {
+  if (!stream.isTTY || !stream.isRaw) return () => {};
+  stream.setRawMode(false);
+  return () => {
+    if (stream.isTTY) {
+      stream.setRawMode(true);
+      stream.resume();
+    }
   };
 }
 
@@ -5886,27 +5900,29 @@ async function setupOllama(args) {
   const diagnostics = await getLocalDiagnostics();
   const recommendation = recommendOllamaModel(diagnostics);
   const model = options.model || recommendation.model;
+  const ollamaCommand = await resolveOllamaCommand();
 
   printDiagnostics(diagnostics, { ...recommendation, model });
 
-  if (!diagnostics.ollama.installed) {
+  if (!ollamaCommand) {
     console.log("");
-    console.log("Ollama не найден. Установите Ollama, затем повторите команду:");
-    console.log("  iola ai setup ollama");
+    console.log("Ollama не найден или команда пока недоступна в текущем терминале.");
+    console.log("Если Ollama только что установлена, откройте новый PowerShell или повторите после обновления PATH:");
+    console.log("  iola master");
     console.log("");
     console.log("Windows:");
-    console.log("  winget install Ollama.Ollama");
+    console.log("  $env:Path += ';' + \"$env:LOCALAPPDATA\\Programs\\Ollama\"");
     console.log("macOS:");
-    console.log("  brew install --cask ollama");
+    console.log("  перезапустите терминал после brew install --cask ollama");
     console.log("Linux:");
-    console.log("  curl -fsSL https://ollama.com/install.sh | sh");
+    console.log("  проверьте /usr/local/bin/ollama");
     return;
   }
 
   const shouldInstall = options.yes || (await confirm(`Установить модель ${model} через "ollama pull ${model}"? [Y/n] `));
 
   if (shouldInstall) {
-    await runCommand("ollama", ["pull", model], { inherit: true });
+    await runCommand(ollamaCommand, ["pull", model], { inherit: true });
   }
 
   const config = await loadConfig();
@@ -7329,12 +7345,36 @@ async function getWindowsGpu() {
 }
 
 async function getOllamaVersion() {
+  const command = await resolveOllamaCommand();
+  if (!command) return null;
   try {
-    const { stdout } = await runCommand("ollama", ["--version"]);
+    const { stdout } = await runCommand(command, ["--version"]);
     return stdout.trim();
   } catch {
     return null;
   }
+}
+
+async function resolveOllamaCommand() {
+  const candidates = ["ollama"];
+  if (process.platform === "win32") {
+    candidates.push(
+      path.join(os.homedir(), "AppData", "Local", "Programs", "Ollama", "ollama.exe"),
+      path.join(process.env.LOCALAPPDATA || "", "Programs", "Ollama", "ollama.exe"),
+    );
+  } else {
+    candidates.push("/usr/local/bin/ollama", "/opt/homebrew/bin/ollama", "/usr/bin/ollama");
+  }
+  for (const command of [...new Set(candidates.filter(Boolean))]) {
+    try {
+      if (command !== "ollama" && !existsSync(command)) continue;
+      await runCommand(command, ["--version"]);
+      return command;
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return null;
 }
 
 async function getCommandVersion(command, args) {
@@ -7406,6 +7446,9 @@ async function installOllamaIfMissing() {
     return;
   }
   await runCommand("sh", ["-c", "curl -fsSL https://ollama.com/install.sh | sh"], { inherit: true });
+  if (!(await getOllamaVersion())) {
+    console.log("Ollama установлен, но текущий терминал может еще не видеть команду. CLI попробует стандартный путь установки.");
+  }
 }
 
 async function installCodexIfMissing() {
