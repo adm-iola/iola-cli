@@ -27,9 +27,10 @@ const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
 const GOSUSLUGI_BROWSER_PROFILE_DIR = path.join(CONFIG_DIR, "gosuslugi-browser-profile");
+const GOSUSLUGI_BROWSER_LOCK_DIR = path.join(CONFIG_DIR, "gosuslugi-browser-profile.lock");
 const GOSUSLUGI_DEFAULT_URL = "https://www.gosuslugi.ru/";
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
-const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open"];
+const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open", "gosuslugi_whoami", "gosuslugi_debt", "gosuslugi_notifications"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
@@ -180,6 +181,9 @@ const DEFAULT_AI_CONFIG = {
       export_report: true,
       file_read: false,
       browser_open: true,
+      gosuslugi_whoami: true,
+      gosuslugi_debt: true,
+      gosuslugi_notifications: true,
       files_tree: false,
       files_read: false,
       files_search: false,
@@ -210,7 +214,7 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["open-data", "reports", "local-model", "local-files", "browser-agent"],
+    enabled: ["open-data", "reports", "local-model", "local-files", "browser-agent", "gosuslugi"],
   },
   daemon: {
     host: "127.0.0.1",
@@ -284,6 +288,8 @@ const SLASH_COMMANDS = [
   { command: "/features list", description: "feature flags" },
   { command: "/gosuslugi status", description: "личное подключение Госуслуг" },
   { command: "/gosuslugi connect", description: "открыть личный вход Госуслуг" },
+  { command: "/gosuslugi debt", description: "задолженности Госуслуг" },
+  { command: "/gosuslugi notifications", description: "уведомления Госуслуг" },
   { command: "/wiki", description: "ссылки на документацию" },
   { command: "/context list", description: "локальный контекст проекта" },
   { command: "/skills list", description: "skills" },
@@ -517,7 +523,7 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
-  iola gosuslugi terms|consent|status|connect|open|text|screenshot|logout|configure|login|userinfo
+  iola gosuslugi terms|consent|status|connect|open|text|screenshot|whoami|debt|notifications|mark-read|logout|configure|login|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -2309,6 +2315,32 @@ async function handleGosuslugi(args) {
     return;
   }
 
+  if (action === "whoami" || action === "profile") {
+    const result = await gosuslugiWhoami(options);
+    if (options.json) printJson(result);
+    else printKeyValue(result.summary);
+    return;
+  }
+
+  if (action === "debt" || action === "debts" || action === "payments") {
+    const result = await gosuslugiDebt(options);
+    if (options.json) printJson(result);
+    else printGosuslugiDebt(result);
+    return;
+  }
+
+  if (action === "notifications" || action === "notices") {
+    const result = await gosuslugiNotifications(options);
+    if (options.json) printJson(result);
+    else printGosuslugiNotifications(result);
+    return;
+  }
+
+  if (action === "mark-read") {
+    await gosuslugiMarkNotificationsRead(options);
+    return;
+  }
+
   if (action === "configure") {
     const current = await loadConfig();
     const next = {
@@ -2357,7 +2389,7 @@ async function handleGosuslugi(args) {
     return;
   }
 
-  throw new Error("Команды gosuslugi: terms, consent, status, connect, open, text, screenshot, logout, configure, login, userinfo.");
+  throw new Error("Команды gosuslugi: terms, consent, status, connect, open, text, screenshot, whoami, debt, notifications, mark-read, logout, configure, login, userinfo.");
 }
 
 function targetOrDefault(args, options = {}) {
@@ -6010,6 +6042,12 @@ async function aiAsk(args, context = {}) {
     throw new Error('Текст вопроса обязателен. Пример: iola ai ask "Какие школы есть на улице Петрова?"');
   }
 
+  if (!options.bare && isGosuslugiPersonalIntent(question)) {
+    const answer = await answerGosuslugiQuestion(question, options);
+    if (!options.quiet) console.log(answer);
+    return answer;
+  }
+
   const config = await loadConfig();
   const providerConfig = await resolveUsableAiProfile(config, options);
   if (providerConfig.provider === "codex") await assertPermission("codex");
@@ -6178,7 +6216,7 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     "Ты планировщик CLI iola. Верни только JSON.",
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
-    "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
+    "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}, gosuslugi_whoami {}, gosuslugi_debt {}, gosuslugi_notifications {unread,limit}.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
@@ -6208,6 +6246,12 @@ function inferToolPlan(question, options = {}) {
   const steps = [];
   if (normalized.includes("без телефона")) {
     steps.push({ tool: "export_report", args: { name: "missing-phones" } });
+  } else if (/(уведомлен|сообщени|госпочт|непрочитан)/iu.test(normalized)) {
+    steps.push({ tool: "gosuslugi_notifications", args: { unread: /непрочитан|нов/iu.test(normalized), limit: 15 } });
+  } else if (/(задолж|долг|штраф|налог|к оплате|платеж|платёж)/iu.test(normalized)) {
+    steps.push({ tool: "gosuslugi_debt", args: {} });
+  } else if (/(фио|дата рождения|профиль|кто я)/iu.test(normalized) && /госуслуг/iu.test(normalized)) {
+    steps.push({ tool: "gosuslugi_whoami", args: {} });
   } else {
     const query = normalized.match(/петрова|школ[а-яё ]*\d+|сад[а-яё ]*\d+|лицей[а-яё ]*\d+/iu)?.[0] || question;
     steps.push({ tool: "search_data", args: { dataset, query, limit: 20 } });
@@ -6297,6 +6341,18 @@ async function executeToolPlan(plan, options = {}) {
         const text = await runBrowserAutomation("text", { url: step.args?.url, waitMs: Number(step.args?.waitMs || 0), timeout: Number(step.args?.timeout || 30000), viewport: step.args?.viewport || "1366x768" });
         current = [{ url: step.args?.url, text }];
         outputs.push({ tool: step.tool, rows: 1 });
+      } else if (step.tool === "gosuslugi_whoami") {
+        const result = await gosuslugiWhoami(step.args || {});
+        current = [result.summary];
+        outputs.push({ tool: step.tool, rows: 1 });
+      } else if (step.tool === "gosuslugi_debt") {
+        const result = await gosuslugiDebt(step.args || {});
+        current = [{ total: result.total, amount: result.amount, debts: result.debts }];
+        outputs.push({ tool: step.tool, rows: result.debts.length });
+      } else if (step.tool === "gosuslugi_notifications") {
+        const result = await gosuslugiNotifications(step.args || {});
+        current = [{ total: result.total, unread: result.unread, items: result.items }];
+        outputs.push({ tool: step.tool, rows: result.items.length });
       } else if (String(step.tool || "").startsWith("mcp:")) {
         const result = await callConfiguredMcpTool(step.tool, step.args || {});
         current = Array.isArray(result) ? result : [result];
@@ -7094,7 +7150,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
@@ -7335,7 +7391,8 @@ async function buildSkillsText(config, question = "", options = {}) {
   const chunks = [];
   const selected = selectSkillsForPrompt(config, question, options);
   for (const skill of listSkills(config)) {
-    if (!skill.enabled || !selected.has(skill.name)) continue;
+    const active = skill.enabled || (skill.name === "gosuslugi" && config.gosuslugi?.enabled);
+    if (!active || !selected.has(skill.name)) continue;
     const text = await readFile(skill.file, "utf8");
     chunks.push(`## Skill: ${skill.name}\n${stripFrontmatter(text).trim()}`);
   }
@@ -7351,6 +7408,7 @@ function selectSkillsForPrompt(config, question = "", options = {}) {
   if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
   if (enabled.has("local-files") && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
   if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");
+  if (enabled.has("gosuslugi") && /(госуслуг|задолж|долг|штраф|налог|к оплате|платеж|платёж|уведомлен|госпочт|фио|дата рождения)/iu.test(normalized)) selected.add("gosuslugi");
   return selected;
 }
 
@@ -7646,9 +7704,226 @@ async function gosuslugiBrowserScreenshot(url = GOSUSLUGI_DEFAULT_URL, outputFil
   });
 }
 
+async function gosuslugiWhoami(options = {}) {
+  const data = await gosuslugiBrowserApiJson({
+    pageUrl: "https://lk.gosuslugi.ru/settings/account",
+    endpoint: "https://www.gosuslugi.ru/api/lk/v1/users/data",
+    waitMs: Number(options.wait || 3000),
+  });
+  const person = data.person?.person || data.person || data;
+  const summary = {
+    fio: [data.lastName || person.lastName, data.firstName || person.firstName, data.middleName || person.middleName].filter(Boolean).join(" ") || data.formattedName || "-",
+    birthDate: person.birthDate || data.birthDate || "-",
+    status: data.assuranceLevel === "AL20" || person.trusted ? "Подтвержденная учетная запись" : data.assuranceLevel || "-",
+    phone: options.full ? (data.personMobilePhone || data.mobile || "-") : maskPhone(data.personMobilePhone || data.mobile || ""),
+    email: options.full ? (data.personEMail || data.personEmail || data.email || "-") : maskEmail(data.personEMail || data.personEmail || data.email || ""),
+    snils: options.full ? (person.snils || data.personSnils || data.snils || "-") : maskDocument(person.snils || data.personSnils || data.snils || ""),
+    inn: options.full ? (person.inn || data.personINN || data.inn || "-") : maskDocument(person.inn || data.personINN || data.inn || ""),
+  };
+  return {
+    summary,
+    raw: options.full ? redactGosuslugiSensitive(data, { keepPersonal: true }) : undefined,
+  };
+}
+
+async function gosuslugiDebt(options = {}) {
+  const data = await gosuslugiBrowserApiJson({
+    pageUrl: "https://www.gosuslugi.ru/pay/forPayment",
+    endpoint: "https://www.gosuslugi.ru/api/pay/v2/informer/fetch",
+    waitMs: Number(options.wait || 5000),
+  });
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const debts = groups.flatMap((group) => (group.bills || []).map((bill) => ({
+    group: group.name || group.code || "-",
+    caption: bill.caption || "-",
+    amount: Number(bill.amount || 0),
+    billDate: bill.billDate || "-",
+    supplier: bill.supplierFullName || "-",
+    document: bill.document?.typeName ? `${bill.document.typeName} ${bill.document.number || ""}`.trim() : "-",
+  })));
+  return {
+    total: Number(data.summary?.total || debts.length || 0),
+    amount: Number(data.summary?.amount || debts.reduce((sum, item) => sum + item.amount, 0)),
+    groups: groups.map((group) => ({ name: group.name, code: group.code, total: group.summary?.total || 0, amount: group.summary?.amount || 0 })),
+    debts,
+  };
+}
+
+async function gosuslugiNotifications(options = {}) {
+  const types = "ORDER,EQUEUE,PAYMENT,GEPS,BIOMETRICS,ACCOUNT,ACCOUNT_CHILD,PROFILE,APPEAL,CLAIM,ELECTION_INFO,COMPLEX_ORDER,FEEDBACK,ORGANIZATION,BUSINESSMAN,ESIGNATURE,KND_APPEAL,LINKED_ACCOUNT,SIGN,GOSQR,INFO,PERMISSION,LICENSING,LICENSING_APPEAL,CONSTRUCTOR";
+  const pageSize = Number(options.limit || 15);
+  const unread = options.unread ? "true" : "false";
+  const counters = await gosuslugiBrowserApiJson({
+    pageUrl: `https://lk.gosuslugi.ru/notifications?type=${types}`,
+    endpoint: `https://www.gosuslugi.ru/api/lk/v1/feeds/counters?types=${types},PARTNERS&isArchive=false`,
+    waitMs: Number(options.wait || 3000),
+  });
+  const feed = await gosuslugiBrowserApiJson({
+    pageUrl: `https://lk.gosuslugi.ru/notifications?type=${types}`,
+    endpoint: `https://www.gosuslugi.ru/api/lk/v1/feeds/?unread=${unread}&isArchive=false&isHide=false&types=${types}&pageSize=${pageSize}&status=&startDate=&lastFeedId=&lastFeedDate=&q=`,
+    waitMs: Number(options.wait || 3000),
+  });
+  const items = (feed.items || []).map((item) => ({
+    id: item.id,
+    unread: Boolean(item.unread),
+    date: item.date || "-",
+    type: item.feedType || "-",
+    title: item.title || "-",
+    subtitle: item.subTitle || "-",
+    status: item.status || "-",
+    summary: summarizeNotificationData(item.data),
+  }));
+  return {
+    total: counters.total || feed.items?.length || 0,
+    unread: counters.unread || items.filter((item) => item.unread).length,
+    counters: counters.counter || [],
+    hasMore: Boolean(feed.hasMore),
+    items,
+  };
+}
+
+async function gosuslugiMarkNotificationsRead(options = {}) {
+  await requireGosuslugiConsent();
+  if (!options.yes) {
+    const ok = await confirm("Отметить уведомления Госуслуг прочитанными? Это изменит состояние личного кабинета. [y/N] ");
+    if (!ok) {
+      console.log("Операция отменена.");
+      return;
+    }
+  }
+  await gosuslugiBrowserClickText({
+    pageUrl: "https://lk.gosuslugi.ru/notifications?type=ORDER,EQUEUE,PAYMENT,GEPS,BIOMETRICS,ACCOUNT,ACCOUNT_CHILD,PROFILE,APPEAL,CLAIM,ELECTION_INFO,COMPLEX_ORDER,FEEDBACK,ORGANIZATION,BUSINESSMAN,ESIGNATURE,KND_APPEAL,LINKED_ACCOUNT,SIGN,GOSQR,INFO,PERMISSION,LICENSING,LICENSING_APPEAL,CONSTRUCTOR",
+    text: "Прочитать все",
+    waitMs: Number(options.wait || 5000),
+  });
+  console.log("Команда отметки прочитанным выполнена. Проверьте статус: iola gosuslugi notifications --unread");
+}
+
+function printGosuslugiDebt(result) {
+  printKeyValue({
+    total: result.total,
+    amount: `${formatRub(result.amount)} Р`,
+  });
+  if (!result.debts.length) {
+    console.log("Задолженности не найдены.");
+    return;
+  }
+  printTable(result.debts.map((item) => ({
+    group: item.group,
+    amount: `${formatRub(item.amount)} Р`,
+    date: item.billDate,
+    caption: item.caption,
+  })), [
+    ["group", "Группа"],
+    ["amount", "Сумма"],
+    ["date", "Дата"],
+    ["caption", "Описание"],
+  ]);
+}
+
+function printGosuslugiNotifications(result) {
+  printKeyValue({ total: result.total, unread: result.unread, hasMore: result.hasMore ? "yes" : "no" });
+  printTable(result.items.map((item) => ({
+    unread: item.unread ? "new" : "read",
+    date: item.date,
+    type: item.type,
+    title: item.title,
+    subtitle: item.subtitle,
+    summary: item.summary,
+  })), [
+    ["unread", "Статус"],
+    ["date", "Дата"],
+    ["type", "Тип"],
+    ["title", "Заголовок"],
+    ["subtitle", "Подзаголовок"],
+    ["summary", "Детали"],
+  ]);
+}
+
+function summarizeNotificationData(data) {
+  if (!data || typeof data !== "object") return "";
+  const snippets = Array.isArray(data.snippets) ? data.snippets : [];
+  if (snippets.length) {
+    const first = snippets[0];
+    return [first.orgName, first.address, first.date].filter(Boolean).join(" | ");
+  }
+  return [data.messageType, data.messageUuid, data.orderId, data.passCodeEpguCode].filter(Boolean).join(" | ");
+}
+
+function formatRub(value) {
+  return Number(value || 0).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function isGosuslugiPersonalIntent(question) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  return /(госуслуг|задолж|долг|штраф|налог|к оплате|платеж|платёж|уведомлен|госпочт|фио|дата рождения)/iu.test(normalized);
+}
+
+async function answerGosuslugiQuestion(question, options = {}) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (/(уведомлен|сообщени|госпочт|непрочитан)/iu.test(normalized)) {
+    const result = await gosuslugiNotifications({ unread: /непрочитан|нов/iu.test(normalized), limit: options.limit || 10 });
+    const lines = [`На Госуслугах: всего уведомлений ${result.total}, непрочитанных ${result.unread}.`];
+    const items = result.items.slice(0, Number(options.limit || 5));
+    if (items.length) {
+      lines.push("");
+      for (const item of items) {
+        lines.push(`- ${item.unread ? "новое" : "прочитано"}: ${item.title} — ${item.subtitle} (${item.date})`);
+      }
+    }
+    return lines.join("\n");
+  }
+  if (/(задолж|долг|штраф|налог|к оплате|платеж|платёж)/iu.test(normalized)) {
+    const result = await gosuslugiDebt(options);
+    if (!result.debts.length) return "На Госуслугах задолженности к оплате не найдены.";
+    const lines = [`На Госуслугах найдено задолженностей: ${result.total}. Общая сумма: ${formatRub(result.amount)} Р.`];
+    for (const item of result.debts) {
+      lines.push(`- ${item.group}: ${formatRub(item.amount)} Р — ${item.caption}`);
+    }
+    return lines.join("\n");
+  }
+  const result = await gosuslugiWhoami(options);
+  return [
+    `ФИО: ${result.summary.fio}`,
+    `Дата рождения: ${result.summary.birthDate}`,
+    `Статус: ${result.summary.status}`,
+  ].join("\n");
+}
+
+function maskPhone(value) {
+  const text = String(value || "");
+  return text.replace(/(\+?\d)([\d\s()-]{4,})(\d{2})$/u, "$1***$3") || "-";
+}
+
+function maskEmail(value) {
+  const text = String(value || "");
+  const [name, domain] = text.split("@");
+  if (!name || !domain) return text || "-";
+  return `${name.slice(0, 2)}***@${domain}`;
+}
+
+function maskDocument(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  if (!digits) return "-";
+  return `***${digits.slice(-4)}`;
+}
+
+function redactGosuslugiSensitive(value, options = {}) {
+  if (Array.isArray(value)) return value.map((item) => redactGosuslugiSensitive(item, options));
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/token|cookie|session|password|secret|jwt|auth/i.test(key)) result[key] = "[redacted]";
+    else if (!options.keepPersonal && /(snils|inn|passport|number|series|address|mobile|email|phone)/i.test(key)) result[key] = "[redacted]";
+    else result[key] = redactGosuslugiSensitive(item, options);
+  }
+  return result;
+}
+
 async function runPersistentBrowserAutomation(action, params) {
   await ensureBrowserRuntime();
   await mkdir(params.userDataDir, { recursive: true });
+  const releaseLock = params.userDataDir === GOSUSLUGI_BROWSER_PROFILE_DIR ? await acquireDirectoryLock(GOSUSLUGI_BROWSER_LOCK_DIR, 180000) : async () => {};
   const scriptFile = path.join(BROWSER_RUNTIME_DIR, `iola-browser-profile-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`);
   await writeFile(scriptFile, persistentBrowserAutomationScript(action, params), "utf8");
   try {
@@ -7657,7 +7932,55 @@ async function runPersistentBrowserAutomation(action, params) {
     return result.stdout?.trim() || "";
   } finally {
     await rm(scriptFile, { force: true }).catch(() => {});
+    await releaseLock();
   }
+}
+
+async function acquireDirectoryLock(lockDir, timeoutMs = 60000) {
+  const started = Date.now();
+  while (true) {
+    try {
+      await mkdir(lockDir, { recursive: false });
+      await writeFile(path.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2), "utf8").catch(() => {});
+      return async () => {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+      };
+    } catch {
+      if (Date.now() - started > timeoutMs) {
+        throw new Error("Браузерный профиль Госуслуг занят другим процессом. Закройте окно Госуслуг или повторите команду позже.");
+      }
+      await sleep(1000);
+    }
+  }
+}
+
+async function gosuslugiBrowserApiJson(params) {
+  await requireGosuslugiConsent();
+  await ensureBrowserRuntimeForGosuslugi();
+  const raw = await runPersistentBrowserAutomation("api-json", {
+    pageUrl: params.pageUrl || GOSUSLUGI_DEFAULT_URL,
+    endpoint: params.endpoint,
+    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    headed: params.headed !== false,
+    waitMs: Number(params.waitMs || 0),
+    timeout: Number(params.timeout || 60000),
+    viewport: params.viewport || "1366x768",
+  });
+  return JSON.parse(raw);
+}
+
+async function gosuslugiBrowserClickText(params) {
+  await requireGosuslugiConsent();
+  await ensureBrowserRuntimeForGosuslugi();
+  return runPersistentBrowserAutomation("click-text", {
+    pageUrl: params.pageUrl || GOSUSLUGI_DEFAULT_URL,
+    text: params.text,
+    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    headed: true,
+    waitMs: Number(params.waitMs || 3000),
+    timeout: Number(params.timeout || 60000),
+    viewport: params.viewport || "1366x768",
+  });
 }
 
 function persistentBrowserAutomationScript(action, params) {
@@ -7673,7 +7996,7 @@ const context = await chromium.launchPersistentContext(params.userDataDir, {
 context.setDefaultTimeout(params.timeout || 60000);
 const page = context.pages()[0] || await context.newPage();
 try {
-  await page.goto(params.url, { waitUntil: "domcontentloaded", timeout: params.timeout || 60000 });
+  await page.goto(params.url || params.pageUrl, { waitUntil: "domcontentloaded", timeout: params.timeout || 60000 });
   if (params.waitMs) await page.waitForTimeout(params.waitMs);
   if (action === "open") {
     if (params.headed) {
@@ -7688,6 +8011,21 @@ try {
     console.log((await page.locator("body").innerText()).trim());
   } else if (action === "screenshot") {
     await page.screenshot({ path: params.output, fullPage: true });
+  } else if (action === "api-json") {
+    const data = await page.evaluate(async (endpoint) => {
+      const response = await fetch(endpoint, {
+        credentials: "include",
+        headers: { accept: "application/json" },
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(response.status + " " + response.statusText + ": " + text.slice(0, 500));
+      return JSON.parse(text);
+    }, params.endpoint);
+    console.log(JSON.stringify(data));
+  } else if (action === "click-text") {
+    await page.getByText(params.text, { exact: true }).first().click();
+    if (params.waitMs) await page.waitForTimeout(params.waitMs);
+    console.log((await page.locator("body").innerText()).trim().slice(0, 4000));
   }
 } finally {
   await context.close().catch(() => {});
@@ -7925,6 +8263,9 @@ function mcpTools() {
     { name: "report", description: "Запуск встроенного отчета.", inputSchema: schema({ name: { type: "string" }, format: { type: "string" }, output: { type: "string" } }) },
     { name: "browser.text", description: "Открыть страницу в headless Chromium и вернуть видимый текст.", inputSchema: schema({ url: { type: "string" }, waitMs: { type: "number" } }) },
     { name: "browser.screenshot", description: "Сделать скриншот страницы через Chromium.", inputSchema: schema({ url: { type: "string" }, output: { type: "string" }, waitMs: { type: "number" } }) },
+    { name: "gosuslugi.whoami", description: "Прочитать ФИО и дату рождения из личного профиля Госуслуг через локальный браузерный профиль.", inputSchema: schema({ full: { type: "boolean" } }) },
+    { name: "gosuslugi.debt", description: "Прочитать задолженности и платежи к оплате на Госуслугах.", inputSchema: schema() },
+    { name: "gosuslugi.notifications", description: "Прочитать уведомления Госуслуг.", inputSchema: schema({ unread: { type: "boolean" }, limit: { type: "number" } }) },
   ];
 }
 
@@ -7962,6 +8303,9 @@ async function callMcpTool(name, args = {}) {
     await runBrowserAutomation("screenshot", { url: args.url, output, waitMs: Number(args.waitMs || 0), timeout: Number(args.timeout || 30000), viewport: args.viewport || "1366x768" });
     return { output };
   }
+  if (name === "gosuslugi.whoami") return gosuslugiWhoami(args);
+  if (name === "gosuslugi.debt") return gosuslugiDebt(args);
+  if (name === "gosuslugi.notifications") return gosuslugiNotifications(args);
   return executeRpc(name, { ...args, _: [] });
 }
 
@@ -9196,6 +9540,10 @@ function setConfigValue(config, key, value) {
   }
 
   current[parts.at(-1)] = value;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function loadSecrets() {

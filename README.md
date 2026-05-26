@@ -86,6 +86,9 @@ iola review config
 iola browser status
 iola gosuslugi status
 iola gosuslugi connect
+iola gosuslugi whoami
+iola gosuslugi debt
+iola gosuslugi notifications --unread
 ```
 
 Локальная модель через Ollama:
@@ -134,6 +137,7 @@ iola version --check
 - дополнительные stdio MCP-серверы можно добавить в `~/.iola/config.json` в раздел `mcp.servers`;
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
 - личное локальное подключение Госуслуг через отдельный браузерный профиль на ПК пользователя;
+- read-only tools Госуслуг для агента: ФИО, дата рождения, задолженности и уведомления;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
