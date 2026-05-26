@@ -52,6 +52,8 @@ iola agent
 ```bash
 iola skills list
 iola tools toolsets
+iola files mode read-only
+iola files tree .
 iola context init
 iola cron list
 iola daemon status
@@ -79,6 +81,7 @@ iola version --check
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
 - [Skills и toolsets](https://github.com/adm-iola/iola-cli/wiki/Skills-и-toolsets)
+- [Локальные файлы](https://github.com/adm-iola/iola-cli/wiki/Локальные-файлы)
 - [Daemon, RPC и cron](https://github.com/adm-iola/iola-cli/wiki/Daemon-RPC-и-cron)
 - [Контекст и память](https://github.com/adm-iola/iola-cli/wiki/Контекст-и-память)
 - [Команды](https://github.com/adm-iola/iola-cli/wiki/Команды)
@@ -91,6 +94,7 @@ iola version --check
 - AI-профили для Ollama, OpenAI, OpenRouter и Codex CLI;
 - локальный tool-agent для слабых моделей;
 - skills, toolsets, permissions, memory, hooks и готовые agents;
+- управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - cron-задачи, локальный daemon и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
 - интеграция с публичным MCP-сервером Йошкар-Олы.

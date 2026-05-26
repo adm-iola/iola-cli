@@ -19,6 +19,8 @@ const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
 const DB_SCHEMA_VERSION = 4;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
+const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
+const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,9 +45,17 @@ const TOOLSETS = {
     description: "Внешние AI-провайдеры и Codex CLI.",
     permissions: { externalAi: true, codex: true },
   },
+  "local-files-read": {
+    description: "Чтение файлов, дерево папок и поиск внутри workspace.",
+    permissions: { readFiles: true, localTools: { files_tree: true, files_read: true, files_search: true } },
+  },
+  "local-files-write": {
+    description: "Запись и patch файлов внутри workspace с учетом approvals.",
+    permissions: { readFiles: true, writeFiles: true, editFiles: true, localTools: { files_write: true, files_patch: true } },
+  },
   safe: {
     description: "Безопасный режим: чтение данных без записи файлов и без sync.",
-    permissions: { writeFiles: false, sync: false, externalApi: true, externalAi: true, codex: false },
+    permissions: { readFiles: true, writeFiles: false, editFiles: false, deleteFiles: false, sync: false, externalApi: true, externalAi: true, codex: false },
   },
   full: {
     description: "Полный локальный режим для доверенного пользователя.",
@@ -55,7 +65,10 @@ const TOOLSETS = {
       externalApi: true,
       externalAi: true,
       codex: true,
-      localTools: Object.fromEntries(LOCAL_TOOLS.map((tool) => [tool, true])),
+      readFiles: true,
+      editFiles: true,
+      deleteFiles: false,
+      localTools: Object.fromEntries(ALL_LOCAL_TOOLS.map((tool) => [tool, true])),
     },
   },
 };
@@ -109,8 +122,16 @@ const DEFAULT_AI_CONFIG = {
       export_data: true,
       run_report: true,
       save_view: true,
+      files_tree: false,
+      files_read: false,
+      files_search: false,
+      files_write: false,
+      files_patch: false,
     },
+    readFiles: false,
     writeFiles: true,
+    editFiles: false,
+    deleteFiles: false,
     sync: true,
     externalApi: true,
     externalAi: true,
@@ -118,6 +139,13 @@ const DEFAULT_AI_CONFIG = {
   },
   toolsets: {
     enabled: ["data-read", "reports", "sync", "ai"],
+  },
+  files: {
+    mode: "locked",
+    approvals: "on-write",
+    workspaceRoot: ".",
+    maxReadBytes: 200000,
+    blockedGlobs: [".env", "*.pem", "*.key", "secrets", ".git", ".ssh", "AppData", "node_modules"],
   },
   memory: {
     enabled: true,
@@ -213,6 +241,7 @@ const COMMANDS = new Map([
   ["context", handleContext],
   ["skills", handleSkills],
   ["tools", handleTools],
+  ["files", handleFiles],
   ["cron", handleCron],
   ["daemon", handleDaemon],
   ["rpc", handleRpc],
@@ -315,6 +344,7 @@ Usage:
   iola context list|show|init
   iola skills list|show|paths|enable|disable
   iola tools list|toolsets|enable|disable|profile
+  iola files status|mode|approvals|tree|read|search|write|patch
   iola cron list|add|delete|run|tick
   iola daemon start|status
   iola rpc call METHOD [ARGS] [--json]
@@ -344,7 +374,7 @@ Usage:
   iola config set api.mcpBaseUrl URL
   iola config reset
   iola update
-  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
+  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
@@ -555,6 +585,11 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "files") {
+    await handleFiles(args);
+    return false;
+  }
+
   if (command === "cron") {
     await handleCron(args);
     return false;
@@ -677,6 +712,7 @@ async function handleAgentLine(line, state) {
     wiki: ["wiki", args],
     context: ["context", args],
     skills: ["skills", args],
+    files: ["files", args],
     cron: ["cron", args],
     daemon: ["daemon", args],
     rpc: ["rpc", args],
@@ -724,6 +760,7 @@ function printAgentHelp() {
   /skills list
   /permissions
   /tools
+  /files status
   /cron list
   /daemon status
   /rpc call status
@@ -1453,6 +1490,7 @@ async function handleWiki(args) {
     ["AI-профили", `${base}/AI-профили`],
     ["Локальный инструментальный агент", `${base}/Локальный-инструментальный-агент`],
     ["Skills и toolsets", `${base}/Skills-и-toolsets`],
+    ["Локальные файлы", `${base}/Локальные-файлы`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
     ["Контекст и память", `${base}/Контекст-и-память`],
     ["Команды", `${base}/Команды`],
@@ -1617,6 +1655,84 @@ async function handleTools(args) {
   throw new Error("Команды tools: list, toolsets, enable NAME, disable NAME, profile NAME.");
 }
 
+async function handleFiles(args) {
+  const [action = "status", target, ...rest] = args;
+  const options = parseOptions(rest);
+  const config = await loadConfig();
+
+  if (action === "status") {
+    printKeyValue({
+      mode: config.files?.mode || "locked",
+      approvals: config.files?.approvals || "on-write",
+      workspaceRoot: resolveWorkspaceRoot(config),
+      maxReadBytes: config.files?.maxReadBytes || 200000,
+      readFiles: config.permissions?.readFiles ? "allow" : "deny",
+      writeFiles: config.permissions?.writeFiles ? "allow" : "deny",
+      editFiles: config.permissions?.editFiles ? "allow" : "deny",
+    });
+    return;
+  }
+
+  if (action === "mode") {
+    if (!["locked", "read-only", "workspace-write", "full-access"].includes(target)) {
+      throw new Error("Режимы файлов: locked, read-only, workspace-write, full-access.");
+    }
+    await setFilesMode(target, config);
+    console.log(`Файловый режим: ${target}`);
+    return;
+  }
+
+  if (action === "approvals") {
+    if (!["never", "on-write", "on-danger", "always"].includes(target)) {
+      throw new Error("Политики approvals: never, on-write, on-danger, always.");
+    }
+    await saveConfig({ files: { ...(config.files || {}), approvals: target } });
+    console.log(`Файловые подтверждения: ${target}`);
+    return;
+  }
+
+  if (action === "tree") {
+    const rows = await filesTree(target || ".", options);
+    if (options.json) printJson(rows);
+    else printTable(rows, [["type", "Тип"], ["path", "Путь"], ["size", "Размер"]]);
+    return;
+  }
+
+  if (action === "read") {
+    if (!target) throw new Error("Пример: iola files read README.md");
+    console.log(await filesRead(target, options));
+    return;
+  }
+
+  if (action === "search") {
+    const query = target;
+    if (!query) throw new Error('Пример: iola files search "Петрова" --path .');
+    const rows = await filesSearch(query, options);
+    if (options.json) printJson(rows);
+    else printTable(rows, [["file", "Файл"], ["line", "Строка"], ["text", "Текст"]]);
+    return;
+  }
+
+  if (action === "write") {
+    if (!target) throw new Error('Пример: iola files write report.md --text "..."');
+    const text = options.text ?? rest.join(" ");
+    if (!text) throw new Error('Для записи нужен --text "..." или текст после пути.');
+    await filesWrite(target, text, { append: Boolean(options.append) });
+    console.log(`Файл записан: ${target}`);
+    return;
+  }
+
+  if (action === "patch") {
+    if (!target) throw new Error('Пример: iola files patch README.md --search old --replace new');
+    if (!options.search || options.replace === undefined) throw new Error("Для patch нужны --search и --replace.");
+    const result = await filesPatch(target, options.search, options.replace);
+    printKeyValue(result);
+    return;
+  }
+
+  throw new Error("Команды files: status, mode MODE, approvals POLICY, tree [PATH], read FILE, search TEXT, write FILE --text TEXT, patch FILE --search OLD --replace NEW.");
+}
+
 async function handleCron(args) {
   const [action = "list", ...rest] = args;
   const options = parseOptions(rest);
@@ -1722,6 +1838,14 @@ async function handlePermissions(args) {
         value: permissions.localTools?.[tool] === false ? "deny" : "allow",
         scope: "local-tool",
       })),
+      ...FILE_TOOLS.map((tool) => ({
+        permission: `localTools.${tool}`,
+        value: permissions.localTools?.[tool] === true ? "allow" : "deny",
+        scope: "file-tool",
+      })),
+      { permission: "readFiles", value: permissions.readFiles === true ? "allow" : "deny", scope: "filesystem" },
+      { permission: "editFiles", value: permissions.editFiles === true ? "allow" : "deny", scope: "filesystem" },
+      { permission: "deleteFiles", value: permissions.deleteFiles === true ? "allow" : "deny", scope: "filesystem" },
       { permission: "writeFiles", value: permissions.writeFiles === false ? "deny" : "allow", scope: "runtime" },
       { permission: "sync", value: permissions.sync === false ? "deny" : "allow", scope: "runtime" },
       { permission: "externalApi", value: permissions.externalApi === false ? "deny" : "allow", scope: "network" },
@@ -1743,12 +1867,12 @@ async function handlePermissions(args) {
     const allow = action === "allow";
     const next = { ...(config.permissions || DEFAULT_AI_CONFIG.permissions) };
     next.localTools = { ...(next.localTools || {}) };
-    if (LOCAL_TOOLS.includes(name)) {
+    if (ALL_LOCAL_TOOLS.includes(name)) {
       next.localTools[name] = allow;
     } else if (name in DEFAULT_AI_CONFIG.permissions) {
       next[name] = allow;
     } else {
-      throw new Error(`Неизвестное разрешение: ${name}. Доступно: ${[...LOCAL_TOOLS, "writeFiles", "sync", "externalApi", "externalAi", "codex"].join(", ")}`);
+      throw new Error(`Неизвестное разрешение: ${name}. Доступно: ${[...ALL_LOCAL_TOOLS, "readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"].join(", ")}`);
     }
     await saveConfig({ permissions: next });
     console.log(`${name}: ${allow ? "allow" : "deny"}`);
@@ -3910,7 +4034,7 @@ function resolveAiProfile(config, options = {}) {
 async function localToolAsk(question, providerConfig, options) {
   await ensureLocalData();
   const plan = await buildLocalToolPlan(question, providerConfig, options);
-  const validated = validateToolPlan(plan);
+  const validated = validateToolPlan(plan, options);
   const result = await executeToolPlan(validated);
   const answer = formatToolResult(result, options);
 
@@ -3942,8 +4066,9 @@ async function buildLocalToolPlan(question, providerConfig, options) {
   const mode = options.reasoning || "verify";
   const prompt = [
     "Ты планировщик CLI iola. Верни только JSON.",
-    "Доступные tools: search_local, get_card, export_data, run_report, save_view.",
+    `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_local\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
+    options.files ? "Файловые tools: files_tree {path,depth,limit}, files_read {path}, files_search {query,path}, files_write {path,text}, files_patch {path,search,replace}." : "",
     "Для выгрузки CSV добавь export_data с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
   ].join("\n");
@@ -3952,11 +4077,11 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     const raw = await callOllama(providerConfig, [{ role: "user", content: prompt }]);
     const parsed = parseJsonObject(raw);
     if (mode === "vote") {
-      return chooseBestPlan([parsed, inferToolPlan(question)]);
+      return chooseBestPlan([parsed, inferToolPlan(question, options)], options);
     }
     return parsed;
   } catch {
-    return inferToolPlan(question);
+    return inferToolPlan(question, options);
   }
 }
 
@@ -3966,7 +4091,7 @@ function parseJsonObject(text) {
   return JSON.parse(match[0]);
 }
 
-function inferToolPlan(question) {
+function inferToolPlan(question, options = {}) {
   const normalized = question.toLocaleLowerCase("ru-RU");
   const dataset = normalized.includes("сад") ? "kindergartens" : normalized.includes("школ") || normalized.includes("лицей") ? "schools" : "all";
   const steps = [];
@@ -3979,13 +4104,20 @@ function inferToolPlan(question) {
   if (normalized.includes("csv") || normalized.includes("выгруз")) {
     steps.push({ tool: "export_data", args: { format: "csv", output: normalized.match(/([a-z0-9_-]+\.csv)/i)?.[1] || "iola-export.csv" } });
   }
+  if (options.files || normalized.includes("файл") || normalized.includes("папк") || normalized.includes("readme")) {
+    if (normalized.includes("найди") || normalized.includes("поиск")) {
+      steps.unshift({ tool: "files_search", args: { query: question, path: "." } });
+    } else {
+      steps.unshift({ tool: "files_tree", args: { path: ".", depth: 2, limit: 80 } });
+    }
+  }
   return { steps };
 }
 
-function chooseBestPlan(plans) {
+function chooseBestPlan(plans, options = {}) {
   return plans.find((plan) => {
     try {
-      validateToolPlan(plan);
+      validateToolPlan(plan, options);
       return true;
     } catch {
       return false;
@@ -3993,13 +4125,17 @@ function chooseBestPlan(plans) {
   }) || plans.at(-1);
 }
 
-function validateToolPlan(plan) {
-  const allowed = new Set(LOCAL_TOOLS);
+function validateToolPlan(plan, options = {}) {
+  const allowed = new Set(availableToolNames(options));
   if (!plan || !Array.isArray(plan.steps)) throw new Error("Некорректный tool-plan.");
   for (const step of plan.steps) {
     if (!allowed.has(step.tool)) throw new Error(`Недопустимый tool: ${step.tool}`);
   }
   return plan;
+}
+
+function availableToolNames(options = {}) {
+  return options.files ? ALL_LOCAL_TOOLS : LOCAL_TOOLS;
 }
 
 async function executeToolPlan(plan) {
@@ -4027,6 +4163,24 @@ async function executeToolPlan(plan) {
       const text = step.args?.format === "json" ? JSON.stringify(current, null, 2) : toCsv(current);
       await writeFile(step.args?.output || "iola-export.csv", text, "utf8");
       outputs.push({ tool: step.tool, output: step.args?.output || "iola-export.csv", rows: current.length });
+    } else if (step.tool === "files_tree") {
+      current = await filesTree(step.args?.path || ".", step.args || {});
+      outputs.push({ tool: step.tool, rows: current.length });
+    } else if (step.tool === "files_read") {
+      const text = await filesRead(step.args?.path || step.args?.file || ".", step.args || {});
+      current = [{ path: step.args?.path || step.args?.file || ".", text }];
+      outputs.push({ tool: step.tool, bytes: text.length });
+    } else if (step.tool === "files_search") {
+      current = await filesSearch(step.args?.query || "", { path: step.args?.path || ".", limit: step.args?.limit || 50 });
+      outputs.push({ tool: step.tool, rows: current.length });
+    } else if (step.tool === "files_write") {
+      await filesWrite(step.args?.path || step.args?.file, step.args?.text || "", { append: Boolean(step.args?.append) });
+      current = [{ path: step.args?.path || step.args?.file, status: "written" }];
+      outputs.push({ tool: step.tool, output: step.args?.path || step.args?.file, rows: 1 });
+    } else if (step.tool === "files_patch") {
+      const result = await filesPatch(step.args?.path || step.args?.file, step.args?.search || "", step.args?.replace || "");
+      current = [result];
+      outputs.push({ tool: step.tool, output: result.path, replacements: result.replacements });
     }
     await runHooks("AfterTool", { tool: step.tool, rows: current.length });
   }
@@ -4071,7 +4225,7 @@ async function runHooks(event, payload = {}) {
 async function assertPermission(name) {
   const config = await loadConfig();
   const permissions = applyToolsetPermissions(config.permissions || DEFAULT_AI_CONFIG.permissions, config.toolsets?.enabled || []);
-  if (LOCAL_TOOLS.includes(name)) {
+  if (ALL_LOCAL_TOOLS.includes(name)) {
     if (permissions.localTools?.[name] === false) {
       throw new Error(`Tool запрещен политикой permissions: ${name}`);
     }
@@ -4584,12 +4738,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -4972,6 +5126,207 @@ function readRequestBody(req) {
   });
 }
 
+async function setFilesMode(mode, config = null) {
+  const current = config || await loadConfig();
+  const localTools = { ...(current.permissions?.localTools || {}) };
+  for (const tool of FILE_TOOLS) localTools[tool] = false;
+  const permissions = {
+    ...(current.permissions || DEFAULT_AI_CONFIG.permissions),
+    localTools,
+    readFiles: false,
+    editFiles: false,
+    deleteFiles: false,
+  };
+  const enabled = new Set(current.toolsets?.enabled || []);
+  enabled.delete("local-files-read");
+  enabled.delete("local-files-write");
+
+  if (mode === "read-only") {
+    permissions.readFiles = true;
+    for (const tool of ["files_tree", "files_read", "files_search"]) permissions.localTools[tool] = true;
+    enabled.add("local-files-read");
+  } else if (mode === "workspace-write") {
+    permissions.readFiles = true;
+    permissions.writeFiles = true;
+    permissions.editFiles = true;
+    for (const tool of FILE_TOOLS) permissions.localTools[tool] = true;
+    enabled.add("local-files-read");
+    enabled.add("local-files-write");
+  } else if (mode === "full-access") {
+    permissions.readFiles = true;
+    permissions.writeFiles = true;
+    permissions.editFiles = true;
+    permissions.deleteFiles = false;
+    for (const tool of FILE_TOOLS) permissions.localTools[tool] = true;
+    enabled.add("local-files-read");
+    enabled.add("local-files-write");
+  }
+
+  await saveConfig({
+    permissions,
+    toolsets: { ...(current.toolsets || {}), enabled: [...enabled] },
+    files: { ...(current.files || {}), mode },
+  });
+}
+
+function resolveWorkspaceRoot(config) {
+  return path.resolve(process.cwd(), config.files?.workspaceRoot || ".");
+}
+
+async function resolveFileTarget(target, operation) {
+  if (!target) throw new Error("Путь к файлу обязателен.");
+  const config = await loadConfig();
+  const mode = config.files?.mode || "locked";
+  if (mode === "locked") throw new Error("Файловые операции заблокированы. Включите: iola files mode read-only");
+  const workspaceRoot = resolveWorkspaceRoot(config);
+  const resolved = path.resolve(workspaceRoot, target);
+  const relative = path.relative(workspaceRoot, resolved);
+  const insideWorkspace = relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+
+  if ((mode === "read-only" || mode === "workspace-write") && !insideWorkspace && resolved !== workspaceRoot) {
+    throw new Error(`Путь вне workspace запрещен режимом ${mode}: ${resolved}`);
+  }
+
+  const blocked = config.files?.blockedGlobs || [];
+  const normalized = resolved.toLocaleLowerCase("ru-RU");
+  if (blocked.some((pattern) => filePatternMatches(normalized, pattern))) {
+    throw new Error(`Путь заблокирован политикой безопасности: ${target}`);
+  }
+
+  if (operation === "read") await assertPermission("readFiles");
+  if (operation === "write") await assertPermission("writeFiles");
+  if (operation === "edit") await assertPermission("editFiles");
+  if (operation === "delete") await assertPermission("deleteFiles");
+
+  return { config, resolved, workspaceRoot, relative: resolved === workspaceRoot ? "." : relative, insideWorkspace };
+}
+
+function filePatternMatches(normalizedPath, pattern) {
+  const normalizedPattern = String(pattern).toLocaleLowerCase("ru-RU").replace(/\*/g, "");
+  if (!normalizedPattern) return false;
+  return normalizedPath.split(/[\\/]/).includes(normalizedPattern) || normalizedPath.includes(normalizedPattern);
+}
+
+function isBlockedPathForConfig(fullPath, config) {
+  const normalized = fullPath.toLocaleLowerCase("ru-RU");
+  return (config.files?.blockedGlobs || []).some((pattern) => filePatternMatches(normalized, pattern));
+}
+
+async function filesTree(target = ".", options = {}) {
+  await assertPermission("files_tree");
+  const { resolved, workspaceRoot } = await resolveFileTarget(target, "read");
+  const depth = Number(options.depth || 2);
+  const limit = Number(options.limit || 100);
+  const rows = [];
+  await walkFiles(resolved, workspaceRoot, rows, depth, limit, (await loadConfig()));
+  return rows;
+}
+
+async function walkFiles(directory, workspaceRoot, rows, depth, limit, config) {
+  if (rows.length >= limit || depth < 0) return;
+  let entries = [];
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (rows.length >= limit) break;
+    const full = path.join(directory, entry.name);
+    if (isBlockedPathForConfig(full, config)) continue;
+    const relative = path.relative(workspaceRoot, full) || ".";
+    let size = "-";
+    try {
+      size = entry.isFile() ? (await stat(full)).size : "-";
+    } catch {
+      size = "-";
+    }
+    rows.push({ type: entry.isDirectory() ? "dir" : "file", path: relative, size });
+    if (entry.isDirectory()) await walkFiles(full, workspaceRoot, rows, depth - 1, limit, config);
+  }
+}
+
+async function filesRead(target, options = {}) {
+  await assertPermission("files_read");
+  const { config, resolved } = await resolveFileTarget(target, "read");
+  const info = await stat(resolved);
+  if (!info.isFile()) throw new Error(`Это не файл: ${target}`);
+  const maxBytes = Number(options.maxBytes || config.files?.maxReadBytes || 200000);
+  if (info.size > maxBytes) throw new Error(`Файл слишком большой: ${info.size} байт. Лимит: ${maxBytes}`);
+  return readFile(resolved, "utf8");
+}
+
+async function filesSearch(query, options = {}) {
+  await assertPermission("files_search");
+  if (!query) throw new Error("Строка поиска обязательна.");
+  const rows = await filesTree(options.path || ".", { depth: Number(options.depth || 4), limit: Number(options.limit || 200) });
+  const results = [];
+  for (const row of rows.filter((item) => item.type === "file")) {
+    if (results.length >= Number(options.limit || 50)) break;
+    try {
+      const text = await filesRead(row.path, { maxBytes: 500000 });
+      const lines = text.split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (results.length < Number(options.limit || 50) && line.toLocaleLowerCase("ru-RU").includes(String(query).toLocaleLowerCase("ru-RU"))) {
+          results.push({ file: row.path, line: index + 1, text: line.trim().slice(0, 240) });
+        }
+      });
+    } catch {
+      // Binary, blocked or oversized files are skipped.
+    }
+  }
+  return results;
+}
+
+async function filesWrite(target, text, options = {}) {
+  await assertPermission("files_write");
+  const { resolved, relative } = await resolveFileTarget(target, "write");
+  await maybeConfirmFileOperation("write", relative, text);
+  await mkdir(path.dirname(resolved), { recursive: true });
+  if (options.append) {
+    await appendFile(resolved, text, "utf8");
+  } else {
+    await writeFile(resolved, text, "utf8");
+  }
+}
+
+async function filesPatch(target, search, replace) {
+  await assertPermission("files_patch");
+  const { resolved, relative } = await resolveFileTarget(target, "edit");
+  const current = await readFile(resolved, "utf8");
+  if (!current.includes(search)) throw new Error("Искомый фрагмент не найден.");
+  const next = current.split(search).join(replace);
+  const replacements = current.split(search).length - 1;
+  await maybeConfirmFileOperation("patch", relative, unifiedPreview(current, next));
+  await writeFile(resolved, next, "utf8");
+  return { path: relative, replacements };
+}
+
+async function maybeConfirmFileOperation(operation, target, preview) {
+  const config = await loadConfig();
+  const approvals = config.files?.approvals || "on-write";
+  const needsApproval = approvals === "always" || approvals === "on-write" || (approvals === "on-danger" && operation !== "write");
+  if (!needsApproval) return;
+  console.log(`Файловая операция: ${operation} ${target}`);
+  if (preview) console.log(String(preview).slice(0, 2000));
+  const ok = await confirm("Продолжить? [y/N] ");
+  if (!ok) throw new Error("Файловая операция отменена.");
+}
+
+function unifiedPreview(before, after) {
+  const beforeLines = before.split(/\r?\n/);
+  const afterLines = after.split(/\r?\n/);
+  const output = ["--- before", "+++ after"];
+  const max = Math.max(beforeLines.length, afterLines.length);
+  for (let index = 0; index < Math.min(max, 80); index += 1) {
+    if (beforeLines[index] !== afterLines[index]) {
+      if (beforeLines[index] !== undefined) output.push(`- ${beforeLines[index]}`);
+      if (afterLines[index] !== undefined) output.push(`+ ${afterLines[index]}`);
+    }
+  }
+  return output.join("\n");
+}
+
 async function executeRpc(method, options = {}) {
   if (method === "status") {
     return { db: getDbStatus(), sync: getSyncStatus(), activeProfile: getActiveProfileName(await loadConfig()) };
@@ -4995,6 +5350,15 @@ async function executeRpc(method, options = {}) {
   if (method === "sync") {
     await assertPermission("sync");
     return syncDataset(options.dataset || "schools");
+  }
+  if (method === "files.tree") {
+    return filesTree(options.path || ".", options);
+  }
+  if (method === "files.read") {
+    return { path: options.path, text: await filesRead(options.path, options) };
+  }
+  if (method === "files.search") {
+    return filesSearch(options.query || options.search || "", options);
   }
   throw new Error(`RPC method неизвестен: ${method}. Доступно: status, search, card, quality, sync.`);
 }
@@ -5155,6 +5519,10 @@ function mergeConfig(base, override) {
         ...(override.permissions?.localTools || {}),
       },
     },
+    files: {
+      ...base.files,
+      ...(override.files || {}),
+    },
     memory: {
       ...base.memory,
       ...(override.memory || {}),
@@ -5190,7 +5558,7 @@ function validateConfig(config) {
     if (profile.provider !== "codex" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
   }
   for (const tool of Object.keys(config.permissions?.localTools || {})) {
-    if (!LOCAL_TOOLS.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
+    if (!ALL_LOCAL_TOOLS.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
   }
   for (const toolset of config.toolsets?.enabled || []) {
     if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
@@ -5205,8 +5573,9 @@ function configSchema() {
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
       ai: { required: ["activeProfile", "profiles"], providers: ["ollama", "openai", "openrouter", "codex"] },
-      permissions: { localTools: LOCAL_TOOLS, runtime: ["writeFiles", "sync", "externalApi", "externalAi", "codex"] },
+      permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },
+      files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },
       skills: { enabled: "array of skill names" },
       daemon: { host: "127.0.0.1", port: DAEMON_PORT },
     },
