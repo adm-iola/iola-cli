@@ -2232,14 +2232,24 @@ async function handleWiki(args) {
   }
 
   if (action === "links" || action === "list" || action === "ls") {
-    printTable(links, [
-      ["title", "Раздел"],
-      ["url", "Ссылка"],
-    ]);
+    printWikiLinks(links);
     return;
   }
 
   throw new Error("Команды wiki: links, open.");
+}
+
+function printWikiLinks(links) {
+  if (links.length === 0) {
+    console.log("Нет данных.");
+    return;
+  }
+  const titleWidth = Math.max("Раздел".length, ...links.map((link) => visibleLength(link.title)));
+  console.log(`${padCell("Раздел", titleWidth)}  Ссылка`);
+  console.log(`${"-".repeat(titleWidth)}  ${"-".repeat(6)}`);
+  for (const link of links) {
+    console.log(`${padCell(link.title, titleWidth)}  ${link.url}`);
+  }
 }
 
 async function handleContext(args) {
