@@ -108,6 +108,7 @@ iola version --check
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
 - staged changes, импорт локальных CSV/JSON, индекс локальных документов, report packs, plugins и локальный MCP endpoint;
+- чтение и индексирование `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.md`, `.txt`, `.csv`, `.json`, `.html`;
 - cron-задачи, локальный daemon и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
 - интеграция с публичным MCP-сервером Йошкар-Олы.

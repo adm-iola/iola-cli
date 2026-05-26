@@ -8,6 +8,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { inflateRawSync, inflateSync } from "node:zlib";
 
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
@@ -17,7 +18,8 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 6;
+const DB_SCHEMA_VERSION = 7;
+const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
@@ -5833,7 +5835,7 @@ async function filesRead(target, options = {}) {
   if (!info.isFile()) throw new Error(`Это не файл: ${target}`);
   const maxBytes = Number(options.maxBytes || config.files?.maxReadBytes || 200000);
   if (info.size > maxBytes) throw new Error(`Файл слишком большой: ${info.size} байт. Лимит: ${maxBytes}`);
-  return readFile(resolved, "utf8");
+  return extractReadableText(resolved);
 }
 
 async function filesSearch(query, options = {}) {
@@ -5880,6 +5882,150 @@ async function filesPatch(target, search, replace) {
   await maybeConfirmFileOperation("patch", relative, unifiedPreview(current, next));
   await writeFile(resolved, next, "utf8");
   return { path: relative, replacements };
+}
+
+async function extractReadableText(file) {
+  const ext = path.extname(file).toLocaleLowerCase("ru-RU");
+  if (ext === ".docx") return extractDocxText(await readFile(file));
+  if (ext === ".xlsx") return extractXlsxText(await readFile(file));
+  if (ext === ".pptx") return extractPptxText(await readFile(file));
+  if (ext === ".pdf") return extractPdfText(await readFile(file));
+  return readFile(file, "utf8");
+}
+
+function extractDocxText(buffer) {
+  const entries = readZipEntries(buffer);
+  const documentXml = entries.get("word/document.xml") || "";
+  const footnotes = [...entries.entries()].filter(([name]) => name.startsWith("word/") && /footnotes|endnotes|comments/.test(name)).map(([, text]) => text).join("\n");
+  return xmlToText(`${documentXml}\n${footnotes}`);
+}
+
+function extractXlsxText(buffer) {
+  const entries = readZipEntries(buffer);
+  const sharedStrings = parseSharedStrings(entries.get("xl/sharedStrings.xml") || "");
+  const chunks = [];
+  for (const [name, xml] of entries.entries()) {
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/i.test(name)) continue;
+    chunks.push(name);
+    const resolved = xml.replace(/<c[^>]*t="s"[^>]*>[\s\S]*?<v>(\d+)<\/v>[\s\S]*?<\/c>/g, (_, index) => ` ${sharedStrings[Number(index)] || ""} `);
+    chunks.push(xmlToText(resolved));
+  }
+  return normalizeExtractedText(chunks.join("\n"));
+}
+
+function extractPptxText(buffer) {
+  const entries = readZipEntries(buffer);
+  const slides = [...entries.entries()]
+    .filter(([name]) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }));
+  return normalizeExtractedText(slides.map(([name, xml]) => `${name}\n${xmlToText(xml)}`).join("\n\n"));
+}
+
+function extractPdfText(buffer) {
+  const latin = buffer.toString("latin1");
+  const chunks = [];
+  const streamPattern = /<<(?:.|\r|\n)*?>>\s*stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match;
+  while ((match = streamPattern.exec(latin))) {
+    const dictionary = latin.slice(Math.max(0, match.index - 500), match.index + 500);
+    let data = Buffer.from(match[1], "latin1");
+    if (/FlateDecode/.test(dictionary)) {
+      try {
+        data = inflateSync(data);
+      } catch {
+        try {
+          data = inflateRawSync(data);
+        } catch {
+          // Leave compressed stream unreadable.
+        }
+      }
+    }
+    chunks.push(extractPdfStrings(data.toString("latin1")));
+  }
+  chunks.push(extractPdfStrings(latin));
+  return normalizeExtractedText(chunks.join("\n"));
+}
+
+function extractPdfStrings(text) {
+  const strings = [];
+  for (const match of text.matchAll(/\(([^()\\]*(?:\\.[^()\\]*)*)\)\s*T[jJ]?/g)) {
+    strings.push(unescapePdfString(match[1]));
+  }
+  for (const match of text.matchAll(/\[([\s\S]*?)\]\s*TJ/g)) {
+    for (const item of match[1].matchAll(/\(([^()\\]*(?:\\.[^()\\]*)*)\)/g)) {
+      strings.push(unescapePdfString(item[1]));
+    }
+  }
+  return strings.join(" ");
+}
+
+function unescapePdfString(value) {
+  const unescaped = value
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t")
+    .replace(/\\([()\\])/g, "$1")
+    .replace(/\\(\d{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+  return decodePossiblyUtf8(unescaped);
+}
+
+function decodePossiblyUtf8(value) {
+  const decoded = Buffer.from(value, "latin1").toString("utf8");
+  return decoded.includes("\uFFFD") ? value : decoded;
+}
+
+function readZipEntries(buffer) {
+  const entries = new Map();
+  let offset = 0;
+  while (offset < buffer.length - 30) {
+    const signature = buffer.readUInt32LE(offset);
+    if (signature !== 0x04034b50) {
+      offset += 1;
+      continue;
+    }
+    const method = buffer.readUInt16LE(offset + 8);
+    const compressedSize = buffer.readUInt32LE(offset + 18);
+    const fileNameLength = buffer.readUInt16LE(offset + 26);
+    const extraLength = buffer.readUInt16LE(offset + 28);
+    const nameStart = offset + 30;
+    const name = buffer.subarray(nameStart, nameStart + fileNameLength).toString("utf8");
+    const dataStart = nameStart + fileNameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    const compressed = buffer.subarray(dataStart, dataEnd);
+    try {
+      const data = method === 8 ? inflateRawSync(compressed) : compressed;
+      entries.set(name.replace(/\\/g, "/"), data.toString("utf8"));
+    } catch {
+      // Skip unreadable ZIP entry.
+    }
+    offset = dataEnd;
+  }
+  return entries;
+}
+
+function parseSharedStrings(xml) {
+  return [...xml.matchAll(/<si[\s\S]*?<\/si>/g)].map((match) => xmlToText(match[0]));
+}
+
+function xmlToText(xml) {
+  return normalizeExtractedText(String(xml)
+    .replace(/<w:tab\/>/g, "\t")
+    .replace(/<w:br\/>|<a:br\/>|<\/w:p>|<\/a:p>|<\/row>/g, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&"));
+}
+
+function normalizeExtractedText(text) {
+  return String(text)
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 async function maybeConfirmFileOperation(operation, target, preview) {
@@ -6157,7 +6303,7 @@ function saveCustomRecords(dataset, rows) {
 async function indexFolder(target, options = {}) {
   const rows = await filesTree(target, { depth: Number(options.depth || 5), limit: Number(options.limit || 1000) });
   let count = 0;
-  for (const row of rows.filter((item) => item.type === "file" && /\.(md|txt|csv|json|html)$/i.test(item.path))) {
+  for (const row of rows.filter((item) => item.type === "file" && INDEXABLE_EXTENSIONS.test(item.path))) {
     try {
       const text = await filesRead(row.path, { maxBytes: 1_000_000 });
       saveIndexedDoc(row.path, path.basename(row.path), text);
