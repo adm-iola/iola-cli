@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -108,6 +109,18 @@ const DEFAULT_AI_CONFIG = {
   api: {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
     mcpBaseUrl: "https://apiiola.yasg.ru",
+  },
+  gosuslugi: {
+    enabled: false,
+    authUrl: "",
+    tokenUrl: "",
+    userinfoUrl: "",
+    clientId: "",
+    clientSecret: "",
+    scope: "openid",
+    redirectHost: "127.0.0.1",
+    redirectPort: 18791,
+    redirectPath: "/gosuslugi/callback",
   },
   ai: {
     activeProfile: "local",
@@ -262,6 +275,7 @@ const COMMANDS = new Map([
   ["fork", forkSession],
   ["features", handleFeatures],
   ["settings", handleSettings],
+  ["gosuslugi", handleGosuslugi],
   ["wiki", handleWiki],
   ["context", handleContext],
   ["skills", handleSkills],
@@ -388,6 +402,7 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
+  iola gosuslugi configure|status|login|logout|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -684,6 +699,11 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "gosuslugi") {
+    await handleGosuslugi(args);
+    return false;
+  }
+
   if (command === "workspace") {
     await handleWorkspace(args);
     return false;
@@ -833,6 +853,7 @@ async function handleAgentLine(line, state) {
     resume: ["resume", args],
     fork: ["fork", args],
     features: ["features", args],
+    gosuslugi: ["gosuslugi", args],
     wiki: ["wiki", args],
     context: ["context", args],
     skills: ["skills", args],
@@ -891,6 +912,7 @@ function printAgentHelp() {
   /sessions
   /resume SESSION_ID
   /features list
+  /gosuslugi status
   /wiki
   /context list
   /skills list
@@ -1700,6 +1722,74 @@ async function handleSettings(args) {
   throw new Error("Команды settings: list, get [KEY], validate, doctor, init.");
 }
 
+async function handleGosuslugi(args) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "status") {
+    const config = await loadConfig();
+    const secrets = await loadSecrets();
+    const tokens = secrets.gosuslugi?.tokens || null;
+    printKeyValue({
+      enabled: config.gosuslugi?.enabled ? "yes" : "no",
+      configured: isGosuslugiConfigured(config) ? "yes" : "no",
+      clientId: config.gosuslugi?.clientId ? maskSecret(config.gosuslugi.clientId) : "-",
+      authUrl: config.gosuslugi?.authUrl || "-",
+      tokenUrl: config.gosuslugi?.tokenUrl || "-",
+      userinfoUrl: config.gosuslugi?.userinfoUrl || "-",
+      redirectUri: gosuslugiRedirectUri(config),
+      connected: tokens?.access_token ? "yes" : "no",
+      savedAt: secrets.gosuslugi?.savedAt || "-",
+      expiresAt: secrets.gosuslugi?.expiresAt || "-",
+    });
+    return;
+  }
+
+  if (action === "configure") {
+    const current = await loadConfig();
+    const next = {
+      ...(current.gosuslugi || {}),
+      enabled: true,
+      authUrl: options["auth-url"] || current.gosuslugi?.authUrl || "",
+      tokenUrl: options["token-url"] || current.gosuslugi?.tokenUrl || "",
+      userinfoUrl: options["userinfo-url"] || current.gosuslugi?.userinfoUrl || "",
+      clientId: options["client-id"] || current.gosuslugi?.clientId || "",
+      clientSecret: options["client-secret"] || current.gosuslugi?.clientSecret || "",
+      scope: options.scope || current.gosuslugi?.scope || "openid",
+      redirectHost: options["redirect-host"] || current.gosuslugi?.redirectHost || "127.0.0.1",
+      redirectPort: Number(options["redirect-port"] || current.gosuslugi?.redirectPort || 18791),
+      redirectPath: options["redirect-path"] || current.gosuslugi?.redirectPath || "/gosuslugi/callback",
+    };
+    await saveConfig({ gosuslugi: next });
+    console.log("Настройки подключения к Госуслугам сохранены.");
+    console.log(`Redirect URI: ${gosuslugiRedirectUri({ gosuslugi: next })}`);
+    return;
+  }
+
+  if (action === "login") {
+    const result = await gosuslugiLogin(options);
+    printKeyValue(result);
+    return;
+  }
+
+  if (action === "logout") {
+    const secrets = await loadSecrets();
+    delete secrets.gosuslugi;
+    await saveSecrets(secrets);
+    console.log("Локальное подключение Госуслуг удалено.");
+    return;
+  }
+
+  if (action === "userinfo" || action === "me") {
+    const result = await gosuslugiUserinfo(options);
+    if (options.json) printJson(result);
+    else printKeyValue(flattenObjectForPrint(result));
+    return;
+  }
+
+  throw new Error("Команды gosuslugi: configure, status, login, logout, userinfo.");
+}
+
 async function handleWiki(args) {
   const [action = "links"] = args;
   const base = "https://github.com/adm-iola/iola-cli/wiki";
@@ -1714,6 +1804,7 @@ async function handleWiki(args) {
     ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
     ["Платформа агента", `${base}/Платформа-агента`],
     ["Браузерный агент", `${base}/Браузерный-агент`],
+    ["Подключение Госуслуг", `${base}/Подключение-Госуслуг`],
     ["Расширения и локальные данные", `${base}/Расширения-и-локальные-данные`],
     ["Архивы и мастер настройки", `${base}/Архивы-и-мастер-настройки`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
@@ -2638,6 +2729,177 @@ async function openUrl(url) {
     return;
   }
   await runCommand("xdg-open", [url], { inherit: false });
+}
+
+async function gosuslugiLogin(options = {}) {
+  const config = await loadConfig();
+  if (!isGosuslugiConfigured(config)) {
+    throw new Error("Подключение не настроено. Пример: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
+  }
+
+  const state = randomUrlSafe(24);
+  const codeVerifier = randomUrlSafe(64);
+  const codeChallenge = base64Url(createHash("sha256").update(codeVerifier).digest());
+  const redirectUri = gosuslugiRedirectUri(config);
+  const callback = waitForOAuthCallback(config.gosuslugi, state, Number(options.timeout || 180000));
+  const authUrl = new URL(config.gosuslugi.authUrl);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", config.gosuslugi.clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", config.gosuslugi.scope || "openid");
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  console.log("Открываю официальный экран входа Госуслуг/ЕСИА в браузере.");
+  console.log("После входа CLI примет callback на локальном адресе и сохранит токены только на этом компьютере.");
+  await openUrl(authUrl.toString());
+  const params = await callback;
+  if (params.error) throw new Error(`Госуслуги вернули ошибку: ${params.error} ${params.error_description || ""}`.trim());
+  if (!params.code) throw new Error("Authorization code не получен.");
+
+  const tokens = await exchangeGosuslugiCode(config, {
+    code: params.code,
+    codeVerifier,
+    redirectUri,
+  });
+  const secrets = await loadSecrets();
+  const now = new Date();
+  const expiresAt = tokens.expires_in ? new Date(now.getTime() + Number(tokens.expires_in) * 1000).toISOString() : "";
+  secrets.gosuslugi = {
+    savedAt: now.toISOString(),
+    expiresAt,
+    tokens,
+  };
+  await saveSecrets(secrets);
+  return {
+    connected: "yes",
+    savedAt: secrets.gosuslugi.savedAt,
+    expiresAt: expiresAt || "-",
+    tokenType: tokens.token_type || "-",
+    scope: tokens.scope || config.gosuslugi.scope || "-",
+  };
+}
+
+function waitForOAuthCallback(settings, expectedState, timeoutMs) {
+  const host = settings.redirectHost || "127.0.0.1";
+  const port = Number(settings.redirectPort || 18791);
+  const callbackPath = settings.redirectPath || "/gosuslugi/callback";
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      server.close(() => {});
+      reject(new Error("Истекло время ожидания входа через Госуслуги."));
+    }, timeoutMs);
+    const server = createServer((req, res) => {
+      const url = new URL(req.url || "/", `http://${host}:${port}`);
+      if (url.pathname !== callbackPath) {
+        res.statusCode = 404;
+        res.end("Not found");
+        return;
+      }
+      const params = Object.fromEntries(url.searchParams.entries());
+      if (params.state !== expectedState) {
+        res.statusCode = 400;
+        res.end("Invalid state");
+        clearTimeout(timer);
+        server.close(() => {});
+        reject(new Error("OAuth state не совпал. Вход отменен."));
+        return;
+      }
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.end("<!doctype html><meta charset=\"utf-8\"><title>iola</title><body>Вход выполнен. Можно закрыть это окно и вернуться в терминал.</body>");
+      clearTimeout(timer);
+      server.close(() => resolve(params));
+    });
+    server.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    server.listen(port, host);
+  });
+}
+
+async function exchangeGosuslugiCode(config, { code, codeVerifier, redirectUri }) {
+  const body = new URLSearchParams();
+  body.set("grant_type", "authorization_code");
+  body.set("code", code);
+  body.set("redirect_uri", redirectUri);
+  body.set("client_id", config.gosuslugi.clientId);
+  body.set("code_verifier", codeVerifier);
+  if (config.gosuslugi.clientSecret) body.set("client_secret", config.gosuslugi.clientSecret);
+
+  const response = await fetch(config.gosuslugi.tokenUrl, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body,
+  });
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Token endpoint вернул ${response.status}: ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
+async function gosuslugiUserinfo() {
+  const config = await loadConfig();
+  const secrets = await loadSecrets();
+  const accessToken = secrets.gosuslugi?.tokens?.access_token;
+  if (!accessToken) throw new Error("Госуслуги не подключены. Запустите: iola gosuslugi login");
+  if (!config.gosuslugi?.userinfoUrl) throw new Error("userinfoUrl не настроен.");
+  const response = await fetch(config.gosuslugi.userinfoUrl, {
+    headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
+  });
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) throw new Error(`Userinfo endpoint вернул ${response.status}: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+function isGosuslugiConfigured(config) {
+  return Boolean(config.gosuslugi?.authUrl && config.gosuslugi?.tokenUrl && config.gosuslugi?.clientId);
+}
+
+function gosuslugiRedirectUri(config) {
+  const settings = config.gosuslugi || DEFAULT_AI_CONFIG.gosuslugi;
+  return `http://${settings.redirectHost || "127.0.0.1"}:${Number(settings.redirectPort || 18791)}${settings.redirectPath || "/gosuslugi/callback"}`;
+}
+
+function randomUrlSafe(bytes) {
+  return base64Url(randomBytes(bytes));
+}
+
+function base64Url(buffer) {
+  return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function maskSecret(value) {
+  const text = String(value || "");
+  if (text.length <= 8) return text ? "***" : "-";
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function flattenObjectForPrint(value, prefix = "") {
+  const rows = {};
+  for (const [key, item] of Object.entries(value || {})) {
+    const name = prefix ? `${prefix}.${key}` : key;
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      Object.assign(rows, flattenObjectForPrint(item, name));
+    } else {
+      rows[name] = Array.isArray(item) ? item.join(", ") : item;
+    }
+  }
+  return rows;
 }
 
 async function handlePermissions(args) {
@@ -6001,7 +6263,7 @@ function parseOptions(args) {
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -7769,6 +8031,10 @@ function mergeConfig(base, override) {
       ...base.api,
       ...(override.api || {}),
     },
+    gosuslugi: {
+      ...base.gosuslugi,
+      ...(override.gosuslugi || {}),
+    },
     ai: {
       ...base.ai,
       ...(override.ai || {}),
@@ -7843,6 +8109,9 @@ function validateConfig(config) {
   for (const toolset of config.toolsets?.enabled || []) {
     if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
   }
+  if (config.gosuslugi?.enabled && !isGosuslugiConfigured(config)) {
+    errors.push("gosuslugi включен, но authUrl/tokenUrl/clientId не заполнены");
+  }
   return errors;
 }
 
@@ -7852,6 +8121,7 @@ function configSchema() {
     required: ["api", "ai"],
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
+      gosuslugi: { requiredWhenEnabled: ["authUrl", "tokenUrl", "clientId"], optional: ["userinfoUrl", "clientSecret", "scope", "redirectHost", "redirectPort", "redirectPath"] },
       ai: { required: ["activeProfile", "profiles"], providers: ["ollama", "openai", "openrouter", "codex"] },
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },
