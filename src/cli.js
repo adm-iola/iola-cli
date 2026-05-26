@@ -794,10 +794,8 @@ async function startAgentReadline() {
 
 async function startAgentRawInput() {
   const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false, renderedInputLines: 0, rawMode: true, pendingOutput: "" };
-  emitKeypressEvents(input);
   const wasRaw = input.isRaw;
-  input.setRawMode(true);
-  input.resume();
+  activateRawInput(input);
 
   const render = () => renderAgentInput(state);
   render();
@@ -1376,12 +1374,17 @@ function startActivityIndicator(label = "работаю") {
 function suspendRawInputForCommand(stream) {
   if (!stream.isTTY || !stream.isRaw) return () => {};
   stream.setRawMode(false);
+  stream.pause();
   return () => {
-    if (stream.isTTY) {
-      stream.setRawMode(true);
-      stream.resume();
-    }
+    activateRawInput(stream);
   };
+}
+
+function activateRawInput(stream) {
+  if (!stream.isTTY) return;
+  emitKeypressEvents(stream);
+  stream.setRawMode(true);
+  stream.resume();
 }
 
 function flushPendingAgentOutput(state) {
@@ -6980,8 +6983,8 @@ async function onboard(args = []) {
     else await installBrowserRuntime();
   }
   if (components.includes("gosuslugi")) {
-    await handleGosuslugi(["terms"]);
     if (process.stdin.isTTY) await handleGosuslugi(["consent"]);
+    else await handleGosuslugi(["terms"]);
     console.log("Параметры подключения можно указать командой: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
   }
   if (components.includes("index")) {
