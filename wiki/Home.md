@@ -24,9 +24,9 @@ iola ask "найди школу 29"
 
 Подробные страницы:
 
-- [Installation](Installation)
-- [First-run](First-run)
-- [AI-profiles](AI-profiles)
-- [Local-tool-agent](Local-tool-agent)
-- [Commands](Commands)
-- [Troubleshooting](Troubleshooting)
+- [Установка](Установка)
+- [Первый запуск](Первый-запуск)
+- [AI-профили](AI-профили)
+- [Локальный инструментальный агент](Локальный-инструментальный-агент)
+- [Команды](Команды)
+- [Решение проблем](Решение-проблем)
