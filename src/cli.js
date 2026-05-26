@@ -265,17 +265,18 @@ const DATASETS = {
   },
 };
 const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
-│\x1b[38;5;51m   ____ _     ___      ____  ____   ___  _____ _  _______                  \x1b[38;5;45m│
-│\x1b[38;5;51m  / ___| |   |_ _|    |  _ \\|  _ \\ / _ \\| ____| |/ /_   _|                 \x1b[38;5;45m│
-│\x1b[38;5;51m | |   | |    | |_____| |_) | |_) | | | |  _| | ' /  | |                   \x1b[38;5;45m│
-│\x1b[38;5;51m | |___| |___ | |_____|  __/|  _ <| |_| | |___| . \\  | |                   \x1b[38;5;45m│
-│\x1b[38;5;51m  \\____|_____|___|    |_|   |_| \\_\\\\___/|_____|_|\\_\\ |_|                   \x1b[38;5;45m│
 │                                                                            │
-│\x1b[38;5;213m                    C L I - Й О Ш К А Р - О Л А                            \x1b[38;5;45m│
+│\x1b[38;5;51m   ____ _     ___       __   ______  ____  _   _ _  __    _    ____       \x1b[38;5;45m│
+│\x1b[38;5;51m  / ___| |   |_ _|      \\ \\ / / ___||  _ \\| | | | |/ /   / \\  |  _ \\      \x1b[38;5;45m│
+│\x1b[38;5;51m | |   | |    | |  _____ \\ V /\\___ \\| | | | |_| | ' /   / _ \\ | |_) |     \x1b[38;5;45m│
+│\x1b[38;5;51m | |___| |___ | | |_____| | |  ___) | |_| |  _  | . \\  / ___ \\|  _ <      \x1b[38;5;45m│
+│\x1b[38;5;51m  \\____|_____|___|        |_| |____/|____/|_| |_|_|\\_\\/_/   \\_\\_| \\_\\     \x1b[38;5;45m│
+│                                                                            │
+│\x1b[38;5;213m                    CLI-ЙОШКАР-ОЛА                                         \x1b[38;5;45m│
 │                                                                            │
 │\x1b[38;5;250m        открытые данные • MCP • локальный AI                               \x1b[38;5;45m│
 │                                                                            │
-│\x1b[38;5;82m        > iola help                                                         \x1b[38;5;45m│
+│\x1b[38;5;82m        VERSION_LINE                                                        \x1b[38;5;45m│
 └────────────────────────────────────────────────────────────────────────────┘\x1b[0m`;
 
 const COMMANDS = new Map([
@@ -405,7 +406,7 @@ export async function main(argv) {
 }
 
 async function showHelp() {
-  showBanner();
+  await showBanner();
   console.log(`iola - CLI и AI-агент городского округа "Город Йошкар-Ола"
 
 Запуск:
@@ -434,7 +435,7 @@ Requirements:
 }
 
 async function showCommands() {
-  showBanner();
+  await showBanner();
   console.log(`iola - CLI для открытых данных городского округа "Город Йошкар-Ола"
 
 Usage:
@@ -554,7 +555,7 @@ async function runDefaultCli() {
 
   initDatabase();
   if (!isFirstRunCompleted()) {
-    showBanner();
+    await showBanner();
     console.log("Первый запуск iola-cli. Сейчас откроется мастер настройки.");
     console.log("После мастера запустится интерактивный агент.");
     console.log("");
@@ -567,7 +568,7 @@ async function runDefaultCli() {
 }
 
 async function startAgent() {
-  showBanner();
+  await showBanner();
   console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
   await runHooks("SessionStart", { mode: "agent" });
 
@@ -897,7 +898,7 @@ async function handleAgentLine(line, state) {
   }
 
   if (command === "banner") {
-    showBanner();
+    await showBanner();
     return false;
   }
 
@@ -1101,15 +1102,32 @@ function safePrompt(rl, closed = false) {
   }
 }
 
-function showBanner() {
+async function showBanner(options = {}) {
   const version = getPackageVersion();
+  const latest = options.skipUpdate ? null : await getLatestNpmVersion("@iola_adm/iola-cli");
+  const updateAvailable = latest && compareVersions(latest, version) > 0;
+  const versionLine = updateAvailable ? `v${version} -> v${latest} • npm install -g @iola_adm/iola-cli@latest` : `v${version} • iola help`;
   if (process.stdout.isTTY && process.env.NO_COLOR !== "1") {
-    console.log(BANNER.replace("> iola help", `v${version} • iola help`));
+    console.log(BANNER.replace("VERSION_LINE", padBannerLine(versionLine)));
+    if (updateAvailable) {
+      console.log(`Доступно обновление: v${version} -> v${latest}`);
+      console.log("Обновить: npm install -g @iola_adm/iola-cli@latest");
+    }
     return;
   }
 
-  console.log(`CLI-ЙОШКАР-ОЛА v${version}`);
+  console.log(`CLI-ЙОШКАР-ОЛА ${updateAvailable ? `v${version} -> v${latest}` : `v${version}`}`);
   console.log("открытые данные • MCP • локальный AI");
+  if (updateAvailable) console.log("Обновить: npm install -g @iola_adm/iola-cli@latest");
+}
+
+function padBannerLine(value) {
+  const text = String(value).slice(0, 62);
+  return `${text}${" ".repeat(Math.max(0, 62 - bannerVisibleLength(text)))}`;
+}
+
+function bannerVisibleLength(value) {
+  return [...String(value)].length;
 }
 
 function getPackageVersion() {
@@ -1392,7 +1410,7 @@ async function initCli(args = []) {
   const options = parseOptions(args);
   const nodeStatus = getNodeRequirementStatus();
 
-  showBanner();
+  await showBanner();
   console.log("Проверка окружения");
   initDatabase();
   const dbStatus = getDbStatus();
@@ -1439,7 +1457,7 @@ async function handleAi(args) {
   const [subcommand = "help", ...rest] = args;
 
   if (subcommand === "help") {
-    showBanner();
+    await showBanner();
     console.log(`AI-команды:
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
@@ -3711,7 +3729,7 @@ async function aiSetup(args) {
   const [provider] = args;
 
   if (!provider) {
-    showBanner();
+    await showBanner();
     const selected = await chooseAiProvider();
     await aiSetup([selected]);
     return;
@@ -6338,7 +6356,7 @@ async function setupClient(args) {
 
 async function onboard(args = []) {
   const options = parseOptions(args);
-  showBanner();
+  await showBanner();
   console.log("Мастер настройки iola-cli.");
   console.log("Повторный запуск обновляет только выбранные разделы и не сбрасывает остальные настройки.");
   console.log("");
