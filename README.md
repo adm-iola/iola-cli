@@ -26,15 +26,16 @@ npm --version
 
 ```bash
 npm install -g @iola_adm/iola-cli
-iola init
-iola --help
+iola
 ```
 
 Без глобальной установки:
 
 ```bash
-npx -y @iola_adm/iola-cli init
+npx -y @iola_adm/iola-cli
 ```
+
+При первом запуске `iola` открывает мастер настройки, затем запускает интерактивный агент. Короткая справка: `iola help`, полный список команд: `iola commands`.
 
 Основные команды:
 

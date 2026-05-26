@@ -280,6 +280,7 @@ const BANNER = `\x1b[38;5;45m┌────────────────
 
 const COMMANDS = new Map([
   ["help", showHelp],
+  ["commands", showCommands],
   ["version", showVersion],
   ["update", checkUpdate],
   ["doctor", doctor],
@@ -355,7 +356,12 @@ const COMMANDS = new Map([
 ]);
 
 export async function main(argv) {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+  if (argv.length === 0) {
+    await runDefaultCli();
+    return;
+  }
+
+  if (argv[0] === "--help" || argv[0] === "-h") {
     await showHelp();
     return;
   }
@@ -398,6 +404,35 @@ export async function main(argv) {
 }
 
 async function showHelp() {
+  showBanner();
+  console.log(`iola - локальный CLI и AI-агент для данных городского округа "Город Йошкар-Ола"
+
+Запуск:
+  iola                         открыть интерактивный агент
+  iola onboard                 мастер настройки
+  iola ask "найди школу 29"    задать вопрос
+  iola search "Петрова"        поиск по открытым данным
+
+Основные разделы:
+  iola agent                   интерактивный режим
+  iola ai setup                настройка AI-профиля
+  iola browser status          браузерный runtime
+  iola gosuslugi status        личное подключение Госуслуг
+  iola mcp status              MCP-подключение
+  iola doctor                  диагностика
+  iola wiki                    документация
+
+Справка:
+  iola help                    короткая справка
+  iola commands                полный список команд
+  iola version                 версия
+
+Requirements:
+  Node.js >= ${MIN_NODE_VERSION}
+`);
+}
+
+async function showCommands() {
   showBanner();
   console.log(`iola - CLI для открытых данных городского округа "Город Йошкар-Ола"
 
@@ -507,6 +542,26 @@ Environment:
 Requirements:
   Node.js >= ${MIN_NODE_VERSION}
 `);
+}
+
+async function runDefaultCli() {
+  const nodeStatus = getNodeRequirementStatus();
+  if (!nodeStatus.ok) {
+    throw new Error(`Нужен Node.js ${MIN_NODE_VERSION} или новее. Сейчас: ${nodeStatus.current}. Запустите: iola init --upgrade-node`);
+  }
+
+  initDatabase();
+  if (!isFirstRunCompleted()) {
+    showBanner();
+    console.log("Первый запуск iola-cli. Сейчас откроется мастер настройки.");
+    console.log("После мастера запустится интерактивный агент.");
+    console.log("");
+    await onboard([]);
+    markFirstRunCompleted();
+    console.log("");
+  }
+
+  await startAgent([]);
 }
 
 async function startAgent() {
@@ -4421,6 +4476,34 @@ function getDbStatus() {
   }
 }
 
+function getMetaValue(key) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT value FROM meta WHERE key = ?").get(key)?.value || null;
+  } finally {
+    db.close();
+  }
+}
+
+function setMetaValue(key, value) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, String(value));
+  } finally {
+    db.close();
+  }
+}
+
+function isFirstRunCompleted() {
+  return getMetaValue("first_run_completed") === "1";
+}
+
+function markFirstRunCompleted() {
+  setMetaValue("first_run_completed", "1");
+}
+
 function recordAskHistory({ question, answer, providerConfig, dataContext, error, sessionId }) {
   try {
     initDatabase();
@@ -6248,7 +6331,14 @@ async function onboard(args = []) {
   initDatabase();
   await handleConfig(["validate"]);
   await doctor(["--summary"]);
-  await ensureArchiveTool({ install: true });
+  if (options.full || options.install) {
+    await ensureArchiveTool({ install: true });
+  } else {
+    const archiveTool = await findCommand(["7z", "7zz", "7za"], ["--help"]);
+    if (!archiveTool) {
+      console.log("7-Zip не найден. Для архивов можно позже запустить: iola archive doctor");
+    }
+  }
 
   const components = options.yes ? ["workspace", "policy", "ollama", "openai", "openrouter", "codex", "codex-mcp", "index"] : await chooseOnboardComponents();
   if (components.includes("workspace")) await handleWorkspace(["init"]);
@@ -6274,6 +6364,7 @@ async function onboard(args = []) {
     await setFilesMode("read-only", await loadConfig());
     console.log("Индекс документов можно запустить командой: iola index folder ./docs");
   }
+  markFirstRunCompleted();
   console.log("Onboard завершен.");
 }
 
