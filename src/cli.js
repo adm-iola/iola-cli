@@ -1,9 +1,19 @@
+import { execFile } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
+const CONFIG_DIR = path.join(os.homedir(), ".iola");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
 const COMMANDS = new Map([
   ["help", showHelp],
   ["version", showVersion],
+  ["ai", handleAi],
   ["health", checkHealth],
   ["layers", listLayers],
   ["schools", listSchools],
@@ -28,6 +38,9 @@ async function showHelp() {
   console.log(`iola - CLI для открытых данных городского округа "Город Йошкар-Ола"
 
 Usage:
+  iola ai doctor [--json]
+  iola ai setup
+  iola ai setup ollama [--yes] [--model MODEL]
   iola health [--json]
   iola layers [--json]
   iola schools [--limit 10] [--search TEXT] [--json]
@@ -65,6 +78,134 @@ async function checkHealth(args) {
     skill_version: health.skill_version,
     mcp_endpoint: health.mcp_endpoint,
   });
+}
+
+async function handleAi(args) {
+  const [subcommand = "help", ...rest] = args;
+
+  if (subcommand === "help") {
+    console.log(`AI-команды:
+  iola ai doctor [--json]
+  iola ai setup
+  iola ai setup ollama [--yes] [--model MODEL]
+
+Локальная настройка сохраняется в ${CONFIG_FILE}`);
+    return;
+  }
+
+  if (subcommand === "doctor") {
+    await aiDoctor(rest);
+    return;
+  }
+
+  if (subcommand === "setup") {
+    await aiSetup(rest);
+    return;
+  }
+
+  throw new Error(`Unknown AI command: ${subcommand}\nRun "iola ai help" to see available commands.`);
+}
+
+async function aiDoctor(args) {
+  const options = parseOptions(args);
+  const diagnostics = await getLocalDiagnostics();
+  const recommendation = recommendOllamaModel(diagnostics);
+
+  if (options.json) {
+    printJson({ ...diagnostics, recommendation });
+    return;
+  }
+
+  printDiagnostics(diagnostics, recommendation);
+}
+
+async function aiSetup(args) {
+  const [provider] = args;
+
+  if (!provider) {
+    const selected = await chooseAiProvider();
+    await aiSetup([selected]);
+    return;
+  }
+
+  if (provider === "ollama") {
+    await setupOllama(args.slice(1));
+    return;
+  }
+
+  if (provider === "openai" || provider === "openrouter") {
+    console.log(`Для ${provider} используйте переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
+    console.log("AI-запросы через API будут добавлены отдельной командой iola ai ask.");
+    return;
+  }
+
+  if (provider === "codex") {
+    await setupClient(["codex"]);
+    return;
+  }
+
+  throw new Error(`Unknown AI provider: ${provider}`);
+}
+
+async function chooseAiProvider() {
+  console.log("Выберите режим AI:");
+  console.log("1. Локальная модель через Ollama");
+  console.log("2. OpenAI API");
+  console.log("3. OpenRouter API");
+  console.log("4. Codex/MCP");
+
+  const rl = readline.createInterface({ input, output });
+  try {
+    const answer = (await rl.question("Введите номер [1]: ")).trim() || "1";
+    return {
+      1: "ollama",
+      2: "openai",
+      3: "openrouter",
+      4: "codex",
+    }[answer] || "ollama";
+  } finally {
+    rl.close();
+  }
+}
+
+async function setupOllama(args) {
+  const options = parseOptions(args);
+  const diagnostics = await getLocalDiagnostics();
+  const recommendation = recommendOllamaModel(diagnostics);
+  const model = options.model || recommendation.model;
+
+  printDiagnostics(diagnostics, { ...recommendation, model });
+
+  if (!diagnostics.ollama.installed) {
+    console.log("");
+    console.log("Ollama не найден. Установите Ollama, затем повторите команду:");
+    console.log("  iola ai setup ollama");
+    console.log("");
+    console.log("Windows:");
+    console.log("  winget install Ollama.Ollama");
+    console.log("macOS:");
+    console.log("  brew install --cask ollama");
+    console.log("Linux:");
+    console.log("  curl -fsSL https://ollama.com/install.sh | sh");
+    return;
+  }
+
+  const shouldInstall = options.yes || (await confirm(`Установить модель ${model} через "ollama pull ${model}"? [Y/n] `));
+
+  if (shouldInstall) {
+    await runCommand("ollama", ["pull", model], { inherit: true });
+  }
+
+  await saveConfig({
+    ai: {
+      provider: "ollama",
+      model,
+      baseUrl: "http://127.0.0.1:11434",
+    },
+  });
+
+  console.log("");
+  console.log(`Готово. Локальный AI-профиль сохранен в ${CONFIG_FILE}`);
 }
 
 async function listLayers(args) {
@@ -204,8 +345,8 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json") {
-      result.json = true;
+    if (arg === "--json" || arg === "--yes") {
+      result[arg.slice(2)] = true;
     } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--inn") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
@@ -250,6 +391,178 @@ function selectPublicSummary(item) {
     license_number: item.license_number,
     license_status: item.license_status,
   };
+}
+
+async function getLocalDiagnostics() {
+  const [nvidia, windowsGpu, ollamaVersion] = await Promise.all([
+    getNvidiaGpu(),
+    process.platform === "win32" ? getWindowsGpu() : Promise.resolve(null),
+    getOllamaVersion(),
+  ]);
+  const gpu = nvidia || windowsGpu || { name: "-", vramGb: null, source: "not-detected" };
+
+  return {
+    os: `${os.type()} ${os.release()} (${process.arch})`,
+    cpu: os.cpus()?.[0]?.model || "-",
+    ramGb: roundGb(os.totalmem()),
+    gpu,
+    ollama: {
+      installed: Boolean(ollamaVersion),
+      version: ollamaVersion || "-",
+    },
+  };
+}
+
+async function getNvidiaGpu() {
+  try {
+    const { stdout } = await runCommand("nvidia-smi", [
+      "--query-gpu=name,memory.total",
+      "--format=csv,noheader,nounits",
+    ]);
+    const [line] = stdout.trim().split(/\r?\n/).filter(Boolean);
+
+    if (!line) {
+      return null;
+    }
+
+    const [name, memoryMb] = line.split(",").map((value) => value.trim());
+    return {
+      name,
+      vramGb: Math.round((Number(memoryMb) / 1024) * 10) / 10,
+      source: "nvidia-smi",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getWindowsGpu() {
+  try {
+    const command = [
+      "$gpu = Get-CimInstance Win32_VideoController |",
+      "Sort-Object AdapterRAM -Descending |",
+      "Select-Object -First 1 Name,AdapterRAM;",
+      "$gpu | ConvertTo-Json -Compress",
+    ].join(" ");
+    const { stdout } = await runCommand("powershell.exe", ["-NoProfile", "-Command", command]);
+    const parsed = JSON.parse(stdout.trim());
+
+    return {
+      name: parsed.Name || "-",
+      vramGb: parsed.AdapterRAM ? roundGb(Number(parsed.AdapterRAM)) : null,
+      source: "Win32_VideoController",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getOllamaVersion() {
+  try {
+    const { stdout } = await runCommand("ollama", ["--version"]);
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+function recommendOllamaModel(diagnostics) {
+  const ramGb = diagnostics.ramGb || 0;
+  const vramGb = diagnostics.gpu.vramGb || 0;
+
+  if (ramGb >= 32 && vramGb >= 8) {
+    return {
+      profile: "good",
+      model: "qwen3:8b",
+      reason: "достаточно RAM/VRAM для более качественной локальной модели.",
+    };
+  }
+
+  if (ramGb >= 16 && vramGb >= 4) {
+    return {
+      profile: "balanced",
+      model: "qwen3:4b",
+      reason: "баланс качества, скорости и памяти для работы с вопросами по данным.",
+    };
+  }
+
+  if (ramGb >= 12) {
+    return {
+      profile: "standard",
+      model: "llama3.2:3b",
+      reason: "достаточно оперативной памяти для компактной универсальной модели.",
+    };
+  }
+
+  return {
+    profile: "low",
+    model: "llama3.2:1b",
+    reason: "минимальная модель для слабого ПК или CPU-only режима.",
+  };
+}
+
+function printDiagnostics(diagnostics, recommendation) {
+  console.log("Диагностика системы");
+  printKeyValue({
+    os: diagnostics.os,
+    cpu: diagnostics.cpu,
+    ram: `${diagnostics.ramGb} GB`,
+    gpu: diagnostics.gpu.name,
+    vram: diagnostics.gpu.vramGb ? `${diagnostics.gpu.vramGb} GB` : "-",
+    ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "не установлен",
+  });
+  console.log("");
+  console.log("Рекомендация");
+  printKeyValue({
+    profile: recommendation.profile,
+    model: recommendation.model,
+    reason: recommendation.reason,
+    install: `ollama pull ${recommendation.model}`,
+  });
+}
+
+async function confirm(question) {
+  if (!process.stdin.isTTY) {
+    return false;
+  }
+
+  const rl = readline.createInterface({ input, output });
+  try {
+    const answer = (await rl.question(question)).trim().toLocaleLowerCase("ru-RU");
+    return answer === "" || answer === "y" || answer === "yes" || answer === "д" || answer === "да";
+  } finally {
+    rl.close();
+  }
+}
+
+async function saveConfig(value) {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(CONFIG_FILE, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function runCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024 * 5,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve({ stdout, stderr });
+    });
+
+    if (options.inherit) {
+      child.stdout?.pipe(process.stdout);
+      child.stderr?.pipe(process.stderr);
+    }
+  });
+}
+
+function roundGb(bytes) {
+  return Math.round((bytes / 1024 / 1024 / 1024) * 10) / 10;
 }
 
 async function fetchJson(url) {
