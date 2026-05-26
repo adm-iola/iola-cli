@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -16,9 +16,34 @@ const DEFAULT_AI_CONFIG = {
     mcpBaseUrl: "https://apiiola.yasg.ru",
   },
   ai: {
+    activeProfile: "local",
     provider: "ollama",
     model: "llama3.2:1b",
     baseUrl: "http://127.0.0.1:11434",
+    profiles: {
+      local: {
+        provider: "ollama",
+        model: "llama3.2:1b",
+        baseUrl: "http://127.0.0.1:11434",
+      },
+      openai: {
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        baseUrl: "https://api.openai.com/v1",
+      },
+      openrouter: {
+        provider: "openrouter",
+        model: "openai/gpt-4.1-mini",
+        baseUrl: "https://openrouter.ai/api/v1",
+      },
+      codex: {
+        provider: "codex",
+        model: "gpt-5.5",
+        sandbox: "read-only",
+        approval: "never",
+        cwd: ".",
+      },
+    },
   },
 };
 const DATASETS = {
@@ -101,6 +126,11 @@ Usage:
   iola ai key set openrouter
   iola ai key status
   iola ai key delete openai|openrouter
+  iola ai profiles
+  iola ai profile add NAME --provider PROVIDER --model MODEL
+  iola ai profile use NAME
+  iola ai profile delete NAME
+  iola ai models ollama|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -210,6 +240,21 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "profiles") {
+    await handleAiProfile(["list", ...args]);
+    return false;
+  }
+
+  if (command === "profile") {
+    await handleAiProfile(args);
+    return false;
+  }
+
+  if (command === "models") {
+    await aiModels(args);
+    return false;
+  }
+
   if (command === "use") {
     await useAiProvider(args);
     return false;
@@ -290,6 +335,9 @@ function printAgentHelp() {
   /search лицей --limit 3
   /mcp-info
   /context школа 29
+  /profiles
+  /profile use local
+  /models openrouter --search qwen
   /ai doctor
   /ai setup ollama
   /use openai
@@ -402,6 +450,7 @@ async function doctor(args = []) {
   const options = parseOptions(args);
   const packageJson = await import("../package.json", { with: { type: "json" } });
   const config = await loadConfig();
+  const activeAiProfile = resolveAiProfile(config);
   const secrets = await loadSecrets();
   const diagnostics = await getLocalDiagnostics();
   const latest = await getLatestNpmVersion(packageJson.default.name);
@@ -419,9 +468,10 @@ async function doctor(args = []) {
       health: await probeEndpoint(`${mcpBaseUrl}/mcp-health`),
     },
     ai: {
-      provider: config.ai.provider,
-      model: config.ai.model,
-      modelAvailable: await checkConfiguredModel(config),
+      activeProfile: getActiveProfileName(config),
+      provider: activeAiProfile.provider,
+      model: activeAiProfile.model,
+      modelAvailable: await checkConfiguredModel({ ai: activeAiProfile }),
       openaiKey: process.env.OPENAI_API_KEY ? "env" : secrets.openai?.apiKey ? "local" : "missing",
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
@@ -531,6 +581,11 @@ async function handleAi(args) {
   iola ai key set openrouter
   iola ai key status
   iola ai key delete openai|openrouter
+  iola ai profiles
+  iola ai profile add NAME --provider ollama|openai|openrouter|codex --model MODEL
+  iola ai profile use NAME
+  iola ai profile delete NAME
+  iola ai models ollama|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -553,6 +608,21 @@ async function handleAi(args) {
 
   if (subcommand === "key") {
     await handleAiKey(rest);
+    return;
+  }
+
+  if (subcommand === "profiles") {
+    await handleAiProfile(["list", ...rest]);
+    return;
+  }
+
+  if (subcommand === "profile") {
+    await handleAiProfile(rest);
+    return;
+  }
+
+  if (subcommand === "models") {
+    await aiModels(rest);
     return;
   }
 
@@ -641,21 +711,50 @@ async function aiSetup(args) {
   if (provider === "openai" || provider === "openrouter") {
     const options = parseOptions(args.slice(1));
     const model = options.model || (provider === "openai" ? "gpt-4.1-mini" : "openai/gpt-4.1-mini");
+    const profileName = options.name || provider;
+    const profile = buildProfileFromOptions(provider, { ...options, model });
+    const config = await loadConfig();
     await saveConfig({
       ai: {
+        ...config.ai,
+        activeProfile: profileName,
         provider,
         model,
-        baseUrl: provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1",
+        baseUrl: profile.baseUrl,
+        profiles: {
+          ...(config.ai.profiles || {}),
+          [profileName]: profile,
+        },
       },
     });
-    console.log(`AI-профиль ${provider} сохранен в ${CONFIG_FILE}`);
+    console.log(`AI-профиль ${profileName} сохранен и выбран в ${CONFIG_FILE}`);
     console.log(`Ключ сохраните командой: iola ai key set ${provider}`);
     console.log(`Также можно использовать переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
     return;
   }
 
   if (provider === "codex") {
-    await setupClient(["codex"]);
+    const options = parseOptions(args.slice(1));
+    const profileName = options.name || "codex";
+    const profile = buildProfileFromOptions("codex", options);
+    const config = await loadConfig();
+    await saveConfig({
+      ai: {
+        ...config.ai,
+        activeProfile: profileName,
+        provider: "codex",
+        model: profile.model,
+        profiles: {
+          ...(config.ai.profiles || {}),
+          [profileName]: profile,
+        },
+      },
+    });
+    console.log(`AI-профиль ${profileName} сохранен и выбран.`);
+    console.log("Проверка Codex CLI:");
+    console.log(`  ${await getCommandVersion("codex", ["--version"])}`);
+    console.log("MCP подключается отдельно командой:");
+    console.log("  iola setup codex");
     return;
   }
 
@@ -687,33 +786,318 @@ async function handleAiKey(args) {
   iola ai key delete openai|openrouter`);
 }
 
-async function useAiProvider(args) {
-  const [provider] = args;
+async function handleAiProfile(args) {
+  const [action = "list", name, ...rest] = args;
 
-  if (provider !== "ollama" && provider !== "openai" && provider !== "openrouter") {
-    throw new Error("Провайдер должен быть ollama, openai или openrouter.");
+  if (action === "list" || action === "ls") {
+    await printAiProfiles();
+    return;
+  }
+
+  if (action === "show") {
+    await showAiProfile(name);
+    return;
+  }
+
+  if (action === "use") {
+    await useAiProfile(name);
+    return;
+  }
+
+  if (action === "add" || action === "set") {
+    await addAiProfile(name, rest);
+    return;
+  }
+
+  if (action === "delete" || action === "remove" || action === "rm") {
+    await deleteAiProfile(name);
+    return;
+  }
+
+  throw new Error(`Unknown profile command. Use:
+  iola ai profiles
+  iola ai profile add NAME --provider PROVIDER --model MODEL
+  iola ai profile use NAME
+  iola ai profile delete NAME`);
+}
+
+async function aiModels(args) {
+  const [provider] = args;
+  const options = parseOptions(args.slice(1));
+
+  if (!["ollama", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер обязателен: iola ai models ollama|openai|openrouter|codex");
+  }
+
+  const models = await listAiModels(provider);
+  const filtered = options.search
+    ? models.filter((model) => model.id.toLocaleLowerCase("ru-RU").includes(options.search.toLocaleLowerCase("ru-RU")))
+    : models;
+
+  if (options.json) {
+    printJson(filtered);
+    return;
+  }
+
+  printTable(filtered, [
+    ["id", "Модель"],
+    ["provider", "Провайдер"],
+    ["note", "Примечание"],
+  ]);
+}
+
+async function listAiModels(provider) {
+  if (provider === "ollama") {
+    try {
+      const config = await loadConfig();
+      const response = await fetch(`${config.ai.profiles?.local?.baseUrl || "http://127.0.0.1:11434"}/api/tags`);
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      const payload = await response.json();
+      return (payload.models || []).map((model) => ({
+        id: model.name,
+        provider: "ollama",
+        note: model.modified_at ? `updated ${model.modified_at}` : "local",
+      }));
+    } catch {
+      return [
+        { id: "llama3.2:1b", provider: "ollama", note: "recommended low RAM" },
+        { id: "llama3.2:3b", provider: "ollama", note: "recommended standard" },
+        { id: "qwen3:4b", provider: "ollama", note: "recommended balanced" },
+        { id: "qwen3:8b", provider: "ollama", note: "recommended good GPU" },
+      ];
+    }
+  }
+
+  if (provider === "openai") {
+    const apiKey = await getApiKey("openai");
+    if (!apiKey) {
+      throw new Error("OpenAI API key не найден. Выполните iola ai key set openai.");
+    }
+    const response = await fetch("https://api.openai.com/v1/models", {
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI models request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const payload = await response.json();
+    return (payload.data || [])
+      .map((model) => ({ id: model.id, provider: "openai", note: model.owned_by || "" }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  if (provider === "openrouter") {
+    const response = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { accept: "application/json" },
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter models request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const payload = await response.json();
+    return (payload.data || [])
+      .map((model) => ({
+        id: model.id,
+        provider: "openrouter",
+        note: model.name || "",
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  const version = await getCommandVersion("codex", ["--version"]);
+  return [
+    { id: "gpt-5.5", provider: "codex", note: version },
+    { id: "gpt-5", provider: "codex", note: version },
+    { id: "gpt-5-codex", provider: "codex", note: version },
+    { id: "gpt-5-mini", provider: "codex", note: version },
+  ];
+}
+
+async function printAiProfiles() {
+  const config = await loadConfig();
+  const active = getActiveProfileName(config);
+  const rows = Object.entries(config.ai.profiles || {}).map(([name, profile]) => ({
+    active: name === active ? "*" : "",
+    name,
+    provider: profile.provider,
+    model: profile.model || "-",
+    baseUrl: profile.baseUrl || "-",
+    mode: profile.provider === "codex" ? `sandbox=${profile.sandbox || "read-only"}, approval=${profile.approval || "never"}` : "-",
+  }));
+
+  printTable(rows, [
+    ["active", ""],
+    ["name", "Профиль"],
+    ["provider", "Провайдер"],
+    ["model", "Модель"],
+    ["baseUrl", "Base URL"],
+    ["mode", "Режим"],
+  ]);
+}
+
+async function showAiProfile(name) {
+  const config = await loadConfig();
+  const profileName = name || getActiveProfileName(config);
+  const profile = config.ai.profiles?.[profileName];
+
+  if (!profile) {
+    throw new Error(`AI-профиль не найден: ${profileName}`);
+  }
+
+  printJson({ name: profileName, active: profileName === getActiveProfileName(config), ...profile });
+}
+
+async function addAiProfile(name, args) {
+  if (!name) {
+    throw new Error("Имя профиля обязательно. Пример: iola ai profile add router-qwen --provider openrouter --model qwen/qwen3-32b");
+  }
+
+  const options = parseOptions(args);
+  const provider = options.provider;
+
+  if (!["ollama", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер должен быть ollama, openai, openrouter или codex.");
+  }
+
+  const profile = buildProfileFromOptions(provider, options);
+  const config = await loadConfig();
+  await saveConfig({
+    ai: {
+      ...config.ai,
+      profiles: {
+        ...(config.ai.profiles || {}),
+        [name]: profile,
+      },
+    },
+  });
+
+  console.log(`AI-профиль сохранен: ${name}`);
+}
+
+async function useAiProfile(name) {
+  if (!name) {
+    throw new Error("Имя профиля обязательно. Пример: iola ai profile use local");
   }
 
   const config = await loadConfig();
+  const profile = config.ai.profiles?.[name];
+
+  if (!profile) {
+    throw new Error(`AI-профиль не найден: ${name}`);
+  }
+
+  await saveConfig({
+    ai: {
+      ...config.ai,
+      activeProfile: name,
+      provider: profile.provider,
+      model: profile.model,
+      baseUrl: profile.baseUrl || config.ai.baseUrl,
+    },
+  });
+
+  console.log(`Активный AI-профиль: ${name} (${profile.provider}, ${profile.model || "-"})`);
+}
+
+async function deleteAiProfile(name) {
+  if (!name) {
+    throw new Error("Имя профиля обязательно.");
+  }
+
+  const config = await loadConfig();
+  const profiles = { ...(config.ai.profiles || {}) };
+
+  if (!profiles[name]) {
+    throw new Error(`AI-профиль не найден: ${name}`);
+  }
+
+  delete profiles[name];
+  const nextActive = config.ai.activeProfile === name ? Object.keys(profiles)[0] : config.ai.activeProfile;
+  const activeProfile = profiles[nextActive] || DEFAULT_AI_CONFIG.ai.profiles.local;
+
+  await saveConfig({
+    ai: {
+      ...config.ai,
+      profiles,
+      activeProfile: nextActive || "local",
+      provider: activeProfile.provider,
+      model: activeProfile.model,
+      baseUrl: activeProfile.baseUrl || config.ai.baseUrl,
+    },
+  });
+
+  console.log(`AI-профиль удален: ${name}`);
+}
+
+function buildProfileFromOptions(provider, options) {
+  const defaults = DEFAULT_AI_CONFIG.ai.profiles[provider === "ollama" ? "local" : provider];
+  const profile = {
+    ...defaults,
+    provider,
+    model: options.model || defaults.model,
+  };
+
+  if (options["base-url"]) {
+    profile.baseUrl = options["base-url"];
+  }
+
+  if (provider === "codex") {
+    profile.sandbox = options.sandbox || defaults.sandbox || "read-only";
+    profile.approval = options.approval || defaults.approval || "never";
+    profile.cwd = options.cwd || defaults.cwd || ".";
+    if (options["codex-profile"]) {
+      profile.codexProfile = options["codex-profile"];
+    }
+  }
+
+  return profile;
+}
+
+async function useAiProvider(args) {
+  const [providerOrProfile] = args;
+  const config = await loadConfig();
+
+  if (config.ai.profiles?.[providerOrProfile]) {
+    await useAiProfile(providerOrProfile);
+    return;
+  }
+
+  const provider = providerOrProfile;
+
+  if (provider !== "ollama" && provider !== "openai" && provider !== "openrouter" && provider !== "codex") {
+    throw new Error("Провайдер должен быть ollama, openai, openrouter, codex или именем AI-профиля.");
+  }
+
   const defaultModel = {
     ollama: config.ai.provider === "ollama" ? config.ai.model : "llama3.2:1b",
     openai: config.ai.provider === "openai" ? config.ai.model : "gpt-4.1-mini",
     openrouter: config.ai.provider === "openrouter" ? config.ai.model : "openai/gpt-4.1-mini",
+    codex: config.ai.provider === "codex" ? config.ai.model : "gpt-5.5",
   }[provider];
+  const profileName = provider === "ollama" ? "local" : provider;
+  const profile = buildProfileFromOptions(provider, { model: defaultModel });
 
   await saveConfig({
     ai: {
+      ...config.ai,
+      activeProfile: profileName,
       provider,
       model: defaultModel,
-      baseUrl: provider === "ollama"
-        ? "http://127.0.0.1:11434"
-        : provider === "openai"
-          ? "https://api.openai.com/v1"
-          : "https://openrouter.ai/api/v1",
+      baseUrl: profile.baseUrl,
+      profiles: {
+        ...(config.ai.profiles || {}),
+        [profileName]: profile,
+      },
     },
   });
 
-  console.log(`AI-провайдер переключен: ${provider}, модель: ${defaultModel}`);
+  console.log(`AI-провайдер переключен: ${provider}, профиль: ${profileName}, модель: ${defaultModel}`);
 }
 
 async function aiContext(args) {
@@ -838,11 +1222,23 @@ async function setupOllama(args) {
     await runCommand("ollama", ["pull", model], { inherit: true });
   }
 
+  const config = await loadConfig();
+  const profileName = options.name || "local";
   await saveConfig({
     ai: {
+      ...config.ai,
+      activeProfile: profileName,
       provider: "ollama",
       model,
       baseUrl: "http://127.0.0.1:11434",
+      profiles: {
+        ...(config.ai.profiles || {}),
+        [profileName]: {
+          provider: "ollama",
+          model,
+          baseUrl: "http://127.0.0.1:11434",
+        },
+      },
     },
   });
 
@@ -859,19 +1255,33 @@ async function aiAsk(args, context = {}) {
   }
 
   const config = await loadConfig();
-  const provider = options.provider || config.ai.provider;
-  const model = options.model || config.ai.model;
-  const providerConfig = {
-    ...config.ai,
-    provider,
-    model,
-  };
+  const providerConfig = resolveAiProfile(config, options);
   const dataContext = await buildDataContext(question);
   const messages = buildAiMessages(question, dataContext, context.history || []);
   const answer = await callAiProvider(providerConfig, messages);
 
   console.log(answer);
   return answer;
+}
+
+function resolveAiProfile(config, options = {}) {
+  const profileName = options.profile || (options.provider && config.ai.profiles?.[options.provider]
+    ? options.provider
+    : getActiveProfileName(config));
+  const activeProfile = config.ai.profiles?.[profileName] || {
+    provider: config.ai.provider,
+    model: config.ai.model,
+    baseUrl: config.ai.baseUrl,
+  };
+  const provider = options.provider && !config.ai.profiles?.[options.provider] ? options.provider : activeProfile.provider;
+
+  return {
+    name: profileName,
+    ...activeProfile,
+    provider,
+    model: options.model || activeProfile.model || config.ai.model,
+    baseUrl: options["base-url"] || activeProfile.baseUrl || config.ai.baseUrl,
+  };
 }
 
 async function buildDataContext(question) {
@@ -1048,7 +1458,47 @@ async function callAiProvider(config, messages) {
     return callOpenAiCompatible(config, messages, await getApiKey("openrouter"), "OpenRouter");
   }
 
+  if (config.provider === "codex") {
+    return callCodex(config, messages);
+  }
+
   throw new Error(`Неизвестный AI-провайдер: ${config.provider}`);
+}
+
+async function callCodex(config, messages) {
+  const prompt = messages.map((message) => `${message.role.toUpperCase()}:\n${message.content}`).join("\n\n");
+  const outputFile = path.join(os.tmpdir(), `iola-codex-${process.pid}-${Date.now()}.txt`);
+  const args = [
+    "exec",
+    "--skip-git-repo-check",
+    "--output-last-message",
+    outputFile,
+    "--cd",
+    path.resolve(process.cwd(), config.cwd || "."),
+    "--model",
+    config.model || "gpt-5.5",
+    "--sandbox",
+    config.sandbox || "read-only",
+  ];
+
+  if (config.codexProfile) {
+    args.push("--profile", config.codexProfile);
+  }
+
+  args.push("-");
+
+  try {
+    const { stdout, stderr } = await runCommand("codex", args, { input: prompt });
+    const answer = (await readFile(outputFile, "utf8")).trim();
+    if (answer) {
+      return answer;
+    }
+    return stdout.trim() || stderr.trim();
+  } catch (error) {
+    throw new Error(`Codex CLI недоступен или не авторизован. Проверьте "codex doctor" и "codex login".\n${error.message}`);
+  } finally {
+    await rm(outputFile, { force: true });
+  }
 }
 
 async function callOllama(config, messages) {
@@ -1296,7 +1746,7 @@ function parseOptions(args) {
       result[arg.slice(2)] = true;
     } else if (arg === "--check") {
       result.check = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--format") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -1617,6 +2067,9 @@ async function confirm(question) {
 async function saveConfig(value) {
   const current = await loadConfig();
   const merged = mergeConfig(current, value);
+  if (value.ai?.profiles) {
+    merged.ai.profiles = value.ai.profiles;
+  }
   await writeConfig(merged);
 }
 
@@ -1645,8 +2098,25 @@ function mergeConfig(base, override) {
     ai: {
       ...base.ai,
       ...(override.ai || {}),
+      profiles: {
+        ...(base.ai.profiles || {}),
+        ...(override.ai?.profiles || {}),
+      },
     },
   };
+}
+
+function getActiveProfileName(config) {
+  if (config.ai.activeProfile && config.ai.profiles?.[config.ai.activeProfile]) {
+    return config.ai.activeProfile;
+  }
+
+  const provider = config.ai.provider === "ollama" ? "local" : config.ai.provider;
+  if (provider && config.ai.profiles?.[provider]) {
+    return provider;
+  }
+
+  return Object.keys(config.ai.profiles || {})[0] || "local";
 }
 
 async function getApiBaseUrl() {
@@ -1755,6 +2225,14 @@ function runCommand(command, args, options = {}) {
       maxBuffer: 1024 * 1024 * 5,
     }, (error, stdout, stderr) => {
       if (error) {
+        if (process.platform === "win32" && (error.code === "ENOENT" || error.code === "EINVAL") && !options.cmdFallback) {
+          runCommand(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", quoteWindowsCommand(command, args)], {
+            ...options,
+            cmdFallback: true,
+          }).then(resolve, reject);
+          return;
+        }
+
         reject(error);
         return;
       }
@@ -1766,7 +2244,21 @@ function runCommand(command, args, options = {}) {
       child.stdout?.pipe(process.stdout);
       child.stderr?.pipe(process.stderr);
     }
+
+    if (options.input) {
+      child.stdin?.end(options.input);
+    }
   });
+}
+
+function quoteWindowsCommand(command, args) {
+  return [command, ...args].map((value) => {
+    const text = String(value);
+    if (/^[A-Za-z0-9_./:=\\-]+$/.test(text)) {
+      return text;
+    }
+    return `"${text.replace(/"/g, "\\\"")}"`;
+  }).join(" ");
 }
 
 function roundGb(bytes) {

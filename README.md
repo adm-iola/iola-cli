@@ -93,6 +93,12 @@ iola data schools --where address=Петрова --columns name,address,phone
 iola data schools --format csv
 iola ai doctor
 iola ai setup ollama
+iola ai setup codex --model gpt-5.5
+iola ai profiles
+iola ai profile add router-qwen --provider openrouter --model qwen/qwen3-32b
+iola ai profile use router-qwen
+iola ai models openrouter --search qwen
+iola ai models codex
 iola ai ask "Какие школы есть на улице Петрова?"
 iola ai context "школа 29"
 iola ai key set openai
@@ -137,6 +143,9 @@ iola agent
 /mcp-info
 /ai doctor
 /context школа 29
+/profiles
+/profile use local
+/models openrouter --search qwen
 /use ollama
 /use openai
 /key status
@@ -179,6 +188,40 @@ iola ai key set openrouter
 iola ai setup openrouter --model openai/gpt-4.1-mini
 iola ai ask "Покажи контакты лицея"
 ```
+
+Codex CLI:
+
+```bash
+codex login
+iola ai setup codex --model gpt-5.5
+iola setup codex
+iola ask "Назови ИНН школы 29"
+```
+
+AI-профили позволяют держать локальную модель, OpenAI, OpenRouter и Codex
+одновременно:
+
+```bash
+iola ai profiles
+iola ai profile add local-small --provider ollama --model llama3.2:1b
+iola ai profile add gpt --provider openai --model gpt-4.1-mini
+iola ai profile add router-qwen --provider openrouter --model qwen/qwen3-32b
+iola ai profile add codex-read --provider codex --model gpt-5.5 --sandbox read-only
+iola ai profile use router-qwen
+```
+
+Списки моделей:
+
+```bash
+iola ai models ollama
+iola ai models openai
+iola ai models openrouter --search qwen
+iola ai models codex
+```
+
+Для OpenAI список моделей требует сохраненный ключ. OpenRouter берется из
+публичного API OpenRouter. Ollama читает локальные модели через `api/tags`, а
+если Ollama не запущен, показывает рекомендуемые локальные модели.
 
 Проверить, какие данные попадут в AI-контекст:
 
