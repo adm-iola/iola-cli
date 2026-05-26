@@ -655,7 +655,7 @@ async function ensureAgentAiReady() {
     return readiness;
   }
 
-  console.log("AI-провайдер не настроен: нет локальной модели Ollama, API-ключей OpenAI/OpenRouter и авторизации Codex.");
+  console.log(`AI-провайдер не настроен: активный профиль ${readiness.activeProfile} (${readiness.activeProvider}) недоступен.`);
   console.log("Сейчас откроется мастер настройки. Уже существующие настройки не будут сброшены.");
   console.log("");
   await onboard([]);
@@ -670,6 +670,13 @@ async function ensureAgentAiReady() {
 }
 
 async function getAiReadiness() {
+  const config = await loadConfig();
+  const activeProfileName = getActiveProfileName(config);
+  const activeProfile = config.ai.profiles?.[activeProfileName] || {
+    provider: config.ai.provider,
+    model: config.ai.model,
+    baseUrl: config.ai.baseUrl,
+  };
   const [secrets, ollama, codex] = await Promise.all([
     loadSecrets(),
     hasUsableOllamaModel(),
@@ -677,8 +684,18 @@ async function getAiReadiness() {
   ]);
   const openai = Boolean(process.env.OPENAI_API_KEY || secrets.openai?.apiKey);
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY || secrets.openrouter?.apiKey);
+  const providerReady = {
+    ollama,
+    openai,
+    openrouter,
+    codex,
+  };
   return {
-    ready: Boolean(ollama || openai || openrouter || codex),
+    ready: Boolean(providerReady[activeProfile.provider]),
+    activeProfile: activeProfileName,
+    activeProvider: activeProfile.provider || "-",
+    activeModel: activeProfile.model || "-",
+    anyReady: Boolean(ollama || openai || openrouter || codex),
     ollama,
     openai,
     openrouter,
