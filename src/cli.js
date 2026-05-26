@@ -270,7 +270,7 @@ const SLASH_COMMANDS = [
   { command: "/help", description: "список slash-команд" },
   { command: "/health", description: "проверка публичного API/MCP" },
   { command: "/doctor", description: "диагностика CLI" },
-  { command: "/wizard", description: "мастер настройки" },
+  { command: "/master", description: "мастер настройки" },
   { command: "/db status", description: "статус локальной SQLite-БД" },
   { command: "/sessions", description: "AI-сессии" },
   { command: "/resume SESSION_ID", description: "продолжить сессию" },
@@ -408,6 +408,7 @@ const COMMANDS = new Map([
   ["mcp-info", showMcpInfo],
   ["setup", setupClient],
   ["onboard", onboard],
+  ["master", onboard],
   ["wizard", onboard],
 ]);
 
@@ -465,7 +466,7 @@ async function showHelp() {
 
 Запуск:
   iola                         открыть интерактивный агент
-  iola wizard                  мастер настройки
+  iola master                  мастер настройки
   iola ask "найди школу 29"    задать вопрос
   iola search "Петрова"        поиск по открытым данным
 
@@ -589,6 +590,7 @@ Usage:
   iola mcp-info [--json]
   iola setup codex
   iola onboard
+  iola master
   iola wizard
   iola version
 
@@ -625,7 +627,7 @@ async function startAgent() {
   setTerminalTitle(`iola - ${path.basename(process.cwd()) || process.cwd()}`);
   await showBanner();
   await ensureAgentAiReady();
-  console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
+  console.log("Интерактивный режим. Введите /help для списка команд, /master чтобы запустить мастер настройки, /exit для выхода.");
   await runHooks("SessionStart", { mode: "agent" });
 
   if (input.isTTY && output.isTTY) {
@@ -649,7 +651,7 @@ async function ensureAgentAiReady() {
 
   if (onboardRanThisProcess) {
     console.log("AI-провайдер пока не настроен. Агент откроется, но AI-запросы потребуют настройки.");
-    console.log("Повторно открыть мастер можно командой: /wizard");
+    console.log("Повторно открыть мастер можно командой: /master");
     return readiness;
   }
 
@@ -662,7 +664,7 @@ async function ensureAgentAiReady() {
   if (!updated.ready) {
     console.log("");
     console.log("AI-провайдер пока не настроен. Агент откроется, но AI-запросы потребуют настройки.");
-    console.log("Повторно открыть мастер можно командой: /wizard");
+    console.log("Повторно открыть мастер можно командой: /master");
   }
   return updated;
 }
@@ -1185,6 +1187,7 @@ async function handleAgentLine(line, state) {
     search: ["search", args],
     "mcp-info": ["mcp-info", args],
     setup: ["setup", args],
+    master: ["wizard", args],
     wizard: ["wizard", args],
     onboard: ["onboard", args],
   }[command];
@@ -1267,16 +1270,16 @@ function renderAgentInput(state) {
     }
   }
 
-  const renderedLines = [...inputLines, cwdLine, ...menuLines];
+  const renderedLines = [...inputLines, "", ...menuLines, cwdLine];
   output.write(renderedLines.join("\n"));
   if (output.isTTY) {
-    output.write(`\x1b[${1 + menuLines.length}A`);
+    output.write(`\x1b[${2 + menuLines.length}A`);
   }
   if (output.isTTY) {
     const cursorColumn = visibleLength(inputLines[inputLines.length - 1]);
     output.write(`\x1b[${cursorColumn + 1}G`);
   }
-  state.renderedInputLines = inputLines.length + 1;
+  state.renderedInputLines = inputLines.length;
 }
 
 function clearAgentInputArea(state = null) {
