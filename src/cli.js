@@ -244,6 +244,7 @@ const COMMANDS = new Map([
   ["skills", handleSkills],
   ["tools", handleTools],
   ["files", handleFiles],
+  ["archive", handleArchive],
   ["changes", handleChanges],
   ["import", handleImport],
   ["index", handleIndex],
@@ -360,6 +361,7 @@ Usage:
   iola skills list|show|paths|enable|disable
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
+  iola archive doctor|list|test|extract|create|index
   iola changes list|show|apply|discard
   iola import file|folder
   iola index folder|status|search
@@ -618,6 +620,11 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "archive") {
+    await handleArchive(args);
+    return false;
+  }
+
   if (command === "changes") {
     await handleChanges(args);
     return false;
@@ -791,6 +798,7 @@ async function handleAgentLine(line, state) {
     context: ["context", args],
     skills: ["skills", args],
     files: ["files", args],
+    archive: ["archive", args],
     changes: ["changes", args],
     index: ["index", args],
     reports: ["reports", args],
@@ -850,6 +858,7 @@ function printAgentHelp() {
   /permissions
   /tools
   /files status
+  /archive doctor
   /changes list
   /index status
   /reports list
@@ -1591,6 +1600,7 @@ async function handleWiki(args) {
     ["Локальные файлы", `${base}/Локальные-файлы`],
     ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
     ["Расширения и локальные данные", `${base}/Расширения-и-локальные-данные`],
+    ["Архивы и мастер настройки", `${base}/Архивы-и-мастер-настройки`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
     ["Контекст и память", `${base}/Контекст-и-память`],
     ["Команды", `${base}/Команды`],
@@ -1845,6 +1855,88 @@ async function handleFiles(args) {
   throw new Error("Команды files: status, mode MODE, approvals POLICY, tree [PATH], read FILE, search TEXT, write FILE --text TEXT, patch FILE --search OLD --replace NEW.");
 }
 
+async function handleArchive(args) {
+  const [action = "doctor", target, ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "doctor") {
+    const sevenZip = await ensureArchiveTool({ install: true });
+    printKeyValue({ sevenZip, status: "ok", formats: "zip, 7z, rar, tar, gz, tgz, bz2, xz и др." });
+    return;
+  }
+  if (action === "list") {
+    if (!target) throw new Error("Пример: iola archive list docs.zip");
+    const rows = await archiveList(target);
+    printTable(rows, [["date", "Дата"], ["size", "Размер"], ["name", "Файл"]]);
+    return;
+  }
+  if (action === "test") {
+    if (!target) throw new Error("Пример: iola archive test docs.zip");
+    await archiveRun(["t", target]);
+    console.log("Архив проверен.");
+    return;
+  }
+  if (action === "extract") {
+    if (!target) throw new Error("Пример: iola archive extract docs.zip --output ./out");
+    const outputDir = options.output || path.join(process.cwd(), path.basename(target, path.extname(target)));
+    await archiveRun(["x", target, `-o${outputDir}`, "-y"]);
+    console.log(`Архив распакован: ${outputDir}`);
+    return;
+  }
+  if (action === "create") {
+    const outputFile = target;
+    const inputPath = rest[0] || options.path || ".";
+    if (!outputFile) throw new Error("Пример: iola archive create docs.zip ./docs");
+    await archiveRun(["a", outputFile, inputPath]);
+    console.log(`Архив создан: ${outputFile}`);
+    return;
+  }
+  if (action === "index") {
+    if (!target) throw new Error("Пример: iola archive index docs.zip");
+    const tempDir = path.join(os.tmpdir(), `iola-archive-${Date.now()}`);
+    const previous = await loadConfig();
+    await mkdir(tempDir, { recursive: true });
+    try {
+      await archiveRun(["x", target, `-o${tempDir}`, "-y"]);
+      await saveConfig({ files: { ...(previous.files || {}), workspaceRoot: tempDir, mode: "read-only" } });
+      await setFilesMode("read-only", await loadConfig());
+      const count = await indexFolder(".", { depth: options.depth || 8, limit: options.limit || 2000 });
+      console.log(`Проиндексировано файлов из архива: ${count}`);
+    } finally {
+      await saveConfig({ files: previous.files, permissions: previous.permissions, toolsets: previous.toolsets }).catch(() => {});
+      await rm(tempDir, { recursive: true, force: true });
+    }
+    return;
+  }
+  throw new Error("Команды archive: doctor, list FILE, test FILE, extract FILE --output DIR, create OUT INPUT, index FILE.");
+}
+
+async function archiveRun(args) {
+  const command = await ensureArchiveTool({ install: true });
+  return runCommand(command, args, { inherit: true });
+}
+
+async function archiveList(target) {
+  const command = await ensureArchiveTool({ install: true });
+  const { stdout } = await runCommand(command, ["l", "-slt", target]);
+  const rows = [];
+  let current = {};
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) {
+      if (current.Path && current.Path !== target) rows.push({
+        date: current.Modified || current.Created || "-",
+        size: current.Size || "-",
+        name: current.Path,
+      });
+      current = {};
+      continue;
+    }
+    const [key, ...parts] = line.split(" = ");
+    if (key && parts.length) current[key.trim()] = parts.join(" = ").trim();
+  }
+  if (current.Path && current.Path !== target) rows.push({ date: current.Modified || current.Created || "-", size: current.Size || "-", name: current.Path });
+  return rows;
+}
+
 async function handleChanges(args) {
   const [action = "list", id] = args;
   if (action === "list" || action === "ls") {
@@ -1905,13 +1997,18 @@ async function handleIndex(args) {
     console.log(`Проиндексировано документов: ${count}`);
     return;
   }
+  if (action === "archive") {
+    if (!target) throw new Error("Пример: iola index archive docs.zip");
+    await handleArchive(["index", target, ...rest]);
+    return;
+  }
   if (action === "search") {
     const query = [target, ...rest].filter(Boolean).join(" ");
     if (!query) throw new Error('Пример: iola index search "школа 29"');
     printTable(searchDocs(query, Number(options.limit || 20)), [["file", "Файл"], ["title", "Название"], ["snippet", "Фрагмент"]]);
     return;
   }
-  throw new Error("Команды index: status, folder PATH, search TEXT.");
+  throw new Error("Команды index: status, folder PATH, archive FILE, search TEXT.");
 }
 
 async function handleReports(args) {
@@ -5281,10 +5378,66 @@ async function onboard(args = []) {
   initDatabase();
   await handleConfig(["validate"]);
   await doctor(["--summary"]);
-  if (options.yes || await confirm("Инициализировать workspace? [Y/n] ")) await handleWorkspace(["init"]);
-  if (options.yes || await confirm("Применить policy analyst? [Y/n] ")) await handlePolicy(["use", "analyst"]);
-  if (options.yes || await confirm("Настроить AI сейчас? [y/N] ")) await aiSetup([]);
+  await ensureArchiveTool({ install: true });
+
+  const components = options.yes ? ["workspace", "policy", "ollama", "openai", "openrouter", "codex", "codex-mcp", "index"] : await chooseOnboardComponents();
+  if (components.includes("workspace")) await handleWorkspace(["init"]);
+  if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
+  if (components.includes("ollama")) {
+    await installOllamaIfMissing();
+    await setupOllama(["--yes"]);
+  }
+  if (components.includes("openai")) {
+    await aiSetup(["openai"]);
+    if (process.stdin.isTTY) await setAiKey("openai");
+  }
+  if (components.includes("openrouter")) {
+    await aiSetup(["openrouter"]);
+    if (process.stdin.isTTY) await setAiKey("openrouter");
+  }
+  if (components.includes("codex")) {
+    await installCodexIfMissing();
+    await aiSetup(["codex"]);
+  }
+  if (components.includes("codex-mcp")) await setupClient(["codex"]);
+  if (components.includes("index")) {
+    await setFilesMode("read-only", await loadConfig());
+    console.log("Индекс документов можно запустить командой: iola index folder ./docs");
+  }
   console.log("Onboard завершен.");
+}
+
+async function chooseOnboardComponents() {
+  if (!process.stdin.isTTY) return ["workspace", "policy"];
+  console.log("");
+  console.log("Выберите компоненты через запятую:");
+  console.log("1. workspace и контекст");
+  console.log("2. policy analyst");
+  console.log("3. Ollama + локальная модель");
+  console.log("4. OpenAI API");
+  console.log("5. OpenRouter API");
+  console.log("6. Codex CLI");
+  console.log("7. MCP для Codex");
+  console.log("8. Индекс локальных документов");
+  console.log("");
+  const rl = readline.createInterface({ input, output });
+  try {
+    const answer = (await rl.question("Компоненты [1,2,8]: ")).trim() || "1,2,8";
+    const selected = new Set(answer.split(/[,\s]+/).filter(Boolean));
+    const map = {
+      1: "workspace",
+      2: "policy",
+      3: "ollama",
+      4: "openai",
+      5: "openrouter",
+      6: "codex",
+      7: "codex-mcp",
+      8: "index",
+    };
+    return [...selected].map((item) => map[item] || item).filter(Boolean);
+  } finally {
+    rl.close();
+  }
 }
 
 function parseOptions(args) {
@@ -5612,6 +5765,66 @@ async function getCommandVersion(command, args) {
 
     return "не найден";
   }
+}
+
+async function findCommand(candidates, versionArgs = ["--version"]) {
+  for (const command of candidates) {
+    const version = await getCommandVersion(command, versionArgs);
+    if (version !== "не найден") return { command, version };
+  }
+  return null;
+}
+
+async function ensureArchiveTool(options = {}) {
+  const found = await findCommand(["7z", "7zz", "7za"], ["--help"]);
+  if (found) return found.command;
+  if (options.install === false) throw new Error("7-Zip не найден.");
+  await installSevenZip();
+  const installed = await findCommand(["7z", "7zz", "7za"], ["--help"]);
+  if (!installed) throw new Error("7-Zip не найден после установки. Перезапустите терминал и проверьте: 7z");
+  return installed.command;
+}
+
+async function installSevenZip() {
+  console.log("7-Zip не найден. Устанавливаю архиватор для работы со всеми типами архивов.");
+  if (process.platform === "win32") {
+    await runCommand("winget", ["install", "7zip.7zip", "--accept-package-agreements", "--accept-source-agreements"], { inherit: true });
+    return;
+  }
+  if (process.platform === "darwin") {
+    try {
+      await runCommand("brew", ["install", "sevenzip"], { inherit: true });
+    } catch {
+      await runCommand("brew", ["install", "p7zip"], { inherit: true });
+    }
+    return;
+  }
+  try {
+    await runCommand("sh", ["-c", "sudo apt-get update && sudo apt-get install -y p7zip-full p7zip-rar"], { inherit: true });
+  } catch {
+    await runCommand("sh", ["-c", "sudo apt-get update && sudo apt-get install -y 7zip"], { inherit: true });
+  }
+}
+
+async function installOllamaIfMissing() {
+  if (await getOllamaVersion()) return;
+  console.log("Ollama не найден. Устанавливаю Ollama.");
+  if (process.platform === "win32") {
+    await runCommand("winget", ["install", "Ollama.Ollama", "--accept-package-agreements", "--accept-source-agreements"], { inherit: true });
+    return;
+  }
+  if (process.platform === "darwin") {
+    await runCommand("brew", ["install", "--cask", "ollama"], { inherit: true });
+    return;
+  }
+  await runCommand("sh", ["-c", "curl -fsSL https://ollama.com/install.sh | sh"], { inherit: true });
+}
+
+async function installCodexIfMissing() {
+  const version = await getCommandVersion("codex", ["--version"]);
+  if (version !== "не найден") return;
+  console.log("Codex CLI не найден. Устанавливаю через npm.");
+  await runCommand("npm", ["install", "-g", "@openai/codex"], { inherit: true });
 }
 
 async function probeEndpoint(url) {

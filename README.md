@@ -59,6 +59,7 @@ iola tasks list
 iola artifacts list
 iola trace last
 iola changes list
+iola archive doctor
 iola index status
 iola reports list
 iola plugins list
@@ -92,6 +93,7 @@ iola version --check
 - [Локальные файлы](https://github.com/adm-iola/iola-cli/wiki/Локальные-файлы)
 - [Рабочая среда агента](https://github.com/adm-iola/iola-cli/wiki/Рабочая-среда-агента)
 - [Расширения и локальные данные](https://github.com/adm-iola/iola-cli/wiki/Расширения-и-локальные-данные)
+- [Архивы и мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Архивы-и-мастер-настройки)
 - [Daemon, RPC и cron](https://github.com/adm-iola/iola-cli/wiki/Daemon-RPC-и-cron)
 - [Контекст и память](https://github.com/adm-iola/iola-cli/wiki/Контекст-и-память)
 - [Команды](https://github.com/adm-iola/iola-cli/wiki/Команды)
@@ -109,6 +111,8 @@ iola version --check
 - экспорт отчетов в Excel/Word-совместимые файлы;
 - staged changes, импорт локальных CSV/JSON, индекс локальных документов, report packs, plugins и локальный MCP endpoint;
 - чтение и индексирование `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.md`, `.txt`, `.csv`, `.json`, `.html`;
+- работа с архивами через 7-Zip: `.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.tgz`, `.bz2`, `.xz` и другие;
+- расширенный `iola onboard` с установкой 7-Zip, Ollama, Codex CLI и настройкой выбранных компонентов.
 - cron-задачи, локальный daemon и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
 - интеграция с публичным MCP-сервером Йошкар-Олы.
