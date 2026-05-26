@@ -126,10 +126,12 @@ iola version --check
 - поиск и выгрузка открытых данных;
 - локальная SQLite-БД, история, сессии и FTS-поиск;
 - AI-профили для Ollama, OpenAI, OpenRouter и Codex CLI;
-- локальный tool-agent для слабых моделей;
-- skills, toolsets, permissions, memory, hooks и готовые agents;
+- локальный tool-agent для слабых моделей с минимальными tools `search_data`, `get_card`, `export_report`, `file_read`, `browser_open`;
+- ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
 - полноценный локальный MCP server по stdio/http: tools, resources и prompts;
+- MCP-мост для локальной модели: встроенный `iola-local` доступен как `mcp:iola-local:TOOL`;
+- дополнительные stdio MCP-серверы можно добавить в `~/.iola/config.json` в раздел `mcp.servers`;
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
 - личное локальное подключение Госуслуг с явным согласием пользователя и хранением доступа только на его ПК;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;

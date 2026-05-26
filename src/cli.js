@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
@@ -27,9 +27,11 @@ const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
-const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
+const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open"];
+const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
+const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
 const GOSUSLUGI_CONSENT_VERSION = "2026-05-26-personal-local-v1";
@@ -54,11 +56,11 @@ const PROJECT_CONTEXT_DIR_FILE = path.join(process.cwd(), ".iola", "context.md")
 const TOOLSETS = {
   "data-read": {
     description: "Чтение открытых данных и локальный поиск.",
-    permissions: { externalApi: true, localTools: { search_local: true, get_card: true, run_report: true } },
+    permissions: { externalApi: true, localTools: { search_data: true, get_card: true, export_report: true } },
   },
   reports: {
     description: "Отчеты, выгрузки и сохранение view.",
-    permissions: { writeFiles: true, localTools: { export_data: true, save_view: true, run_report: true } },
+    permissions: { writeFiles: true, localTools: { export_report: true } },
   },
   sync: {
     description: "Обновление локальной копии данных из публичного API.",
@@ -171,11 +173,11 @@ const DEFAULT_AI_CONFIG = {
   },
   permissions: {
     localTools: {
-      search_local: true,
+      search_data: true,
       get_card: true,
-      export_data: true,
-      run_report: true,
-      save_view: true,
+      export_report: true,
+      file_read: false,
+      browser_open: true,
       files_tree: false,
       files_read: false,
       files_search: false,
@@ -206,11 +208,14 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["open-data", "reports", "local-model"],
+    enabled: ["open-data", "reports", "local-model", "local-files", "browser-agent"],
   },
   daemon: {
     host: "127.0.0.1",
     port: DAEMON_PORT,
+  },
+  mcp: {
+    servers: {},
   },
   cron: {
     enabled: true,
@@ -3440,12 +3445,12 @@ async function handlePermissions(args) {
 
   if (action === "allow" || action === "deny") {
     if (!name) {
-      throw new Error("Пример: iola permissions deny export_data");
+      throw new Error("Пример: iola permissions deny export_report");
     }
     const allow = action === "allow";
     const next = { ...(config.permissions || DEFAULT_AI_CONFIG.permissions) };
     next.localTools = { ...(next.localTools || {}) };
-    if (ALL_LOCAL_TOOLS.includes(name)) {
+    if (ALL_TOOL_ALIASES.includes(name)) {
       next.localTools[name] = allow;
     } else if (name in DEFAULT_AI_CONFIG.permissions) {
       next[name] = allow;
@@ -6062,9 +6067,10 @@ async function buildLocalToolPlan(question, providerConfig, options) {
   const prompt = [
     "Ты планировщик CLI iola. Верни только JSON.",
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
-    "Схема: {\"steps\":[{\"tool\":\"search_local\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
-    options.files ? "Файловые tools: files_tree {path,depth,limit}, files_read {path}, files_search {query,path}, files_write {path,text}, files_patch {path,search,replace}." : "",
-    "Для выгрузки CSV добавь export_data с format=csv и output, если пользователь назвал файл.",
+    "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
+    "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
+    "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
+    "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
   ].join("\n");
 
@@ -6091,19 +6097,19 @@ function inferToolPlan(question, options = {}) {
   const dataset = normalized.includes("сад") ? "kindergartens" : normalized.includes("школ") || normalized.includes("лицей") ? "schools" : "all";
   const steps = [];
   if (normalized.includes("без телефона")) {
-    steps.push({ tool: "run_report", args: { name: "missing-phones" } });
+    steps.push({ tool: "export_report", args: { name: "missing-phones" } });
   } else {
     const query = normalized.match(/петрова|школ[а-яё ]*\d+|сад[а-яё ]*\d+|лицей[а-яё ]*\d+/iu)?.[0] || question;
-    steps.push({ tool: "search_local", args: { dataset, query, limit: 20 } });
+    steps.push({ tool: "search_data", args: { dataset, query, limit: 20 } });
   }
   if (normalized.includes("csv") || normalized.includes("выгруз")) {
-    steps.push({ tool: "export_data", args: { format: "csv", output: normalized.match(/([a-z0-9_-]+\.csv)/i)?.[1] || "iola-export.csv" } });
+    steps.push({ tool: "export_report", args: { format: "csv", output: normalized.match(/([a-z0-9_-]+\.csv)/i)?.[1] || "iola-export.csv" } });
   }
   if (options.files || normalized.includes("файл") || normalized.includes("папк") || normalized.includes("readme")) {
     if (normalized.includes("найди") || normalized.includes("поиск")) {
-      steps.unshift({ tool: "files_search", args: { query: question, path: "." } });
+      steps.unshift({ tool: "mcp:iola-local:index.search", args: { query: question, limit: 20 } });
     } else {
-      steps.unshift({ tool: "files_tree", args: { path: ".", depth: 2, limit: 80 } });
+      steps.unshift({ tool: "file_read", args: { path: "." } });
     }
   }
   return { steps };
@@ -6124,13 +6130,15 @@ function validateToolPlan(plan, options = {}) {
   const allowed = new Set(availableToolNames(options));
   if (!plan || !Array.isArray(plan.steps)) throw new Error("Некорректный tool-plan.");
   for (const step of plan.steps) {
-    if (!allowed.has(step.tool)) throw new Error(`Недопустимый tool: ${step.tool}`);
+    if (!allowed.has(step.tool) && !String(step.tool || "").startsWith("mcp:")) throw new Error(`Недопустимый tool: ${step.tool}`);
   }
   return plan;
 }
 
 function availableToolNames(options = {}) {
-  return options.files ? ALL_LOCAL_TOOLS : LOCAL_TOOLS;
+  const names = new Set(LOCAL_TOOLS);
+  for (const tool of getLocalMcpToolNames()) names.add(tool);
+  return [...names];
 }
 
 async function executeToolPlan(plan, options = {}) {
@@ -6143,16 +6151,24 @@ async function executeToolPlan(plan, options = {}) {
     await runHooks("PreToolUse", { tool: step.tool, args: step.args || {} });
     await runHooks("BeforeTool", { tool: step.tool, args: step.args || {} });
     try {
-      if (step.tool === "search_local") {
+      if (step.tool === "search_data" || step.tool === "search_local") {
         current = searchLocalRecords(step.args?.query || "", { dataset: step.args?.dataset || "all", limit: step.args?.limit || 20, fts: true });
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (step.tool === "get_card") {
         const card = findCard(step.args?.query || "");
         current = card ? [card] : [];
         outputs.push({ tool: step.tool, rows: current.length });
-      } else if (step.tool === "run_report") {
+      } else if (step.tool === "export_report" || step.tool === "run_report") {
         current = runQuality(step.args?.name || "all");
         outputs.push({ tool: step.tool, rows: current.length });
+        if (step.args?.output || step.args?.format) {
+          await assertPermission("writeFiles");
+          const output = step.args?.output || `${step.args?.name || "report"}.${step.args?.format || "csv"}`;
+          const text = step.args?.format === "json" ? JSON.stringify(current, null, 2) : toCsv(current);
+          await writeFile(output, text, "utf8");
+          saveArtifact("export", output, output, { rows: current.length });
+          outputs.push({ tool: step.tool, output, rows: current.length });
+        }
       } else if (step.tool === "save_view") {
         saveView(step.args?.name, step.args?.dataset || "all", step.args?.args || []);
         outputs.push({ tool: step.tool, saved: step.args?.name });
@@ -6163,6 +6179,18 @@ async function executeToolPlan(plan, options = {}) {
         await writeFile(step.args?.output || "iola-export.csv", text, "utf8");
         saveArtifact("export", step.args?.output || "iola-export.csv", step.args?.output || "iola-export.csv", { rows: current.length });
         outputs.push({ tool: step.tool, output: step.args?.output || "iola-export.csv", rows: current.length });
+      } else if (step.tool === "file_read") {
+        const text = await filesRead(step.args?.path || step.args?.file || ".", step.args || {});
+        current = [{ path: step.args?.path || step.args?.file || ".", text }];
+        outputs.push({ tool: step.tool, bytes: text.length });
+      } else if (step.tool === "browser_open") {
+        const text = await runBrowserAutomation("text", { url: step.args?.url, waitMs: Number(step.args?.waitMs || 0), timeout: Number(step.args?.timeout || 30000), viewport: step.args?.viewport || "1366x768" });
+        current = [{ url: step.args?.url, text }];
+        outputs.push({ tool: step.tool, rows: 1 });
+      } else if (String(step.tool || "").startsWith("mcp:")) {
+        const result = await callConfiguredMcpTool(step.tool, step.args || {});
+        current = Array.isArray(result) ? result : [result];
+        outputs.push({ tool: step.tool, rows: current.length });
       } else if (step.tool === "files_tree") {
         current = await filesTree(step.args?.path || ".", step.args || {});
         outputs.push({ tool: step.tool, rows: current.length });
@@ -6197,6 +6225,78 @@ async function executeToolPlan(plan, options = {}) {
   return { rows: current, outputs };
 }
 
+function getLocalMcpToolNames() {
+  return mcpTools().map((tool) => `mcp:iola-local:${tool.name}`);
+}
+
+async function callConfiguredMcpTool(toolId, args = {}) {
+  const [, serverName, ...toolParts] = String(toolId).split(":");
+  const toolName = toolParts.join(":");
+  if (!serverName || !toolName) throw new Error(`Некорректный MCP tool id: ${toolId}`);
+  const server = getConfiguredMcpServers()[serverName];
+  if (!server) throw new Error(`MCP server не настроен: ${serverName}`);
+  return callStdioMcpTool(server, toolName, args);
+}
+
+function getConfiguredMcpServers() {
+  const userConfig = readConfigLayerSync(CONFIG_FILE);
+  const configured = userConfig?.mcp?.servers && typeof userConfig.mcp.servers === "object" ? userConfig.mcp.servers : {};
+  return {
+    "iola-local": {
+      command: process.execPath,
+      args: [path.resolve(__dirname, "..", "bin", "iola.js"), "mcp", "serve", "--stdio"],
+    },
+    ...configured,
+  };
+}
+
+async function callStdioMcpTool(server, toolName, args = {}) {
+  const child = spawn(server.command, server.args || [], {
+    cwd: server.cwd || process.cwd(),
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+  const request = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: args } };
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
+  child.stdin.write(`${JSON.stringify(request)}\n`);
+  child.stdin.end();
+  await waitForProcess(child, 15000);
+  const responses = stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
+  const response = responses.find((item) => item.id === 2) || responses.at(-1);
+  if (!response) throw new Error(`MCP server ${server.command} не вернул ответ. ${stderr}`.trim());
+  if (response.error) throw new Error(response.error.message || JSON.stringify(response.error));
+  const content = response.result?.content || [];
+  const text = content.map((item) => item.text || "").join("\n").trim();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text || response.result;
+  }
+}
+
+function waitForProcess(child, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("MCP call timeout"));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 function formatToolResult(result, options) {
   if (options.schema === "json") return JSON.stringify(result, null, 2);
   const exported = result.outputs.find((item) => item.output);
@@ -6221,7 +6321,7 @@ async function runHooks(event, payload = {}) {
   const commands = config.hooks?.[event] || [];
   for (const command of commands) {
     const [maybeFilter, ...rest] = String(command).split(":");
-    const commandText = payload.tool && rest.length > 0 && ALL_LOCAL_TOOLS.includes(maybeFilter.trim())
+    const commandText = payload.tool && rest.length > 0 && ALL_TOOL_ALIASES.includes(maybeFilter.trim())
       ? (maybeFilter.trim() === payload.tool ? rest.join(":").trim() : "")
       : command;
     if (!commandText) continue;
@@ -6240,7 +6340,7 @@ async function runHooks(event, payload = {}) {
 async function assertPermission(name) {
   const config = await loadConfig();
   const permissions = applyToolsetPermissions(config.permissions || DEFAULT_AI_CONFIG.permissions, config.toolsets?.enabled || []);
-  if (ALL_LOCAL_TOOLS.includes(name)) {
+  if (ALL_TOOL_ALIASES.includes(name)) {
     if (permissions.localTools?.[name] === false) {
       throw new Error(`Tool запрещен политикой permissions: ${name}`);
     }
@@ -6425,7 +6525,7 @@ async function buildAiMessages(question, dataContext, history, options = {}, con
   const sourceLines = buildSourceLines(dataContext);
   const memoryText = options.bare ? "" : buildMemoryText();
   const projectContext = options.bare ? "" : await buildProjectContextText();
-  const skillsText = options.bare ? "" : await buildSkillsText(config);
+  const skillsText = options.bare ? "" : await buildSkillsText(config, question, options);
   const hasDataContext = dataContext.enabled !== false;
   const system = [
     "Ты терминальный AI-агент городского округа Йошкар-Ола.",
@@ -7113,14 +7213,27 @@ function isSkillEnabled(config, name) {
   return (config.skills?.enabled || []).includes(name);
 }
 
-async function buildSkillsText(config) {
+async function buildSkillsText(config, question = "", options = {}) {
   const chunks = [];
+  const selected = selectSkillsForPrompt(config, question, options);
   for (const skill of listSkills(config)) {
-    if (!skill.enabled) continue;
+    if (!skill.enabled || !selected.has(skill.name)) continue;
     const text = await readFile(skill.file, "utf8");
     chunks.push(`## Skill: ${skill.name}\n${stripFrontmatter(text).trim()}`);
   }
   return chunks.join("\n\n").slice(0, 12000);
+}
+
+function selectSkillsForPrompt(config, question = "", options = {}) {
+  const enabled = new Set(config.skills?.enabled || []);
+  const selected = new Set();
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (enabled.has("local-model")) selected.add("local-model");
+  if (enabled.has("open-data") && shouldUseDataContext(question, options)) selected.add("open-data");
+  if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
+  if (enabled.has("local-files") && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
+  if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");
+  return selected;
 }
 
 function stripFrontmatter(text) {
@@ -8641,6 +8754,14 @@ async function readConfigLayer(file) {
   }
 }
 
+function readConfigLayerSync(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function mergeConfig(base, override) {
   return {
     ...base,
@@ -8689,6 +8810,14 @@ function mergeConfig(base, override) {
       ...base.daemon,
       ...(override.daemon || {}),
     },
+    mcp: {
+      ...base.mcp,
+      ...(override.mcp || {}),
+      servers: {
+        ...(base.mcp?.servers || {}),
+        ...(override.mcp?.servers || {}),
+      },
+    },
     cron: {
       ...base.cron,
       ...(override.cron || {}),
@@ -8722,7 +8851,7 @@ function validateConfig(config) {
     if (profile.provider !== "codex" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
   }
   for (const tool of Object.keys(config.permissions?.localTools || {})) {
-    if (!ALL_LOCAL_TOOLS.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
+    if (!ALL_TOOL_ALIASES.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
   }
   for (const toolset of config.toolsets?.enabled || []) {
     if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
