@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -26,31 +25,14 @@ const PROJECT_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "config.json");
 const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
-const GOSUSLUGI_BROWSER_PROFILE_DIR = path.join(CONFIG_DIR, "gosuslugi-browser-profile");
-const GOSUSLUGI_BROWSER_LOCK_DIR = path.join(CONFIG_DIR, "gosuslugi-browser-profile.lock");
-const GOSUSLUGI_DEFAULT_URL = "https://www.gosuslugi.ru/";
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
-const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open", "gosuslugi_whoami", "gosuslugi_debt", "gosuslugi_notifications"];
+const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
-const GOSUSLUGI_CONSENT_VERSION = "2026-05-26-personal-local-v1";
-const GOSUSLUGI_CONSENT_TEXT = `Подключение личных Госуслуг
-
-Вы подключаете личную учетную запись Госуслуг к локальному CLI-агенту iola-cli на этом компьютере.
-
-Нажимая "Да", вы подтверждаете, что:
-- используете собственную учетную запись Госуслуг;
-- понимаете, что все действия, выполненные через CLI-агента после подключения, считаются действиями владельца этой учетной записи;
-- разрешаете iola-cli локально сохранить данные доступа, необходимые для повторного входа или выполнения запросов от вашего имени;
-- понимаете, что данные доступа хранятся только на этом компьютере в локальном хранилище пользователя и не передаются разработчикам CLI, администрации города или третьим лицам;
-- обязуетесь не подключать чужие учетные записи и не передавать локальные файлы доступа другим лицам;
-- понимаете, что перед юридически значимыми действиями, отправкой заявлений, оплатой, подписанием или изменением персональных данных CLI должен запросить отдельное подтверждение.
-
-Продолжить подключение?`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUILTIN_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 const USER_SKILLS_DIR = path.join(CONFIG_DIR, "skills");
@@ -131,19 +113,6 @@ const DEFAULT_AI_CONFIG = {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
     mcpBaseUrl: "https://apiiola.yasg.ru",
   },
-  gosuslugi: {
-    enabled: false,
-    mode: "personal-browser",
-    authUrl: "",
-    tokenUrl: "",
-    userinfoUrl: "",
-    clientId: "",
-    clientSecret: "",
-    scope: "openid",
-    redirectHost: "127.0.0.1",
-    redirectPort: 18791,
-    redirectPath: "/gosuslugi/callback",
-  },
   ai: {
     activeProfile: "local",
     provider: "ollama",
@@ -181,9 +150,6 @@ const DEFAULT_AI_CONFIG = {
       export_report: true,
       file_read: false,
       browser_open: true,
-      gosuslugi_whoami: true,
-      gosuslugi_debt: true,
-      gosuslugi_notifications: true,
       files_tree: false,
       files_read: false,
       files_search: false,
@@ -214,7 +180,7 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["open-data", "reports", "local-model", "local-files", "browser-agent", "gosuslugi"],
+    enabled: ["open-data", "reports", "local-model", "local-files", "browser-agent"],
   },
   daemon: {
     host: "127.0.0.1",
@@ -286,11 +252,6 @@ const SLASH_COMMANDS = [
   { command: "/sessions", description: "AI-сессии" },
   { command: "/resume SESSION_ID", description: "продолжить сессию" },
   { command: "/features list", description: "feature flags" },
-  { command: "/gosuslugi status", description: "личное подключение Госуслуг" },
-  { command: "/gosuslugi connect", description: "открыть личный вход Госуслуг" },
-  { command: "/gosuslugi debt", description: "задолженности Госуслуг" },
-  { command: "/gosuslugi notifications", description: "уведомления Госуслуг" },
-  { command: "/gosuslugi keepalive", description: "проверка сессии каждые 30 минут" },
   { command: "/wiki", description: "ссылки на документацию" },
   { command: "/context list", description: "локальный контекст проекта" },
   { command: "/skills list", description: "skills" },
@@ -361,7 +322,6 @@ const COMMANDS = new Map([
   ["fork", forkSession],
   ["features", handleFeatures],
   ["settings", handleSettings],
-  ["gosuslugi", handleGosuslugi],
   ["wiki", handleWiki],
   ["context", handleContext],
   ["skills", handleSkills],
@@ -489,7 +449,6 @@ async function showHelp() {
   iola agent                   интерактивный режим
   iola ai setup                настройка AI-профиля
   iola browser status          браузерный runtime
-  iola gosuslugi status        личное подключение Госуслуг
   iola mcp status              MCP-подключение
   iola doctor                  диагностика
   iola wiki                    документация
@@ -524,7 +483,6 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
-  iola gosuslugi terms|consent|status|check|keepalive|install-keepalive|keepalive-status|uninstall-keepalive|connect|open|text|screenshot|whoami|debt|notifications|mark-read|logout|configure|login|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -1059,10 +1017,6 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
-  if (command === "gosuslugi") {
-    await handleGosuslugi(args);
-    return false;
-  }
 
   if (command === "workspace") {
     await handleWorkspace(args);
@@ -1213,7 +1167,6 @@ async function handleAgentLine(line, state) {
     resume: ["resume", args],
     fork: ["fork", args],
     features: ["features", args],
-    gosuslugi: ["gosuslugi", args],
     wiki: ["wiki", args],
     context: ["context", args],
     skills: ["skills", args],
@@ -2245,185 +2198,6 @@ async function handleSettings(args) {
   throw new Error("Команды settings: list, get [KEY], validate, doctor, init.");
 }
 
-async function handleGosuslugi(args) {
-  const [action = "status", ...rest] = args;
-  const options = parseOptions(rest);
-
-  if (action === "terms") {
-    console.log(GOSUSLUGI_CONSENT_TEXT);
-    return;
-  }
-
-  if (action === "consent") {
-    await acceptGosuslugiConsent(options);
-    return;
-  }
-
-  if (action === "status") {
-    const config = await loadConfig();
-    const secrets = await loadSecrets();
-    const tokens = secrets.gosuslugi?.tokens || null;
-    const browserSession = secrets.gosuslugiBrowser || null;
-    const consent = secrets.gosuslugiConsent || null;
-    printKeyValue({
-      mode: config.gosuslugi?.mode || "personal-browser",
-      enabled: config.gosuslugi?.enabled ? "yes" : "no",
-      browserProfile: GOSUSLUGI_BROWSER_PROFILE_DIR,
-      browserProfileExists: existsSync(GOSUSLUGI_BROWSER_PROFILE_DIR) ? "yes" : "no",
-      browserConnected: browserSession?.connectedAt ? "yes" : "unknown",
-      browserConnectedAt: browserSession?.connectedAt || "-",
-      oauthConfigured: isGosuslugiConfigured(config) ? "yes" : "no",
-      consent: consent?.version === GOSUSLUGI_CONSENT_VERSION ? "accepted" : "not accepted",
-      consentAt: consent?.acceptedAt || "-",
-      clientId: config.gosuslugi?.clientId ? maskSecret(config.gosuslugi.clientId) : "-",
-      authUrl: config.gosuslugi?.authUrl || "-",
-      tokenUrl: config.gosuslugi?.tokenUrl || "-",
-      userinfoUrl: config.gosuslugi?.userinfoUrl || "-",
-      redirectUri: gosuslugiRedirectUri(config),
-      connected: tokens?.access_token ? "yes" : "no",
-      savedAt: secrets.gosuslugi?.savedAt || "-",
-      expiresAt: secrets.gosuslugi?.expiresAt || "-",
-    });
-    return;
-  }
-
-  if (action === "check") {
-    const result = await gosuslugiCheck(options);
-    if (options.json) printJson(result);
-    else printKeyValue(result);
-    return;
-  }
-
-  if (action === "keepalive") {
-    await gosuslugiKeepalive(options);
-    return;
-  }
-
-  if (action === "install-keepalive") {
-    await installGosuslugiKeepaliveTask(options);
-    return;
-  }
-
-  if (action === "uninstall-keepalive") {
-    await uninstallGosuslugiKeepaliveTask(options);
-    return;
-  }
-
-  if (action === "keepalive-status") {
-    await printGosuslugiKeepaliveTaskStatus(options);
-    return;
-  }
-
-  if (action === "connect") {
-    await gosuslugiBrowserConnect(options);
-    return;
-  }
-
-  if (action === "open") {
-    await gosuslugiBrowserOpen(targetOrDefault(rest, options), options);
-    return;
-  }
-
-  if (action === "text") {
-    const result = await gosuslugiBrowserReadText(targetOrDefault(rest, options), options);
-    if (options.output) {
-      await writeFile(path.resolve(options.output), result, "utf8");
-      console.log(`Файл сохранен: ${path.resolve(options.output)}`);
-    } else {
-      console.log(result);
-    }
-    return;
-  }
-
-  if (action === "screenshot") {
-    const outputFile = path.resolve(options.output || "gosuslugi-page.png");
-    await gosuslugiBrowserScreenshot(targetOrDefault(rest, options), outputFile, options);
-    saveArtifact("gosuslugi-screenshot", targetOrDefault(rest, options), outputFile, { url: targetOrDefault(rest, options) });
-    console.log(`Файл сохранен: ${outputFile}`);
-    return;
-  }
-
-  if (action === "whoami" || action === "profile") {
-    const result = await gosuslugiWhoami(options);
-    if (options.json) printJson(result);
-    else printKeyValue(result.summary);
-    return;
-  }
-
-  if (action === "debt" || action === "debts" || action === "payments") {
-    const result = await gosuslugiDebt(options);
-    if (options.json) printJson(result);
-    else printGosuslugiDebt(result);
-    return;
-  }
-
-  if (action === "notifications" || action === "notices") {
-    const result = await gosuslugiNotifications(options);
-    if (options.json) printJson(result);
-    else printGosuslugiNotifications(result);
-    return;
-  }
-
-  if (action === "mark-read") {
-    await gosuslugiMarkNotificationsRead(options);
-    return;
-  }
-
-  if (action === "configure") {
-    const current = await loadConfig();
-    const next = {
-      ...(current.gosuslugi || {}),
-      enabled: true,
-      mode: "personal-local",
-      authUrl: options["auth-url"] || current.gosuslugi?.authUrl || "",
-      tokenUrl: options["token-url"] || current.gosuslugi?.tokenUrl || "",
-      userinfoUrl: options["userinfo-url"] || current.gosuslugi?.userinfoUrl || "",
-      clientId: options["client-id"] || current.gosuslugi?.clientId || "",
-      clientSecret: options["client-secret"] || current.gosuslugi?.clientSecret || "",
-      scope: options.scope || current.gosuslugi?.scope || "openid",
-      redirectHost: options["redirect-host"] || current.gosuslugi?.redirectHost || "127.0.0.1",
-      redirectPort: Number(options["redirect-port"] || current.gosuslugi?.redirectPort || 18791),
-      redirectPath: options["redirect-path"] || current.gosuslugi?.redirectPath || "/gosuslugi/callback",
-    };
-    await saveConfig({ gosuslugi: next });
-    console.log("Настройки личного локального подключения Госуслуг сохранены.");
-    console.log(`Redirect URI: ${gosuslugiRedirectUri({ gosuslugi: next })}`);
-    return;
-  }
-
-  if (action === "login") {
-    const result = await gosuslugiLogin(options);
-    printKeyValue(result);
-    return;
-  }
-
-  if (action === "logout") {
-    const secrets = await loadSecrets();
-    delete secrets.gosuslugi;
-    delete secrets.gosuslugiBrowser;
-    await saveSecrets(secrets);
-    if (options.profile || options.all) {
-      await rm(GOSUSLUGI_BROWSER_PROFILE_DIR, { recursive: true, force: true }).catch(() => {});
-      console.log("Локальный браузерный профиль Госуслуг удален.");
-    }
-    console.log("Локальное подключение Госуслуг удалено.");
-    return;
-  }
-
-  if (action === "userinfo" || action === "me") {
-    const result = await gosuslugiUserinfo(options);
-    if (options.json) printJson(result);
-    else printKeyValue(flattenObjectForPrint(result));
-    return;
-  }
-
-  throw new Error("Команды gosuslugi: terms, consent, status, check, keepalive, install-keepalive, keepalive-status, uninstall-keepalive, connect, open, text, screenshot, whoami, debt, notifications, mark-read, logout, configure, login, userinfo.");
-}
-
-function targetOrDefault(args, options = {}) {
-  return options.url || args.find((item) => !item.startsWith("--")) || GOSUSLUGI_DEFAULT_URL;
-}
-
 async function handleWiki(args) {
   const [action = "links"] = args;
   const base = "https://github.com/adm-iola/iola-cli/wiki";
@@ -2439,7 +2213,6 @@ async function handleWiki(args) {
     ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
     ["Платформа агента", `${base}/Платформа-агента`],
     ["Браузерный агент", `${base}/Браузерный-агент`],
-    ["Подключение Госуслуг", `${base}/Подключение-Госуслуг`],
     ["Расширения и локальные данные", `${base}/Расширения-и-локальные-данные`],
     ["Архивы и мастер настройки", `${base}/Архивы-и-мастер-настройки`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
@@ -3374,189 +3147,6 @@ async function openUrl(url) {
     return;
   }
   await runCommand("xdg-open", [url], { inherit: false });
-}
-
-async function gosuslugiLogin(options = {}) {
-  const config = await loadConfig();
-  if (!isGosuslugiConfigured(config)) {
-    throw new Error("Личное подключение не настроено. Пример: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
-  }
-  await ensureGosuslugiConsent(options);
-
-  const state = randomUrlSafe(24);
-  const codeVerifier = randomUrlSafe(64);
-  const codeChallenge = base64Url(createHash("sha256").update(codeVerifier).digest());
-  const redirectUri = gosuslugiRedirectUri(config);
-  const callback = waitForOAuthCallback(config.gosuslugi, state, Number(options.timeout || 180000));
-  const authUrl = new URL(config.gosuslugi.authUrl);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("client_id", config.gosuslugi.clientId);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("scope", config.gosuslugi.scope || "openid");
-  authUrl.searchParams.set("state", state);
-  authUrl.searchParams.set("code_challenge", codeChallenge);
-  authUrl.searchParams.set("code_challenge_method", "S256");
-
-  console.log("Открываю экран входа Госуслуг в браузере для личного локального подключения.");
-  console.log("После входа CLI примет callback на локальном адресе и сохранит данные доступа только на этом компьютере.");
-  await openUrl(authUrl.toString());
-  const params = await callback;
-  if (params.error) throw new Error(`Госуслуги вернули ошибку: ${params.error} ${params.error_description || ""}`.trim());
-  if (!params.code) throw new Error("Authorization code не получен.");
-
-  const tokens = await exchangeGosuslugiCode(config, {
-    code: params.code,
-    codeVerifier,
-    redirectUri,
-  });
-  const secrets = await loadSecrets();
-  const now = new Date();
-  const expiresAt = tokens.expires_in ? new Date(now.getTime() + Number(tokens.expires_in) * 1000).toISOString() : "";
-  secrets.gosuslugi = {
-    savedAt: now.toISOString(),
-    expiresAt,
-    tokens,
-  };
-  await saveSecrets(secrets);
-  return {
-    connected: "yes",
-    savedAt: secrets.gosuslugi.savedAt,
-    expiresAt: expiresAt || "-",
-    tokenType: tokens.token_type || "-",
-    scope: tokens.scope || config.gosuslugi.scope || "-",
-  };
-}
-
-async function acceptGosuslugiConsent(options = {}) {
-  console.log(GOSUSLUGI_CONSENT_TEXT);
-  if (!options.yes) {
-    const accepted = await confirm("Да, подключить личные Госуслуги к локальному iola-cli? [y/N] ");
-    if (!accepted) {
-      throw new Error("Подключение Госуслуг отменено пользователем.");
-    }
-  }
-  const secrets = await loadSecrets();
-  secrets.gosuslugiConsent = {
-    version: GOSUSLUGI_CONSENT_VERSION,
-    acceptedAt: new Date().toISOString(),
-    user: os.userInfo().username,
-    host: os.hostname(),
-  };
-  await saveSecrets(secrets);
-  console.log("Согласие сохранено локально.");
-}
-
-async function ensureGosuslugiConsent(options = {}) {
-  const secrets = await loadSecrets();
-  if (secrets.gosuslugiConsent?.version === GOSUSLUGI_CONSENT_VERSION) return;
-  await acceptGosuslugiConsent(options);
-}
-
-async function requireGosuslugiConsent() {
-  await ensureGosuslugiConsent();
-}
-
-function waitForOAuthCallback(settings, expectedState, timeoutMs) {
-  const host = settings.redirectHost || "127.0.0.1";
-  const port = Number(settings.redirectPort || 18791);
-  const callbackPath = settings.redirectPath || "/gosuslugi/callback";
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      server.close(() => {});
-      reject(new Error("Истекло время ожидания входа через Госуслуги."));
-    }, timeoutMs);
-    const server = createServer((req, res) => {
-      const url = new URL(req.url || "/", `http://${host}:${port}`);
-      if (url.pathname !== callbackPath) {
-        res.statusCode = 404;
-        res.end("Not found");
-        return;
-      }
-      const params = Object.fromEntries(url.searchParams.entries());
-      if (params.state !== expectedState) {
-        res.statusCode = 400;
-        res.end("Invalid state");
-        clearTimeout(timer);
-        server.close(() => {});
-        reject(new Error("OAuth state не совпал. Вход отменен."));
-        return;
-      }
-      res.setHeader("content-type", "text/html; charset=utf-8");
-      res.end("<!doctype html><meta charset=\"utf-8\"><title>iola</title><body>Вход выполнен. Можно закрыть это окно и вернуться в терминал.</body>");
-      clearTimeout(timer);
-      server.close(() => resolve(params));
-    });
-    server.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    server.listen(port, host);
-  });
-}
-
-async function exchangeGosuslugiCode(config, { code, codeVerifier, redirectUri }) {
-  const body = new URLSearchParams();
-  body.set("grant_type", "authorization_code");
-  body.set("code", code);
-  body.set("redirect_uri", redirectUri);
-  body.set("client_id", config.gosuslugi.clientId);
-  body.set("code_verifier", codeVerifier);
-  body.set("client_mode", config.gosuslugi.mode || "personal-local");
-  if (config.gosuslugi.clientSecret) body.set("client_secret", config.gosuslugi.clientSecret);
-
-  const response = await fetch(config.gosuslugi.tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body,
-  });
-  const text = await response.text();
-  let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = { raw: text };
-  }
-  if (!response.ok) {
-    throw new Error(`Token endpoint вернул ${response.status}: ${JSON.stringify(payload)}`);
-  }
-  return payload;
-}
-
-async function gosuslugiUserinfo() {
-  const config = await loadConfig();
-  const secrets = await loadSecrets();
-  const accessToken = secrets.gosuslugi?.tokens?.access_token;
-  if (!accessToken) throw new Error("Госуслуги не подключены. Запустите: iola gosuslugi login");
-  if (!config.gosuslugi?.userinfoUrl) throw new Error("userinfoUrl не настроен.");
-  const response = await fetch(config.gosuslugi.userinfoUrl, {
-    headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
-  });
-  const text = await response.text();
-  let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = { raw: text };
-  }
-  if (!response.ok) throw new Error(`Userinfo endpoint вернул ${response.status}: ${JSON.stringify(payload)}`);
-  return payload;
-}
-
-function isGosuslugiConfigured(config) {
-  return Boolean(config.gosuslugi?.authUrl && config.gosuslugi?.tokenUrl && config.gosuslugi?.clientId);
-}
-
-function gosuslugiRedirectUri(config) {
-  const settings = config.gosuslugi || DEFAULT_AI_CONFIG.gosuslugi;
-  return `http://${settings.redirectHost || "127.0.0.1"}:${Number(settings.redirectPort || 18791)}${settings.redirectPath || "/gosuslugi/callback"}`;
-}
-
-function randomUrlSafe(bytes) {
-  return base64Url(randomBytes(bytes));
-}
-
-function base64Url(buffer) {
-  return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function maskSecret(value) {
@@ -6075,12 +5665,6 @@ async function aiAsk(args, context = {}) {
     throw new Error('Текст вопроса обязателен. Пример: iola ai ask "Какие школы есть на улице Петрова?"');
   }
 
-  if (!options.bare && isGosuslugiPersonalIntent(question)) {
-    const answer = await answerGosuslugiQuestion(question, options);
-    if (!options.quiet) console.log(answer);
-    return answer;
-  }
-
   const config = await loadConfig();
   const providerConfig = await resolveUsableAiProfile(config, options);
   if (providerConfig.provider === "codex") await assertPermission("codex");
@@ -6249,7 +5833,7 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     "Ты планировщик CLI iola. Верни только JSON.",
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
-    "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}, gosuslugi_whoami {}, gosuslugi_debt {}, gosuslugi_notifications {unread,limit}.",
+    "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
@@ -6279,12 +5863,6 @@ function inferToolPlan(question, options = {}) {
   const steps = [];
   if (normalized.includes("без телефона")) {
     steps.push({ tool: "export_report", args: { name: "missing-phones" } });
-  } else if (/(уведомлен|сообщени|госпочт|непрочитан)/iu.test(normalized)) {
-    steps.push({ tool: "gosuslugi_notifications", args: { unread: /непрочитан|нов/iu.test(normalized), limit: 15 } });
-  } else if (/(задолж|долг|штраф|налог|к оплате|платеж|платёж)/iu.test(normalized)) {
-    steps.push({ tool: "gosuslugi_debt", args: {} });
-  } else if (/(фио|дата рождения|профиль|кто я)/iu.test(normalized) && /госуслуг/iu.test(normalized)) {
-    steps.push({ tool: "gosuslugi_whoami", args: {} });
   } else {
     const query = normalized.match(/петрова|школ[а-яё ]*\d+|сад[а-яё ]*\d+|лицей[а-яё ]*\d+/iu)?.[0] || question;
     steps.push({ tool: "search_data", args: { dataset, query, limit: 20 } });
@@ -6374,18 +5952,6 @@ async function executeToolPlan(plan, options = {}) {
         const text = await runBrowserAutomation("text", { url: step.args?.url, waitMs: Number(step.args?.waitMs || 0), timeout: Number(step.args?.timeout || 30000), viewport: step.args?.viewport || "1366x768" });
         current = [{ url: step.args?.url, text }];
         outputs.push({ tool: step.tool, rows: 1 });
-      } else if (step.tool === "gosuslugi_whoami") {
-        const result = await gosuslugiWhoami(step.args || {});
-        current = [result.summary];
-        outputs.push({ tool: step.tool, rows: 1 });
-      } else if (step.tool === "gosuslugi_debt") {
-        const result = await gosuslugiDebt(step.args || {});
-        current = [{ total: result.total, amount: result.amount, debts: result.debts }];
-        outputs.push({ tool: step.tool, rows: result.debts.length });
-      } else if (step.tool === "gosuslugi_notifications") {
-        const result = await gosuslugiNotifications(step.args || {});
-        current = [{ total: result.total, unread: result.unread, items: result.items }];
-        outputs.push({ tool: step.tool, rows: result.items.length });
       } else if (String(step.tool || "").startsWith("mcp:")) {
         const result = await callConfiguredMcpTool(step.tool, step.args || {});
         current = Array.isArray(result) ? result : [result];
@@ -7122,17 +6688,6 @@ async function onboard(args = []) {
     if (status.installed === "yes") console.log("Browser runtime уже установлен.");
     else await installBrowserRuntime();
   }
-  if (components.includes("gosuslugi")) {
-    if (process.stdin.isTTY) await handleGosuslugi(["consent"]);
-    else await handleGosuslugi(["terms"]);
-    await ensureBrowserRuntimeForGosuslugi();
-    if (process.stdin.isTTY && await confirm("Открыть Госуслуги для входа сейчас? [Y/n] ")) {
-      await gosuslugiBrowserConnect({ yes: true });
-      await installGosuslugiKeepaliveTask({ interval: "30m" });
-    } else {
-      console.log("Подключить личные Госуслуги позже: iola gosuslugi connect");
-    }
-  }
   if (components.includes("index")) {
     await setFilesMode("read-only", await loadConfig());
     console.log("Индекс документов можно запустить командой: iola index folder ./docs");
@@ -7166,7 +6721,6 @@ async function chooseOnboardComponents(status = null) {
       8: "archive",
       9: "index",
       10: "browser",
-      11: "gosuslugi",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -7175,18 +6729,16 @@ async function chooseOnboardComponents(status = null) {
 }
 
 async function getOnboardComponentStatus() {
-  const [config, readiness, browser, archive, codexVersion, ollamaVersion, secrets] = await Promise.all([
+  const [config, readiness, browser, archive, codexVersion, ollamaVersion] = await Promise.all([
     loadConfig(),
     getAiReadiness(),
     getBrowserStatus(),
     findCommand(["7z", "7zz", "7za"], ["--help"]).catch(() => null),
     getCommandVersion("codex", ["--version"]),
     getOllamaVersion(),
-    loadSecrets(),
   ]);
   const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
   const policyReady = (config.toolsets?.enabled || []).includes("analyst");
-  const gosuslugiReady = Boolean(config.gosuslugi?.enabled && existsSync(GOSUSLUGI_BROWSER_PROFILE_DIR) && secrets.gosuslugiBrowser?.connectedAt);
   return {
     workspace: workspaceReady,
     policy: policyReady,
@@ -7198,7 +6750,6 @@ async function getOnboardComponentStatus() {
     archive: Boolean(archive),
     index: false,
     browser: browser.installed === "yes",
-    gosuslugi: gosuslugiReady,
   };
 }
 
@@ -7214,7 +6765,6 @@ function onboardComponentRows(status) {
     ["8", "archive", "7-Zip / архивы", "архиватор найден"],
     ["9", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
     ["10", "browser", "Browser runtime", "Playwright/Chromium установлен"],
-    ["11", "gosuslugi", "Личное подключение Госуслуг", "профиль и keepalive"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -7228,7 +6778,7 @@ function defaultOnboardSelection(status) {
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "ollama", 4: "openai", 5: "openrouter", 6: "codex", 7: "codex-mcp", 8: "archive", 9: "index", 10: "browser", 11: "gosuslugi" };
+  const map = { 1: "workspace", 2: "policy", 3: "ollama", 4: "openai", 5: "openrouter", 6: "codex", 7: "codex-mcp", 8: "archive", 9: "index", 10: "browser" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -7478,8 +7028,7 @@ async function buildSkillsText(config, question = "", options = {}) {
   const chunks = [];
   const selected = selectSkillsForPrompt(config, question, options);
   for (const skill of listSkills(config)) {
-    const active = skill.enabled || (skill.name === "gosuslugi" && config.gosuslugi?.enabled);
-    if (!active || !selected.has(skill.name)) continue;
+    if (!skill.enabled || !selected.has(skill.name)) continue;
     const text = await readFile(skill.file, "utf8");
     chunks.push(`## Skill: ${skill.name}\n${stripFrontmatter(text).trim()}`);
   }
@@ -7495,7 +7044,6 @@ function selectSkillsForPrompt(config, question = "", options = {}) {
   if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
   if (enabled.has("local-files") && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
   if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");
-  if (enabled.has("gosuslugi") && /(госуслуг|задолж|долг|штраф|налог|к оплате|платеж|платёж|уведомлен|госпочт|фио|дата рождения)/iu.test(normalized)) selected.add("gosuslugi");
   return selected;
 }
 
@@ -7717,534 +7265,6 @@ async function runBrowserAutomation(action, params) {
   } finally {
     await rm(scriptFile, { force: true }).catch(() => {});
   }
-}
-
-async function ensureBrowserRuntimeForGosuslugi() {
-  if (existsSync(BROWSER_RUNTIME_PACKAGE)) return;
-  console.log("Browser runtime не установлен. Устанавливаю Playwright/Chromium для локального браузерного профиля.");
-  await installBrowserRuntime();
-}
-
-async function gosuslugiBrowserConnect(options = {}) {
-  await ensureGosuslugiConsent({ yes: options.yes });
-  await ensureBrowserRuntimeForGosuslugi();
-  await saveConfig({ gosuslugi: { ...(await loadConfig()).gosuslugi, enabled: true, mode: "personal-browser" } });
-  const url = options.url || GOSUSLUGI_DEFAULT_URL;
-  console.log(`Открываю Госуслуги в отдельном локальном профиле: ${GOSUSLUGI_BROWSER_PROFILE_DIR}`);
-  console.log("Авторизуйтесь в открывшемся окне. Когда закончите, закройте окно браузера.");
-  await runPersistentBrowserAutomation("open", {
-    url,
-    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    headed: true,
-    waitMs: Number(options.wait || 0),
-    timeout: Number(options.timeout || 120000),
-    viewport: options.viewport || "1366x768",
-  });
-  const secrets = await loadSecrets();
-  secrets.gosuslugiBrowser = {
-    mode: "personal-browser",
-    profileDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    connectedAt: new Date().toISOString(),
-    lastUrl: url,
-  };
-  await saveSecrets(secrets);
-  console.log("Локальный браузерный профиль Госуслуг сохранен.");
-}
-
-async function gosuslugiBrowserOpen(url = GOSUSLUGI_DEFAULT_URL, options = {}) {
-  await requireGosuslugiConsent();
-  await ensureBrowserRuntimeForGosuslugi();
-  await runPersistentBrowserAutomation("open", {
-    url,
-    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    headed: true,
-    waitMs: Number(options.wait || 0),
-    timeout: Number(options.timeout || 120000),
-    viewport: options.viewport || "1366x768",
-  });
-}
-
-async function gosuslugiBrowserReadText(url = GOSUSLUGI_DEFAULT_URL, options = {}) {
-  await requireGosuslugiConsent();
-  await ensureBrowserRuntimeForGosuslugi();
-  return runPersistentBrowserAutomation("text", {
-    url,
-    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    headed: Boolean(options.headed),
-    waitMs: Number(options.wait || 3000),
-    timeout: Number(options.timeout || 60000),
-    viewport: options.viewport || "1366x768",
-  });
-}
-
-async function gosuslugiBrowserScreenshot(url = GOSUSLUGI_DEFAULT_URL, outputFile, options = {}) {
-  await requireGosuslugiConsent();
-  await ensureBrowserRuntimeForGosuslugi();
-  await runPersistentBrowserAutomation("screenshot", {
-    url,
-    output: outputFile,
-    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    headed: Boolean(options.headed),
-    waitMs: Number(options.wait || 3000),
-    timeout: Number(options.timeout || 60000),
-    viewport: options.viewport || "1366x768",
-  });
-}
-
-async function gosuslugiWhoami(options = {}) {
-  const data = await gosuslugiBrowserApiJson({
-    pageUrl: "https://lk.gosuslugi.ru/settings/account",
-    endpoint: "https://www.gosuslugi.ru/api/lk/v1/users/data",
-    waitMs: Number(options.wait || 3000),
-  });
-  const person = data.person?.person || data.person || data;
-  const summary = {
-    fio: [data.lastName || person.lastName, data.firstName || person.firstName, data.middleName || person.middleName].filter(Boolean).join(" ") || data.formattedName || "-",
-    birthDate: person.birthDate || data.birthDate || "-",
-    status: data.assuranceLevel === "AL20" || person.trusted ? "Подтвержденная учетная запись" : data.assuranceLevel || "-",
-    phone: options.full ? (data.personMobilePhone || data.mobile || "-") : maskPhone(data.personMobilePhone || data.mobile || ""),
-    email: options.full ? (data.personEMail || data.personEmail || data.email || "-") : maskEmail(data.personEMail || data.personEmail || data.email || ""),
-    snils: options.full ? (person.snils || data.personSnils || data.snils || "-") : maskDocument(person.snils || data.personSnils || data.snils || ""),
-    inn: options.full ? (person.inn || data.personINN || data.inn || "-") : maskDocument(person.inn || data.personINN || data.inn || ""),
-  };
-  return {
-    summary,
-    raw: options.full ? redactGosuslugiSensitive(data, { keepPersonal: true }) : undefined,
-  };
-}
-
-async function gosuslugiDebt(options = {}) {
-  const data = await gosuslugiBrowserApiJson({
-    pageUrl: "https://www.gosuslugi.ru/pay/forPayment",
-    endpoint: "https://www.gosuslugi.ru/api/pay/v2/informer/fetch",
-    waitMs: Number(options.wait || 5000),
-  });
-  const groups = Array.isArray(data.groups) ? data.groups : [];
-  const debts = groups.flatMap((group) => (group.bills || []).map((bill) => ({
-    group: group.name || group.code || "-",
-    caption: bill.caption || "-",
-    amount: Number(bill.amount || 0),
-    billDate: bill.billDate || "-",
-    supplier: bill.supplierFullName || "-",
-    document: bill.document?.typeName ? `${bill.document.typeName} ${bill.document.number || ""}`.trim() : "-",
-  })));
-  return {
-    total: Number(data.summary?.total || debts.length || 0),
-    amount: Number(data.summary?.amount || debts.reduce((sum, item) => sum + item.amount, 0)),
-    groups: groups.map((group) => ({ name: group.name, code: group.code, total: group.summary?.total || 0, amount: group.summary?.amount || 0 })),
-    debts,
-  };
-}
-
-async function gosuslugiNotifications(options = {}) {
-  const types = "ORDER,EQUEUE,PAYMENT,GEPS,BIOMETRICS,ACCOUNT,ACCOUNT_CHILD,PROFILE,APPEAL,CLAIM,ELECTION_INFO,COMPLEX_ORDER,FEEDBACK,ORGANIZATION,BUSINESSMAN,ESIGNATURE,KND_APPEAL,LINKED_ACCOUNT,SIGN,GOSQR,INFO,PERMISSION,LICENSING,LICENSING_APPEAL,CONSTRUCTOR";
-  const pageSize = Number(options.limit || 15);
-  const unread = options.unread ? "true" : "false";
-  const counters = await gosuslugiBrowserApiJson({
-    pageUrl: `https://lk.gosuslugi.ru/notifications?type=${types}`,
-    endpoint: `https://www.gosuslugi.ru/api/lk/v1/feeds/counters?types=${types},PARTNERS&isArchive=false`,
-    waitMs: Number(options.wait || 3000),
-  });
-  const feed = await gosuslugiBrowserApiJson({
-    pageUrl: `https://lk.gosuslugi.ru/notifications?type=${types}`,
-    endpoint: `https://www.gosuslugi.ru/api/lk/v1/feeds/?unread=${unread}&isArchive=false&isHide=false&types=${types}&pageSize=${pageSize}&status=&startDate=&lastFeedId=&lastFeedDate=&q=`,
-    waitMs: Number(options.wait || 3000),
-  });
-  const items = (feed.items || []).map((item) => ({
-    id: item.id,
-    unread: Boolean(item.unread),
-    date: item.date || "-",
-    type: item.feedType || "-",
-    title: item.title || "-",
-    subtitle: item.subTitle || "-",
-    status: item.status || "-",
-    summary: summarizeNotificationData(item.data),
-  }));
-  return {
-    total: counters.total || feed.items?.length || 0,
-    unread: counters.unread || items.filter((item) => item.unread).length,
-    counters: counters.counter || [],
-    hasMore: Boolean(feed.hasMore),
-    items,
-  };
-}
-
-async function gosuslugiMarkNotificationsRead(options = {}) {
-  await requireGosuslugiConsent();
-  if (!options.yes) {
-    const ok = await confirm("Отметить уведомления Госуслуг прочитанными? Это изменит состояние личного кабинета. [y/N] ");
-    if (!ok) {
-      console.log("Операция отменена.");
-      return;
-    }
-  }
-  await gosuslugiBrowserClickText({
-    pageUrl: "https://lk.gosuslugi.ru/notifications?type=ORDER,EQUEUE,PAYMENT,GEPS,BIOMETRICS,ACCOUNT,ACCOUNT_CHILD,PROFILE,APPEAL,CLAIM,ELECTION_INFO,COMPLEX_ORDER,FEEDBACK,ORGANIZATION,BUSINESSMAN,ESIGNATURE,KND_APPEAL,LINKED_ACCOUNT,SIGN,GOSQR,INFO,PERMISSION,LICENSING,LICENSING_APPEAL,CONSTRUCTOR",
-    text: "Прочитать все",
-    waitMs: Number(options.wait || 5000),
-  });
-  console.log("Команда отметки прочитанным выполнена. Проверьте статус: iola gosuslugi notifications --unread");
-}
-
-async function gosuslugiCheck(options = {}) {
-  try {
-    const result = await gosuslugiWhoami({ wait: options.wait || 2000 });
-    return {
-      status: "ok",
-      authorized: "yes",
-      fio: result.summary.fio,
-      checkedAt: new Date().toISOString(),
-      nextAction: "-",
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const result = {
-      status: "needs-login",
-      authorized: "unknown",
-      checkedAt: new Date().toISOString(),
-      nextAction: "iola gosuslugi connect",
-      error: message,
-    };
-    if (!options.silent) {
-      console.error("Сессия Госуслуг недоступна или требует повторный вход.");
-      console.error("Запустите: iola gosuslugi connect");
-    }
-    return result;
-  }
-}
-
-async function gosuslugiKeepalive(options = {}) {
-  const intervalMs = parseDurationMs(options.interval || "30m");
-  const once = Boolean(options.once);
-  console.log(`Gosuslugi keepalive запущен. Интервал: ${Math.round(intervalMs / 60000)} мин.`);
-  console.log("Остановить: Ctrl+C");
-  while (true) {
-    const result = await gosuslugiCheck({ silent: true });
-    const line = result.status === "ok"
-      ? `[${result.checkedAt}] Госуслуги: сессия активна (${result.fio || "-"})`
-      : `[${result.checkedAt}] Госуслуги: нужен повторный вход. Запустите: iola gosuslugi connect`;
-    console.log(line);
-    if (once) return;
-    await sleep(intervalMs);
-  }
-}
-
-function gosuslugiKeepaliveTaskName() {
-  return "iola-gosuslugi-keepalive";
-}
-
-function gosuslugiKeepaliveLogFile() {
-  return path.join(CONFIG_DIR, "gosuslugi-keepalive.log");
-}
-
-function cliEntrypointFile() {
-  return path.resolve(__dirname, "..", "bin", "iola.js");
-}
-
-async function installGosuslugiKeepaliveTask(options = {}) {
-  const intervalMinutes = Math.max(1, Math.round(parseDurationMs(options.interval || "30m") / 60000));
-  if (process.platform === "win32") {
-    await installWindowsGosuslugiKeepaliveTask(intervalMinutes);
-    return;
-  }
-  const id = addCronJob(`каждые ${intervalMinutes} минут`, "gosuslugi check --silent");
-  console.log(`Локальная cron-задача добавлена: ${id}`);
-  console.log("Для автоматического выполнения настройте системный планировщик на запуск: iola cron tick");
-}
-
-async function installWindowsGosuslugiKeepaliveTask(intervalMinutes) {
-  await mkdir(CONFIG_DIR, { recursive: true });
-  const taskName = gosuslugiKeepaliveTaskName();
-  const logFile = gosuslugiKeepaliveLogFile();
-  const script = path.join(CONFIG_DIR, "gosuslugi-keepalive-task.cmd");
-  const command = `"${process.execPath}" --no-warnings "${cliEntrypointFile()}" gosuslugi check --silent >> "${logFile}" 2>&1`;
-  await writeFile(script, `@echo off\r\n${command}\r\n`, "utf8");
-  await runCommand("schtasks.exe", [
-    "/Create",
-    "/TN", taskName,
-    "/SC", "MINUTE",
-    "/MO", String(intervalMinutes),
-    "/TR", script,
-    "/F",
-  ]);
-  console.log(`Windows Task Scheduler задача создана: ${taskName}`);
-  console.log(`Интервал: ${intervalMinutes} мин.`);
-  console.log(`Лог: ${logFile}`);
-  console.log("Проверить: iola gosuslugi keepalive-status");
-}
-
-async function uninstallGosuslugiKeepaliveTask() {
-  if (process.platform === "win32") {
-    await runCommand("schtasks.exe", ["/Delete", "/TN", gosuslugiKeepaliveTaskName(), "/F"]).catch(() => {});
-    console.log(`Windows Task Scheduler задача удалена: ${gosuslugiKeepaliveTaskName()}`);
-    return;
-  }
-  console.log("Для не-Windows удалите локальную cron-задачу вручную: iola cron list, затем iola cron delete ID.");
-}
-
-async function printGosuslugiKeepaliveTaskStatus(options = {}) {
-  if (process.platform === "win32") {
-    try {
-      const { stdout } = await runCommand("schtasks.exe", ["/Query", "/TN", gosuslugiKeepaliveTaskName(), "/FO", "LIST"]);
-      console.log(stdout.trim());
-    } catch {
-      console.log(`Задача не найдена: ${gosuslugiKeepaliveTaskName()}`);
-    }
-    if (existsSync(gosuslugiKeepaliveLogFile())) {
-      console.log("");
-      console.log(`Лог: ${gosuslugiKeepaliveLogFile()}`);
-    }
-    return;
-  }
-  const rows = listCronJobs().filter((job) => String(job.command).includes("gosuslugi check"));
-  if (options.json) printJson(rows);
-  else printTable(rows, [["id", "ID"], ["enabled", "Вкл"], ["schedule_text", "Расписание"], ["command", "Команда"], ["last_run_at", "Последний запуск"]]);
-}
-
-function parseDurationMs(value) {
-  const text = String(value || "30m").trim().toLocaleLowerCase("ru-RU");
-  const match = text.match(/^(\d+(?:[.,]\d+)?)(ms|s|m|h|мин|минут|час|часа|часов)?$/u);
-  if (!match) throw new Error("Интервал задается как 30m, 1800s или 1h.");
-  const amount = Number(match[1].replace(",", "."));
-  const unit = match[2] || "m";
-  if (unit === "ms") return Math.max(1000, amount);
-  if (unit === "s") return Math.max(1000, amount * 1000);
-  if (unit === "h" || unit.startsWith("час")) return Math.max(1000, amount * 60 * 60 * 1000);
-  return Math.max(1000, amount * 60 * 1000);
-}
-
-function printGosuslugiDebt(result) {
-  printKeyValue({
-    total: result.total,
-    amount: `${formatRub(result.amount)} Р`,
-  });
-  if (!result.debts.length) {
-    console.log("Задолженности не найдены.");
-    return;
-  }
-  printTable(result.debts.map((item) => ({
-    group: item.group,
-    amount: `${formatRub(item.amount)} Р`,
-    date: item.billDate,
-    caption: item.caption,
-  })), [
-    ["group", "Группа"],
-    ["amount", "Сумма"],
-    ["date", "Дата"],
-    ["caption", "Описание"],
-  ]);
-}
-
-function printGosuslugiNotifications(result) {
-  printKeyValue({ total: result.total, unread: result.unread, hasMore: result.hasMore ? "yes" : "no" });
-  printTable(result.items.map((item) => ({
-    unread: item.unread ? "new" : "read",
-    date: item.date,
-    type: item.type,
-    title: item.title,
-    subtitle: item.subtitle,
-    summary: item.summary,
-  })), [
-    ["unread", "Статус"],
-    ["date", "Дата"],
-    ["type", "Тип"],
-    ["title", "Заголовок"],
-    ["subtitle", "Подзаголовок"],
-    ["summary", "Детали"],
-  ]);
-}
-
-function summarizeNotificationData(data) {
-  if (!data || typeof data !== "object") return "";
-  const snippets = Array.isArray(data.snippets) ? data.snippets : [];
-  if (snippets.length) {
-    const first = snippets[0];
-    return [first.orgName, first.address, first.date].filter(Boolean).join(" | ");
-  }
-  return [data.messageType, data.messageUuid, data.orderId, data.passCodeEpguCode].filter(Boolean).join(" | ");
-}
-
-function formatRub(value) {
-  return Number(value || 0).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function isGosuslugiPersonalIntent(question) {
-  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
-  return /(госуслуг|задолж|долг|штраф|налог|к оплате|платеж|платёж|уведомлен|госпочт|фио|дата рождения)/iu.test(normalized);
-}
-
-async function answerGosuslugiQuestion(question, options = {}) {
-  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
-  if (/(уведомлен|сообщени|госпочт|непрочитан)/iu.test(normalized)) {
-    const result = await gosuslugiNotifications({ unread: /непрочитан|нов/iu.test(normalized), limit: options.limit || 10 });
-    const lines = [`На Госуслугах: всего уведомлений ${result.total}, непрочитанных ${result.unread}.`];
-    const items = result.items.slice(0, Number(options.limit || 5));
-    if (items.length) {
-      lines.push("");
-      for (const item of items) {
-        lines.push(`- ${item.unread ? "новое" : "прочитано"}: ${item.title} — ${item.subtitle} (${item.date})`);
-      }
-    }
-    return lines.join("\n");
-  }
-  if (/(задолж|долг|штраф|налог|к оплате|платеж|платёж)/iu.test(normalized)) {
-    const result = await gosuslugiDebt(options);
-    if (!result.debts.length) return "На Госуслугах задолженности к оплате не найдены.";
-    const lines = [`На Госуслугах найдено задолженностей: ${result.total}. Общая сумма: ${formatRub(result.amount)} Р.`];
-    for (const item of result.debts) {
-      lines.push(`- ${item.group}: ${formatRub(item.amount)} Р — ${item.caption}`);
-    }
-    return lines.join("\n");
-  }
-  const result = await gosuslugiWhoami(options);
-  return [
-    `ФИО: ${result.summary.fio}`,
-    `Дата рождения: ${result.summary.birthDate}`,
-    `Статус: ${result.summary.status}`,
-  ].join("\n");
-}
-
-function maskPhone(value) {
-  const text = String(value || "");
-  return text.replace(/(\+?\d)([\d\s()-]{4,})(\d{2})$/u, "$1***$3") || "-";
-}
-
-function maskEmail(value) {
-  const text = String(value || "");
-  const [name, domain] = text.split("@");
-  if (!name || !domain) return text || "-";
-  return `${name.slice(0, 2)}***@${domain}`;
-}
-
-function maskDocument(value) {
-  const digits = String(value || "").replace(/\D+/g, "");
-  if (!digits) return "-";
-  return `***${digits.slice(-4)}`;
-}
-
-function redactGosuslugiSensitive(value, options = {}) {
-  if (Array.isArray(value)) return value.map((item) => redactGosuslugiSensitive(item, options));
-  if (!value || typeof value !== "object") return value;
-  const result = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (/token|cookie|session|password|secret|jwt|auth/i.test(key)) result[key] = "[redacted]";
-    else if (!options.keepPersonal && /(snils|inn|passport|number|series|address|mobile|email|phone)/i.test(key)) result[key] = "[redacted]";
-    else result[key] = redactGosuslugiSensitive(item, options);
-  }
-  return result;
-}
-
-async function runPersistentBrowserAutomation(action, params) {
-  await ensureBrowserRuntime();
-  await mkdir(params.userDataDir, { recursive: true });
-  const releaseLock = params.userDataDir === GOSUSLUGI_BROWSER_PROFILE_DIR ? await acquireDirectoryLock(GOSUSLUGI_BROWSER_LOCK_DIR, 180000) : async () => {};
-  const scriptFile = path.join(BROWSER_RUNTIME_DIR, `iola-browser-profile-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`);
-  await writeFile(scriptFile, persistentBrowserAutomationScript(action, params), "utf8");
-  try {
-    const options = action === "open" ? { cwd: BROWSER_RUNTIME_DIR, inherit: true } : { cwd: BROWSER_RUNTIME_DIR };
-    const result = await runCommand(process.execPath, [scriptFile], options);
-    return result.stdout?.trim() || "";
-  } finally {
-    await rm(scriptFile, { force: true }).catch(() => {});
-    await releaseLock();
-  }
-}
-
-async function acquireDirectoryLock(lockDir, timeoutMs = 60000) {
-  const started = Date.now();
-  while (true) {
-    try {
-      await mkdir(lockDir, { recursive: false });
-      await writeFile(path.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2), "utf8").catch(() => {});
-      return async () => {
-        await rm(lockDir, { recursive: true, force: true }).catch(() => {});
-      };
-    } catch {
-      if (Date.now() - started > timeoutMs) {
-        throw new Error("Браузерный профиль Госуслуг занят другим процессом. Закройте окно Госуслуг или повторите команду позже.");
-      }
-      await sleep(1000);
-    }
-  }
-}
-
-async function gosuslugiBrowserApiJson(params) {
-  await requireGosuslugiConsent();
-  await ensureBrowserRuntimeForGosuslugi();
-  const raw = await runPersistentBrowserAutomation("api-json", {
-    pageUrl: params.pageUrl || GOSUSLUGI_DEFAULT_URL,
-    endpoint: params.endpoint,
-    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    headed: params.headed !== false,
-    waitMs: Number(params.waitMs || 0),
-    timeout: Number(params.timeout || 60000),
-    viewport: params.viewport || "1366x768",
-  });
-  return JSON.parse(raw);
-}
-
-async function gosuslugiBrowserClickText(params) {
-  await requireGosuslugiConsent();
-  await ensureBrowserRuntimeForGosuslugi();
-  return runPersistentBrowserAutomation("click-text", {
-    pageUrl: params.pageUrl || GOSUSLUGI_DEFAULT_URL,
-    text: params.text,
-    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
-    headed: true,
-    waitMs: Number(params.waitMs || 3000),
-    timeout: Number(params.timeout || 60000),
-    viewport: params.viewport || "1366x768",
-  });
-}
-
-function persistentBrowserAutomationScript(action, params) {
-  return `
-import { chromium } from "playwright";
-const action = ${JSON.stringify(action)};
-const params = ${JSON.stringify(params)};
-const [width, height] = String(params.viewport || "1366x768").split("x").map(Number);
-const context = await chromium.launchPersistentContext(params.userDataDir, {
-  headless: !params.headed,
-  viewport: { width: width || 1366, height: height || 768 },
-});
-context.setDefaultTimeout(params.timeout || 60000);
-const page = context.pages()[0] || await context.newPage();
-try {
-  await page.goto(params.url || params.pageUrl, { waitUntil: "domcontentloaded", timeout: params.timeout || 60000 });
-  if (params.waitMs) await page.waitForTimeout(params.waitMs);
-  if (action === "open") {
-    if (params.headed) {
-      page.on("close", async () => {
-        await context.close().catch(() => {});
-      });
-      while (!page.isClosed()) {
-        await page.waitForTimeout(1000).catch(() => {});
-      }
-    }
-  } else if (action === "text") {
-    console.log((await page.locator("body").innerText()).trim());
-  } else if (action === "screenshot") {
-    await page.screenshot({ path: params.output, fullPage: true });
-  } else if (action === "api-json") {
-    const data = await page.evaluate(async (endpoint) => {
-      const response = await fetch(endpoint, {
-        credentials: "include",
-        headers: { accept: "application/json" },
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(response.status + " " + response.statusText + ": " + text.slice(0, 500));
-      return JSON.parse(text);
-    }, params.endpoint);
-    console.log(JSON.stringify(data));
-  } else if (action === "click-text") {
-    await page.getByText(params.text, { exact: true }).first().click();
-    if (params.waitMs) await page.waitForTimeout(params.waitMs);
-    console.log((await page.locator("body").innerText()).trim().slice(0, 4000));
-  }
-} finally {
-  await context.close().catch(() => {});
-}
-`;
 }
 
 function browserAutomationScript(action, params) {
@@ -8477,9 +7497,6 @@ function mcpTools() {
     { name: "report", description: "Запуск встроенного отчета.", inputSchema: schema({ name: { type: "string" }, format: { type: "string" }, output: { type: "string" } }) },
     { name: "browser.text", description: "Открыть страницу в headless Chromium и вернуть видимый текст.", inputSchema: schema({ url: { type: "string" }, waitMs: { type: "number" } }) },
     { name: "browser.screenshot", description: "Сделать скриншот страницы через Chromium.", inputSchema: schema({ url: { type: "string" }, output: { type: "string" }, waitMs: { type: "number" } }) },
-    { name: "gosuslugi.whoami", description: "Прочитать ФИО и дату рождения из личного профиля Госуслуг через локальный браузерный профиль.", inputSchema: schema({ full: { type: "boolean" } }) },
-    { name: "gosuslugi.debt", description: "Прочитать задолженности и платежи к оплате на Госуслугах.", inputSchema: schema() },
-    { name: "gosuslugi.notifications", description: "Прочитать уведомления Госуслуг.", inputSchema: schema({ unread: { type: "boolean" }, limit: { type: "number" } }) },
   ];
 }
 
@@ -8517,9 +7534,6 @@ async function callMcpTool(name, args = {}) {
     await runBrowserAutomation("screenshot", { url: args.url, output, waitMs: Number(args.waitMs || 0), timeout: Number(args.timeout || 30000), viewport: args.viewport || "1366x768" });
     return { output };
   }
-  if (name === "gosuslugi.whoami") return gosuslugiWhoami(args);
-  if (name === "gosuslugi.debt") return gosuslugiDebt(args);
-  if (name === "gosuslugi.notifications") return gosuslugiNotifications(args);
   return executeRpc(name, { ...args, _: [] });
 }
 
@@ -9598,10 +8612,6 @@ function mergeConfig(base, override) {
       ...base.api,
       ...(override.api || {}),
     },
-    gosuslugi: {
-      ...base.gosuslugi,
-      ...(override.gosuslugi || {}),
-    },
     ai: {
       ...base.ai,
       ...(override.ai || {}),
@@ -9684,11 +8694,6 @@ function validateConfig(config) {
   for (const toolset of config.toolsets?.enabled || []) {
     if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
   }
-  if (config.gosuslugi?.enabled && !isGosuslugiConfigured(config)) {
-    if ((config.gosuslugi?.mode || "personal-browser") !== "personal-browser") {
-      errors.push("gosuslugi включен в OAuth/OIDC-режиме, но authUrl/tokenUrl/clientId не заполнены");
-    }
-  }
   return errors;
 }
 
@@ -9698,7 +8703,6 @@ function configSchema() {
     required: ["api", "ai"],
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
-      gosuslugi: { modes: ["personal-browser", "personal-local"], browserProfile: GOSUSLUGI_BROWSER_PROFILE_DIR, oauthRequiredWhenEnabled: ["authUrl", "tokenUrl", "clientId"], optional: ["userinfoUrl", "clientSecret", "scope", "redirectHost", "redirectPort", "redirectPath"] },
       ai: { required: ["activeProfile", "profiles"], providers: ["ollama", "openai", "openrouter", "codex"] },
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },

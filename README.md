@@ -84,13 +84,6 @@ iola subagents list
 iola trajectory last
 iola review config
 iola browser status
-iola gosuslugi status
-iola gosuslugi connect
-iola gosuslugi whoami
-iola gosuslugi debt
-iola gosuslugi notifications --unread
-iola gosuslugi keepalive
-iola gosuslugi install-keepalive
 ```
 
 Локальная модель через Ollama:
@@ -119,7 +112,6 @@ iola version --check
 - [Рабочая среда агента](https://github.com/adm-iola/iola-cli/wiki/Рабочая-среда-агента)
 - [Платформа агента](https://github.com/adm-iola/iola-cli/wiki/Платформа-агента)
 - [Браузерный агент](https://github.com/adm-iola/iola-cli/wiki/Браузерный-агент)
-- [Подключение Госуслуг](https://github.com/adm-iola/iola-cli/wiki/Подключение-Госуслуг)
 - [Расширения и локальные данные](https://github.com/adm-iola/iola-cli/wiki/Расширения-и-локальные-данные)
 - [Архивы и мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Архивы-и-мастер-настройки)
 - [Daemon, RPC и cron](https://github.com/adm-iola/iola-cli/wiki/Daemon-RPC-и-cron)
@@ -139,10 +131,6 @@ iola version --check
 - MCP-мост для локальной модели: встроенный `iola-local` доступен как `mcp:iola-local:TOOL`;
 - дополнительные stdio MCP-серверы можно добавить в `~/.iola/config.json` в раздел `mcp.servers`;
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
-- личное локальное подключение Госуслуг через отдельный браузерный профиль на ПК пользователя;
-- read-only tools Госуслуг для агента: ФИО, дата рождения, задолженности и уведомления;
-- keepalive-проверка сессии Госуслуг каждые 30 минут через Windows Task Scheduler без висящего окна терминала;
-- мастер настройки автоматически включает keepalive после подключения Госуслуг;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
