@@ -26,6 +26,8 @@ const PROJECT_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "config.json");
 const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
+const GOSUSLUGI_BROWSER_PROFILE_DIR = path.join(CONFIG_DIR, "gosuslugi-browser-profile");
+const GOSUSLUGI_DEFAULT_URL = "https://www.gosuslugi.ru/";
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
@@ -130,7 +132,7 @@ const DEFAULT_AI_CONFIG = {
   },
   gosuslugi: {
     enabled: false,
-    mode: "personal-local",
+    mode: "personal-browser",
     authUrl: "",
     tokenUrl: "",
     userinfoUrl: "",
@@ -281,6 +283,7 @@ const SLASH_COMMANDS = [
   { command: "/resume SESSION_ID", description: "продолжить сессию" },
   { command: "/features list", description: "feature flags" },
   { command: "/gosuslugi status", description: "личное подключение Госуслуг" },
+  { command: "/gosuslugi connect", description: "открыть личный вход Госуслуг" },
   { command: "/wiki", description: "ссылки на документацию" },
   { command: "/context list", description: "локальный контекст проекта" },
   { command: "/skills list", description: "skills" },
@@ -514,7 +517,7 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
-  iola gosuslugi terms|consent|configure|status|login|logout|userinfo
+  iola gosuslugi terms|consent|status|connect|open|text|screenshot|logout|configure|login|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -2253,11 +2256,16 @@ async function handleGosuslugi(args) {
     const config = await loadConfig();
     const secrets = await loadSecrets();
     const tokens = secrets.gosuslugi?.tokens || null;
+    const browserSession = secrets.gosuslugiBrowser || null;
     const consent = secrets.gosuslugiConsent || null;
     printKeyValue({
-      mode: config.gosuslugi?.mode || "personal-local",
+      mode: config.gosuslugi?.mode || "personal-browser",
       enabled: config.gosuslugi?.enabled ? "yes" : "no",
-      configured: isGosuslugiConfigured(config) ? "yes" : "no",
+      browserProfile: GOSUSLUGI_BROWSER_PROFILE_DIR,
+      browserProfileExists: existsSync(GOSUSLUGI_BROWSER_PROFILE_DIR) ? "yes" : "no",
+      browserConnected: browserSession?.connectedAt ? "yes" : "unknown",
+      browserConnectedAt: browserSession?.connectedAt || "-",
+      oauthConfigured: isGosuslugiConfigured(config) ? "yes" : "no",
       consent: consent?.version === GOSUSLUGI_CONSENT_VERSION ? "accepted" : "not accepted",
       consentAt: consent?.acceptedAt || "-",
       clientId: config.gosuslugi?.clientId ? maskSecret(config.gosuslugi.clientId) : "-",
@@ -2269,6 +2277,35 @@ async function handleGosuslugi(args) {
       savedAt: secrets.gosuslugi?.savedAt || "-",
       expiresAt: secrets.gosuslugi?.expiresAt || "-",
     });
+    return;
+  }
+
+  if (action === "connect") {
+    await gosuslugiBrowserConnect(options);
+    return;
+  }
+
+  if (action === "open") {
+    await gosuslugiBrowserOpen(targetOrDefault(rest, options), options);
+    return;
+  }
+
+  if (action === "text") {
+    const result = await gosuslugiBrowserReadText(targetOrDefault(rest, options), options);
+    if (options.output) {
+      await writeFile(path.resolve(options.output), result, "utf8");
+      console.log(`Файл сохранен: ${path.resolve(options.output)}`);
+    } else {
+      console.log(result);
+    }
+    return;
+  }
+
+  if (action === "screenshot") {
+    const outputFile = path.resolve(options.output || "gosuslugi-page.png");
+    await gosuslugiBrowserScreenshot(targetOrDefault(rest, options), outputFile, options);
+    saveArtifact("gosuslugi-screenshot", targetOrDefault(rest, options), outputFile, { url: targetOrDefault(rest, options) });
+    console.log(`Файл сохранен: ${outputFile}`);
     return;
   }
 
@@ -2303,7 +2340,12 @@ async function handleGosuslugi(args) {
   if (action === "logout") {
     const secrets = await loadSecrets();
     delete secrets.gosuslugi;
+    delete secrets.gosuslugiBrowser;
     await saveSecrets(secrets);
+    if (options.profile || options.all) {
+      await rm(GOSUSLUGI_BROWSER_PROFILE_DIR, { recursive: true, force: true }).catch(() => {});
+      console.log("Локальный браузерный профиль Госуслуг удален.");
+    }
     console.log("Локальное подключение Госуслуг удалено.");
     return;
   }
@@ -2315,7 +2357,11 @@ async function handleGosuslugi(args) {
     return;
   }
 
-  throw new Error("Команды gosuslugi: terms, consent, configure, status, login, logout, userinfo.");
+  throw new Error("Команды gosuslugi: terms, consent, status, connect, open, text, screenshot, logout, configure, login, userinfo.");
+}
+
+function targetOrDefault(args, options = {}) {
+  return options.url || args.find((item) => !item.startsWith("--")) || GOSUSLUGI_DEFAULT_URL;
 }
 
 async function handleWiki(args) {
@@ -3343,6 +3389,10 @@ async function ensureGosuslugiConsent(options = {}) {
   const secrets = await loadSecrets();
   if (secrets.gosuslugiConsent?.version === GOSUSLUGI_CONSENT_VERSION) return;
   await acceptGosuslugiConsent(options);
+}
+
+async function requireGosuslugiConsent() {
+  await ensureGosuslugiConsent();
 }
 
 function waitForOAuthCallback(settings, expectedState, timeoutMs) {
@@ -6985,7 +7035,12 @@ async function onboard(args = []) {
   if (components.includes("gosuslugi")) {
     if (process.stdin.isTTY) await handleGosuslugi(["consent"]);
     else await handleGosuslugi(["terms"]);
-    console.log("Параметры подключения можно указать командой: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
+    await ensureBrowserRuntimeForGosuslugi();
+    if (process.stdin.isTTY && await confirm("Открыть Госуслуги для входа сейчас? [Y/n] ")) {
+      await gosuslugiBrowserConnect({ yes: true });
+    } else {
+      console.log("Подключить личные Госуслуги позже: iola gosuslugi connect");
+    }
   }
   if (components.includes("index")) {
     await setFilesMode("read-only", await loadConfig());
@@ -7481,6 +7536,10 @@ async function getBrowserStatus() {
 }
 
 async function installBrowserRuntime() {
+  if (existsSync(BROWSER_RUNTIME_PACKAGE)) {
+    console.log(`Browser runtime уже установлен: ${BROWSER_RUNTIME_DIR}`);
+    return;
+  }
   await mkdir(BROWSER_RUNTIME_DIR, { recursive: true });
   const packageFile = path.join(BROWSER_RUNTIME_DIR, "package.json");
   if (!existsSync(packageFile)) {
@@ -7513,6 +7572,127 @@ async function runBrowserAutomation(action, params) {
   } finally {
     await rm(scriptFile, { force: true }).catch(() => {});
   }
+}
+
+async function ensureBrowserRuntimeForGosuslugi() {
+  if (existsSync(BROWSER_RUNTIME_PACKAGE)) return;
+  console.log("Browser runtime не установлен. Устанавливаю Playwright/Chromium для локального браузерного профиля.");
+  await installBrowserRuntime();
+}
+
+async function gosuslugiBrowserConnect(options = {}) {
+  await ensureGosuslugiConsent({ yes: options.yes });
+  await ensureBrowserRuntimeForGosuslugi();
+  await saveConfig({ gosuslugi: { ...(await loadConfig()).gosuslugi, enabled: true, mode: "personal-browser" } });
+  const url = options.url || GOSUSLUGI_DEFAULT_URL;
+  console.log(`Открываю Госуслуги в отдельном локальном профиле: ${GOSUSLUGI_BROWSER_PROFILE_DIR}`);
+  console.log("Авторизуйтесь в открывшемся окне. Когда закончите, закройте окно браузера.");
+  await runPersistentBrowserAutomation("open", {
+    url,
+    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    headed: true,
+    waitMs: Number(options.wait || 0),
+    timeout: Number(options.timeout || 120000),
+    viewport: options.viewport || "1366x768",
+  });
+  const secrets = await loadSecrets();
+  secrets.gosuslugiBrowser = {
+    mode: "personal-browser",
+    profileDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    connectedAt: new Date().toISOString(),
+    lastUrl: url,
+  };
+  await saveSecrets(secrets);
+  console.log("Локальный браузерный профиль Госуслуг сохранен.");
+}
+
+async function gosuslugiBrowserOpen(url = GOSUSLUGI_DEFAULT_URL, options = {}) {
+  await requireGosuslugiConsent();
+  await ensureBrowserRuntimeForGosuslugi();
+  await runPersistentBrowserAutomation("open", {
+    url,
+    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    headed: true,
+    waitMs: Number(options.wait || 0),
+    timeout: Number(options.timeout || 120000),
+    viewport: options.viewport || "1366x768",
+  });
+}
+
+async function gosuslugiBrowserReadText(url = GOSUSLUGI_DEFAULT_URL, options = {}) {
+  await requireGosuslugiConsent();
+  await ensureBrowserRuntimeForGosuslugi();
+  return runPersistentBrowserAutomation("text", {
+    url,
+    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    headed: Boolean(options.headed),
+    waitMs: Number(options.wait || 3000),
+    timeout: Number(options.timeout || 60000),
+    viewport: options.viewport || "1366x768",
+  });
+}
+
+async function gosuslugiBrowserScreenshot(url = GOSUSLUGI_DEFAULT_URL, outputFile, options = {}) {
+  await requireGosuslugiConsent();
+  await ensureBrowserRuntimeForGosuslugi();
+  await runPersistentBrowserAutomation("screenshot", {
+    url,
+    output: outputFile,
+    userDataDir: GOSUSLUGI_BROWSER_PROFILE_DIR,
+    headed: Boolean(options.headed),
+    waitMs: Number(options.wait || 3000),
+    timeout: Number(options.timeout || 60000),
+    viewport: options.viewport || "1366x768",
+  });
+}
+
+async function runPersistentBrowserAutomation(action, params) {
+  await ensureBrowserRuntime();
+  await mkdir(params.userDataDir, { recursive: true });
+  const scriptFile = path.join(BROWSER_RUNTIME_DIR, `iola-browser-profile-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`);
+  await writeFile(scriptFile, persistentBrowserAutomationScript(action, params), "utf8");
+  try {
+    const options = action === "open" ? { cwd: BROWSER_RUNTIME_DIR, inherit: true } : { cwd: BROWSER_RUNTIME_DIR };
+    const result = await runCommand(process.execPath, [scriptFile], options);
+    return result.stdout?.trim() || "";
+  } finally {
+    await rm(scriptFile, { force: true }).catch(() => {});
+  }
+}
+
+function persistentBrowserAutomationScript(action, params) {
+  return `
+import { chromium } from "playwright";
+const action = ${JSON.stringify(action)};
+const params = ${JSON.stringify(params)};
+const [width, height] = String(params.viewport || "1366x768").split("x").map(Number);
+const context = await chromium.launchPersistentContext(params.userDataDir, {
+  headless: !params.headed,
+  viewport: { width: width || 1366, height: height || 768 },
+});
+context.setDefaultTimeout(params.timeout || 60000);
+const page = context.pages()[0] || await context.newPage();
+try {
+  await page.goto(params.url, { waitUntil: "domcontentloaded", timeout: params.timeout || 60000 });
+  if (params.waitMs) await page.waitForTimeout(params.waitMs);
+  if (action === "open") {
+    if (params.headed) {
+      page.on("close", async () => {
+        await context.close().catch(() => {});
+      });
+      while (!page.isClosed()) {
+        await page.waitForTimeout(1000).catch(() => {});
+      }
+    }
+  } else if (action === "text") {
+    console.log((await page.locator("body").innerText()).trim());
+  } else if (action === "screenshot") {
+    await page.screenshot({ path: params.output, fullPage: true });
+  }
+} finally {
+  await context.close().catch(() => {});
+}
+`;
 }
 
 function browserAutomationScript(action, params) {
@@ -8947,7 +9127,9 @@ function validateConfig(config) {
     if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
   }
   if (config.gosuslugi?.enabled && !isGosuslugiConfigured(config)) {
-    errors.push("gosuslugi включен, но authUrl/tokenUrl/clientId не заполнены");
+    if ((config.gosuslugi?.mode || "personal-browser") !== "personal-browser") {
+      errors.push("gosuslugi включен в OAuth/OIDC-режиме, но authUrl/tokenUrl/clientId не заполнены");
+    }
   }
   return errors;
 }
@@ -8958,7 +9140,7 @@ function configSchema() {
     required: ["api", "ai"],
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
-      gosuslugi: { requiredWhenEnabled: ["authUrl", "tokenUrl", "clientId"], optional: ["userinfoUrl", "clientSecret", "scope", "redirectHost", "redirectPort", "redirectPath"] },
+      gosuslugi: { modes: ["personal-browser", "personal-local"], browserProfile: GOSUSLUGI_BROWSER_PROFILE_DIR, oauthRequiredWhenEnabled: ["authUrl", "tokenUrl", "clientId"], optional: ["userinfoUrl", "clientSecret", "scope", "redirectHost", "redirectPort", "redirectPath"] },
       ai: { required: ["activeProfile", "profiles"], providers: ["ollama", "openai", "openrouter", "codex"] },
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },

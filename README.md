@@ -40,8 +40,7 @@ npx -y @iola_adm/iola-cli
 Повторный запуск мастера:
 
 ```bash
-iola wizard
-iola setup wizard
+iola master
 ```
 
 Мастер обновляет только выбранные разделы и не сбрасывает остальные настройки.
@@ -86,6 +85,7 @@ iola trajectory last
 iola review config
 iola browser status
 iola gosuslugi status
+iola gosuslugi connect
 ```
 
 Локальная модель через Ollama:
@@ -133,14 +133,14 @@ iola version --check
 - MCP-мост для локальной модели: встроенный `iola-local` доступен как `mcp:iola-local:TOOL`;
 - дополнительные stdio MCP-серверы можно добавить в `~/.iola/config.json` в раздел `mcp.servers`;
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
-- личное локальное подключение Госуслуг с явным согласием пользователя и хранением доступа только на его ПК;
+- личное локальное подключение Госуслуг через отдельный браузерный профиль на ПК пользователя;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
 - staged changes, импорт локальных CSV/JSON, индекс локальных документов, report packs, plugins и локальный MCP endpoint;
 - чтение и индексирование `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.md`, `.txt`, `.csv`, `.json`, `.html`;
 - работа с архивами через 7-Zip: `.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.tgz`, `.bz2`, `.xz` и другие;
-- расширенный `iola onboard` с установкой 7-Zip, Ollama, Codex CLI и настройкой выбранных компонентов;
+- расширенный `iola onboard` с установкой 7-Zip, браузерного runtime, Ollama, Codex CLI и настройкой выбранных компонентов;
 - cron-задачи, локальный daemon, web dashboard и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
 - интеграция с публичным MCP-сервером Йошкар-Олы.
