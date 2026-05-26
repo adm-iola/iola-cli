@@ -22,6 +22,8 @@ const DB_SCHEMA_VERSION = 8;
 const PROJECT_IOLA_DIR = path.join(process.cwd(), ".iola");
 const PROJECT_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "config.json");
 const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
+const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
+const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
@@ -271,6 +273,7 @@ const COMMANDS = new Map([
   ["index", handleIndex],
   ["reports", handleReports],
   ["plugins", handlePlugins],
+  ["browser", handleBrowser],
   ["workspace", handleWorkspace],
   ["tasks", handleTasks],
   ["artifacts", handleArtifacts],
@@ -396,6 +399,7 @@ Usage:
   iola index folder|status|search
   iola reports list|run
   iola plugins list|install|run|remove
+  iola browser status|install|open|text|html|screenshot|pdf|click|type|eval
   iola workspace init|status|use|list
   iola tasks list|add|done|run
   iola artifacts list|show|open
@@ -1709,6 +1713,7 @@ async function handleWiki(args) {
     ["Локальные файлы", `${base}/Локальные-файлы`],
     ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
     ["Платформа агента", `${base}/Платформа-агента`],
+    ["Браузерный агент", `${base}/Браузерный-агент`],
     ["Расширения и локальные данные", `${base}/Расширения-и-локальные-данные`],
     ["Архивы и мастер настройки", `${base}/Архивы-и-мастер-настройки`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
@@ -2207,6 +2212,94 @@ async function handlePlugins(args) {
     return;
   }
   throw new Error("Команды plugins: list, install NAME --command CMD, run NAME, remove NAME.");
+}
+
+async function handleBrowser(args) {
+  const [action = "status", target, ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "status") {
+    printKeyValue(await getBrowserStatus());
+    return;
+  }
+
+  if (action === "install") {
+    await installBrowserRuntime();
+    printKeyValue(await getBrowserStatus());
+    return;
+  }
+
+  if (action === "open") {
+    const url = target || options.url;
+    if (!url) throw new Error("Пример: iola browser open https://example.com");
+    if (options.system) {
+      await openUrl(url);
+      return;
+    }
+    await runBrowserAutomation("open", { url, headed: options.headless ? false : true, waitMs: Number(options.wait || 600000) });
+    return;
+  }
+
+  if (action === "text" || action === "html") {
+    const url = target || options.url;
+    if (!url) throw new Error(`Пример: iola browser ${action} https://example.com`);
+    const result = await runBrowserAutomation(action, browserParams(url, options));
+    if (options.output) {
+      await writeFile(options.output, result, "utf8");
+      console.log(`Файл сохранен: ${options.output}`);
+    } else {
+      console.log(result);
+    }
+    return;
+  }
+
+  if (action === "screenshot" || action === "pdf") {
+    const url = target || options.url;
+    if (!url) throw new Error(`Пример: iola browser ${action} https://example.com --output page.${action === "pdf" ? "pdf" : "png"}`);
+    const output = options.output || path.join(process.cwd(), action === "pdf" ? "browser-page.pdf" : "browser-page.png");
+    await runBrowserAutomation(action, { ...browserParams(url, options), output: path.resolve(output) });
+    saveArtifact(action === "pdf" ? "browser-pdf" : "browser-screenshot", url, path.resolve(output), { url });
+    console.log(`Файл сохранен: ${output}`);
+    return;
+  }
+
+  if (action === "click") {
+    const url = target || options.url;
+    if (!url || !options.selector) throw new Error('Пример: iola browser click https://example.com --selector "button" --output after.png');
+    const result = await runBrowserAutomation("click", { ...browserParams(url, options), selector: options.selector, output: options.output ? path.resolve(options.output) : "" });
+    if (result) console.log(result);
+    return;
+  }
+
+  if (action === "type") {
+    const url = target || options.url;
+    if (!url || !options.selector || options.text === undefined) throw new Error('Пример: iola browser type https://example.com --selector "#q" --text "школа 29"');
+    const result = await runBrowserAutomation("type", { ...browserParams(url, options), selector: options.selector, text: options.text, press: options.press || "", output: options.output ? path.resolve(options.output) : "" });
+    if (result) console.log(result);
+    return;
+  }
+
+  if (action === "eval") {
+    const url = target || options.url;
+    const script = options.script || rest.join(" ");
+    if (!url || !script) throw new Error('Пример: iola browser eval https://example.com --script "document.title"');
+    const result = await runBrowserAutomation("eval", { ...browserParams(url, options), script });
+    console.log(result);
+    return;
+  }
+
+  throw new Error("Команды browser: status, install, open URL, text URL, html URL, screenshot URL --output FILE, pdf URL --output FILE, click URL --selector SEL, type URL --selector SEL --text TEXT, eval URL --script JS.");
+}
+
+function browserParams(url, options = {}) {
+  return {
+    url,
+    headed: Boolean(options.headed),
+    timeout: Number(options.timeout || 30000),
+    waitMs: Number(options.wait || 0),
+    selector: options.selector || "",
+    viewport: options.viewport || "1366x768",
+  };
 }
 
 async function handleWorkspace(args) {
@@ -5903,12 +5996,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -6285,6 +6378,105 @@ async function installCodexIfMissing() {
   await runCommand("npm", ["install", "-g", "@openai/codex"], { inherit: true });
 }
 
+async function getBrowserStatus() {
+  const installed = existsSync(BROWSER_RUNTIME_PACKAGE);
+  let playwright = "не установлен";
+  if (installed) {
+    try {
+      playwright = JSON.parse(await readFile(BROWSER_RUNTIME_PACKAGE, "utf8")).version || "installed";
+    } catch {
+      playwright = "installed";
+    }
+  }
+  return {
+    runtime: BROWSER_RUNTIME_DIR,
+    playwright,
+    installed: installed ? "yes" : "no",
+    install_command: "iola browser install",
+    chromium: installed ? "managed by Playwright" : "not installed",
+  };
+}
+
+async function installBrowserRuntime() {
+  await mkdir(BROWSER_RUNTIME_DIR, { recursive: true });
+  const packageFile = path.join(BROWSER_RUNTIME_DIR, "package.json");
+  if (!existsSync(packageFile)) {
+    await writeFile(packageFile, `${JSON.stringify({ private: true, type: "module", dependencies: {} }, null, 2)}\n`, "utf8");
+  }
+  console.log(`Устанавливаю Playwright runtime: ${BROWSER_RUNTIME_DIR}`);
+  await runPackageManager("npm", ["install", "playwright@latest"], { inherit: true, cwd: BROWSER_RUNTIME_DIR });
+  await runPackageManager("npx", ["playwright", "install", "chromium"], { inherit: true, cwd: BROWSER_RUNTIME_DIR });
+}
+
+function runPackageManager(command, args, options = {}) {
+  if (process.platform === "win32") {
+    return runCommand(process.env.ComSpec || "cmd.exe", ["/d", "/c", [command, ...args].join(" ")], options);
+  }
+  return runCommand(command, args, options);
+}
+
+async function ensureBrowserRuntime() {
+  if (existsSync(BROWSER_RUNTIME_PACKAGE)) return;
+  throw new Error("Browser runtime не установлен. Запустите: iola browser install");
+}
+
+async function runBrowserAutomation(action, params) {
+  await ensureBrowserRuntime();
+  const scriptFile = path.join(BROWSER_RUNTIME_DIR, `iola-browser-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`);
+  await writeFile(scriptFile, browserAutomationScript(action, params), "utf8");
+  try {
+    const { stdout } = await runCommand(process.execPath, [scriptFile], { cwd: BROWSER_RUNTIME_DIR });
+    return stdout.trim();
+  } finally {
+    await rm(scriptFile, { force: true }).catch(() => {});
+  }
+}
+
+function browserAutomationScript(action, params) {
+  return `
+import { chromium } from "playwright";
+const action = ${JSON.stringify(action)};
+const params = ${JSON.stringify(params)};
+const [width, height] = String(params.viewport || "1366x768").split("x").map(Number);
+const browser = await chromium.launch({ headless: !params.headed });
+const page = await browser.newPage({ viewport: { width: width || 1366, height: height || 768 } });
+page.setDefaultTimeout(params.timeout || 30000);
+try {
+  await page.goto(params.url, { waitUntil: "domcontentloaded", timeout: params.timeout || 30000 });
+  if (params.waitMs) await page.waitForTimeout(params.waitMs);
+  if (action === "open") {
+    if (params.waitMs > 0) await page.waitForTimeout(params.waitMs);
+    else if (!page.context().browser()?.isConnected()) {}
+  } else if (action === "text") {
+    console.log((await page.locator("body").innerText()).trim());
+  } else if (action === "html") {
+    console.log(await page.content());
+  } else if (action === "screenshot") {
+    await page.screenshot({ path: params.output, fullPage: true });
+  } else if (action === "pdf") {
+    await page.pdf({ path: params.output, format: "A4", printBackground: true });
+  } else if (action === "click") {
+    await page.locator(params.selector).first().click();
+    if (params.waitMs) await page.waitForTimeout(params.waitMs);
+    if (params.output) await page.screenshot({ path: params.output, fullPage: true });
+    console.log((await page.locator("body").innerText()).trim().slice(0, 4000));
+  } else if (action === "type") {
+    const locator = page.locator(params.selector).first();
+    await locator.fill(params.text || "");
+    if (params.press) await locator.press(params.press);
+    if (params.waitMs) await page.waitForTimeout(params.waitMs);
+    if (params.output) await page.screenshot({ path: params.output, fullPage: true });
+    console.log((await page.locator("body").innerText()).trim().slice(0, 4000));
+  } else if (action === "eval") {
+    const value = await page.evaluate(new Function("return (" + params.script + ")"));
+    console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+  }
+} finally {
+  await browser.close();
+}
+`;
+}
+
 async function probeEndpoint(url) {
   try {
     const response = await fetch(url, { headers: { accept: "application/json" } });
@@ -6468,6 +6660,8 @@ function mcpTools() {
     { name: "files.search", description: "Поиск текста в файлах workspace.", inputSchema: schema({ query: { type: "string" }, path: { type: "string" }, limit: { type: "number" } }) },
     { name: "index.search", description: "Поиск по индексу локальных документов.", inputSchema: schema({ query: { type: "string" }, limit: { type: "number" } }) },
     { name: "report", description: "Запуск встроенного отчета.", inputSchema: schema({ name: { type: "string" }, format: { type: "string" }, output: { type: "string" } }) },
+    { name: "browser.text", description: "Открыть страницу в headless Chromium и вернуть видимый текст.", inputSchema: schema({ url: { type: "string" }, waitMs: { type: "number" } }) },
+    { name: "browser.screenshot", description: "Сделать скриншот страницы через Chromium.", inputSchema: schema({ url: { type: "string" }, output: { type: "string" }, waitMs: { type: "number" } }) },
   ];
 }
 
@@ -6495,6 +6689,14 @@ async function callMcpTool(name, args = {}) {
   if (name === "report") {
     const output = args.output || `${args.name || "education-contacts"}.${args.format || "xlsx"}`;
     await handleExport([args.name || "education-contacts", "--format", args.format || "xlsx", "--output", output]);
+    return { output };
+  }
+  if (name === "browser.text") {
+    return runBrowserAutomation("text", { url: args.url, waitMs: Number(args.waitMs || 0), timeout: Number(args.timeout || 30000), viewport: args.viewport || "1366x768" });
+  }
+  if (name === "browser.screenshot") {
+    const output = path.resolve(args.output || "browser-page.png");
+    await runBrowserAutomation("screenshot", { url: args.url, output, waitMs: Number(args.waitMs || 0), timeout: Number(args.timeout || 30000), viewport: args.viewport || "1366x768" });
     return { output };
   }
   return executeRpc(name, { ...args, _: [] });
