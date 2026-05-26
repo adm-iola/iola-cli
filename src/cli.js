@@ -17,7 +17,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 5;
+const DB_SCHEMA_VERSION = 6;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
@@ -242,6 +242,11 @@ const COMMANDS = new Map([
   ["skills", handleSkills],
   ["tools", handleTools],
   ["files", handleFiles],
+  ["changes", handleChanges],
+  ["import", handleImport],
+  ["index", handleIndex],
+  ["reports", handleReports],
+  ["plugins", handlePlugins],
   ["workspace", handleWorkspace],
   ["tasks", handleTasks],
   ["artifacts", handleArtifacts],
@@ -284,6 +289,7 @@ const COMMANDS = new Map([
   ["search", searchAll],
   ["mcp-info", showMcpInfo],
   ["setup", setupClient],
+  ["onboard", onboard],
 ]);
 
 export async function main(argv) {
@@ -352,6 +358,11 @@ Usage:
   iola skills list|show|paths|enable|disable
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
+  iola changes list|show|apply|discard
+  iola import file|folder
+  iola index folder|status|search
+  iola reports list|run
+  iola plugins list|install|run|remove
   iola workspace init|status|use|list
   iola tasks list|add|done|run
   iola artifacts list|show|open
@@ -366,7 +377,7 @@ Usage:
   iola memory show|add|set|clear|export
   iola hooks list|add|delete|run
   iola agents list|run
-  iola mcp list|status|install|remove
+  iola mcp list|status|install|remove|serve
   iola cache status|warm|clear
   iola sync [--dataset schools|kindergartens]
   iola sync status
@@ -413,6 +424,7 @@ Usage:
   iola search TEXT [--limit 5] [--format table|json|csv]
   iola mcp-info [--json]
   iola setup codex
+  iola onboard
   iola version
 
 Environment:
@@ -604,6 +616,26 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "changes") {
+    await handleChanges(args);
+    return false;
+  }
+
+  if (command === "index") {
+    await handleIndex(args);
+    return false;
+  }
+
+  if (command === "reports") {
+    await handleReports(args);
+    return false;
+  }
+
+  if (command === "plugins") {
+    await handlePlugins(args);
+    return false;
+  }
+
   if (command === "workspace") {
     await handleWorkspace(args);
     return false;
@@ -757,6 +789,10 @@ async function handleAgentLine(line, state) {
     context: ["context", args],
     skills: ["skills", args],
     files: ["files", args],
+    changes: ["changes", args],
+    index: ["index", args],
+    reports: ["reports", args],
+    plugins: ["plugins", args],
     workspace: ["workspace", args],
     tasks: ["tasks", args],
     todos: ["tasks", args],
@@ -812,6 +848,10 @@ function printAgentHelp() {
   /permissions
   /tools
   /files status
+  /changes list
+  /index status
+  /reports list
+  /plugins list
   /workspace status
   /tasks list
   /artifacts list
@@ -1548,6 +1588,7 @@ async function handleWiki(args) {
     ["Skills и toolsets", `${base}/Skills-и-toolsets`],
     ["Локальные файлы", `${base}/Локальные-файлы`],
     ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
+    ["Расширения и локальные данные", `${base}/Расширения-и-локальные-данные`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
     ["Контекст и память", `${base}/Контекст-и-память`],
     ["Команды", `${base}/Команды`],
@@ -1774,20 +1815,154 @@ async function handleFiles(args) {
     if (!target) throw new Error('Пример: iola files write report.md --text "..."');
     const text = options.text ?? rest.join(" ");
     if (!text) throw new Error('Для записи нужен --text "..." или текст после пути.');
-    await filesWrite(target, text, { append: Boolean(options.append) });
-    console.log(`Файл записан: ${target}`);
+    if (options.stage) {
+      const id = await stageFileChange("write", target, text);
+      console.log(`Изменение подготовлено: ${id}`);
+    } else {
+      await filesWrite(target, text, { append: Boolean(options.append) });
+      console.log(`Файл записан: ${target}`);
+    }
     return;
   }
 
   if (action === "patch") {
     if (!target) throw new Error('Пример: iola files patch README.md --search old --replace new');
     if (!options.search || options.replace === undefined) throw new Error("Для patch нужны --search и --replace.");
-    const result = await filesPatch(target, options.search, options.replace);
-    printKeyValue(result);
+    if (options.stage) {
+      const current = await filesRead(target);
+      const next = current.split(options.search).join(options.replace);
+      const id = await stageFileChange("patch", target, next, current);
+      console.log(`Изменение подготовлено: ${id}`);
+    } else {
+      const result = await filesPatch(target, options.search, options.replace);
+      printKeyValue(result);
+    }
     return;
   }
 
   throw new Error("Команды files: status, mode MODE, approvals POLICY, tree [PATH], read FILE, search TEXT, write FILE --text TEXT, patch FILE --search OLD --replace NEW.");
+}
+
+async function handleChanges(args) {
+  const [action = "list", id] = args;
+  if (action === "list" || action === "ls") {
+    printTable(listChanges(), [["id", "ID"], ["kind", "Тип"], ["target", "Файл"], ["status", "Статус"], ["created_at", "Дата"]]);
+    return;
+  }
+  if (action === "show") {
+    const change = getChange(Number(id));
+    console.log(unifiedPreview(change.before_text || "", change.after_text || ""));
+    return;
+  }
+  if (action === "apply") {
+    await applyChange(Number(id));
+    console.log(`Изменение применено: ${id}`);
+    return;
+  }
+  if (action === "discard") {
+    updateChangeStatus(Number(id), "discarded");
+    console.log(`Изменение отклонено: ${id}`);
+    return;
+  }
+  throw new Error("Команды changes: list, show ID, apply ID, discard ID.");
+}
+
+async function handleImport(args) {
+  const [action, target, ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "file") {
+    if (!target) throw new Error("Пример: iola import file data.csv --dataset custom");
+    const dataset = options.dataset || path.basename(target, path.extname(target));
+    const count = await importDataFile(target, dataset);
+    console.log(`Импортировано записей: ${count}, dataset=${dataset}`);
+    return;
+  }
+  if (action === "folder") {
+    if (!target) throw new Error("Пример: iola import folder ./data");
+    const rows = await filesTree(target, { depth: 1, limit: 200 });
+    let total = 0;
+    for (const row of rows.filter((item) => item.type === "file" && /\.(json|csv)$/i.test(item.path))) {
+      total += await importDataFile(row.path, options.dataset || path.basename(row.path, path.extname(row.path)));
+    }
+    console.log(`Импортировано записей: ${total}`);
+    return;
+  }
+  throw new Error("Команды import: file PATH --dataset NAME, folder PATH.");
+}
+
+async function handleIndex(args) {
+  const [action = "status", target, ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "status") {
+    printKeyValue(getIndexStatus());
+    return;
+  }
+  if (action === "folder") {
+    if (!target) throw new Error("Пример: iola index folder ./docs");
+    const count = await indexFolder(target, options);
+    console.log(`Проиндексировано документов: ${count}`);
+    return;
+  }
+  if (action === "search") {
+    const query = [target, ...rest].filter(Boolean).join(" ");
+    if (!query) throw new Error('Пример: iola index search "школа 29"');
+    printTable(searchDocs(query, Number(options.limit || 20)), [["file", "Файл"], ["title", "Название"], ["snippet", "Фрагмент"]]);
+    return;
+  }
+  throw new Error("Команды index: status, folder PATH, search TEXT.");
+}
+
+async function handleReports(args) {
+  const [action = "list", name, ...rest] = args;
+  const packs = {
+    "education-passport": ["education-contacts", "licenses"],
+    "data-quality-pack": ["schools-summary", "missing-phones"],
+  };
+  if (action === "list") {
+    printTable(Object.entries(packs).map(([pack, reports]) => ({ pack, reports: reports.join(", ") })), [["pack", "Пакет"], ["reports", "Отчеты"]]);
+    return;
+  }
+  if (action === "run") {
+    if (!packs[name]) throw new Error(`Пакет неизвестен: ${Object.keys(packs).join(", ")}`);
+    const options = parseOptions(rest);
+    const dir = options.output || path.join(process.cwd(), `iola-report-${name}-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+    for (const report of packs[name]) {
+      await handleExport([report, "--format", "xlsx", "--output", path.join(dir, `${report}.xlsx`)]);
+      await handleExport([report, "--format", "docx", "--output", path.join(dir, `${report}.docx`)]);
+    }
+    saveArtifact("report-pack", name, dir, { reports: packs[name] });
+    console.log(`Пакет отчетов создан: ${dir}`);
+    return;
+  }
+  throw new Error("Команды reports: list, run NAME [--output DIR].");
+}
+
+async function handlePlugins(args) {
+  const [action = "list", name, ...rest] = args;
+  if (action === "list" || action === "ls") {
+    printTable(listPlugins(), [["name", "Plugin"], ["source", "Источник"], ["command", "Команда"]]);
+    return;
+  }
+  if (action === "install") {
+    const options = parseOptions(rest);
+    if (!name) throw new Error("Пример: iola plugins install my-plugin --command \"iola quality\"");
+    savePlugin(name, options.source || name, options.command || "");
+    console.log(`Plugin установлен: ${name}`);
+    return;
+  }
+  if (action === "run") {
+    const plugin = getPlugin(name);
+    if (!plugin.command) throw new Error("У plugin нет command.");
+    await main(splitCommandLine(plugin.command));
+    return;
+  }
+  if (action === "remove" || action === "delete") {
+    deletePlugin(name);
+    console.log(`Plugin удален: ${name}`);
+    return;
+  }
+  throw new Error("Команды plugins: list, install NAME --command CMD, run NAME, remove NAME.");
 }
 
 async function handleWorkspace(args) {
@@ -2309,7 +2484,13 @@ async function handleMcp(args) {
     return;
   }
 
-  throw new Error("Команды mcp: status, list, install codex, remove codex.");
+  if (action === "serve") {
+    const config = await loadConfig();
+    await startMcpServer(config.daemon?.host || "127.0.0.1", Number(config.daemon?.port || DAEMON_PORT) + 1);
+    return;
+  }
+
+  throw new Error("Команды mcp: status, list, install codex, remove codex, serve.");
 }
 
 async function handleCache(args) {
@@ -3195,6 +3376,39 @@ function initDatabase() {
         path TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS pending_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        target TEXT NOT NULL,
+        before_text TEXT,
+        after_text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        applied_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS custom_records (
+        dataset TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        searchable_text TEXT NOT NULL,
+        imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(dataset, record_key)
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS custom_records_fts USING fts5(dataset, record_key, searchable_text);
+      CREATE TABLE IF NOT EXISTS doc_index (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file TEXT NOT NULL,
+        title TEXT,
+        content TEXT NOT NULL,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS doc_index_fts USING fts5(file, title, content);
+      CREATE TABLE IF NOT EXISTS plugins (
+        name TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        command TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
     rebuildFtsIfEmpty(db);
     db.prepare(`
@@ -3249,6 +3463,8 @@ function getDbStatus() {
       const cron = db.prepare("SELECT COUNT(*) AS count FROM cron_jobs").get();
       const tasks = db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status != 'done'").get();
       const artifacts = db.prepare("SELECT COUNT(*) AS count FROM artifacts").get();
+      const docs = db.prepare("SELECT COUNT(*) AS count FROM doc_index").get();
+      const custom = db.prepare("SELECT COUNT(*) AS count FROM custom_records").get();
       return {
         status: "ok",
         file: DB_FILE,
@@ -3262,6 +3478,8 @@ function getDbStatus() {
         cron_jobs: cron?.count ?? 0,
         open_tasks: tasks?.count ?? 0,
         artifacts: artifacts?.count ?? 0,
+        indexed_docs: docs?.count ?? 0,
+        custom_records: custom?.count ?? 0,
       };
     } finally {
       db.close();
@@ -5055,17 +5273,29 @@ async function setupClient(args) {
   console.log("Codex MCP и skill установлены.");
 }
 
+async function onboard(args = []) {
+  const options = parseOptions(args);
+  showBanner();
+  initDatabase();
+  await handleConfig(["validate"]);
+  await doctor(["--summary"]);
+  if (options.yes || await confirm("Инициализировать workspace? [Y/n] ")) await handleWorkspace(["init"]);
+  if (options.yes || await confirm("Применить policy analyst? [Y/n] ")) await handlePolicy(["use", "analyst"]);
+  if (options.yes || await confirm("Настроить AI сейчас? [y/N] ")) await aiSetup([]);
+  console.log("Onboard завершен.");
+}
+
 function parseOptions(args) {
   const result = { _: [] };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -5432,6 +5662,34 @@ async function startDaemon(host, port) {
   await new Promise(() => {});
 }
 
+async function startMcpServer(host, port) {
+  const server = createServer(async (req, res) => {
+    try {
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      if (req.method !== "POST") {
+        res.end(JSON.stringify({ name: "iola-local-mcp", tools: ["status", "search", "card", "quality", "files.search", "index.search"] }));
+        return;
+      }
+      const payload = JSON.parse(await readRequestBody(req) || "{}");
+      const method = payload.method === "tools/call" ? payload.params?.name : payload.method;
+      const args = payload.params?.arguments || payload.params || {};
+      let result;
+      if (method === "index.search") result = searchDocs(args.query || "", Number(args.limit || 20));
+      else result = await executeRpc(method, { ...args, _: [] });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id || null, result }));
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { message: error instanceof Error ? error.message : String(error) } }));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, resolve);
+  });
+  console.log(`iola local MCP запущен: http://${host}:${port}`);
+  await new Promise(() => {});
+}
+
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -5784,6 +6042,208 @@ async function restoreSnapshot(id) {
   await cp(row.path, row.workspace, { recursive: true, force: true });
 }
 
+async function stageFileChange(kind, target, afterText, beforeText = null) {
+  const { resolved, relative } = await resolveFileTarget(target, kind === "patch" ? "edit" : "write");
+  const before = beforeText ?? (existsSync(resolved) ? await readFile(resolved, "utf8").catch(() => "") : "");
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO pending_changes(kind, target, before_text, after_text) VALUES (?, ?, ?, ?)").run(kind, relative, before, afterText);
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function listChanges() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, kind, target, status, created_at FROM pending_changes ORDER BY id DESC LIMIT 100").all();
+  } finally {
+    db.close();
+  }
+}
+
+function getChange(id) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM pending_changes WHERE id = ?").get(id);
+    if (!row) throw new Error(`Изменение не найдено: ${id}`);
+    return row;
+  } finally {
+    db.close();
+  }
+}
+
+function updateChangeStatus(id, status) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("UPDATE pending_changes SET status = ?, applied_at = CASE WHEN ? = 'applied' THEN datetime('now') ELSE applied_at END WHERE id = ?").run(status, status, id);
+  } finally {
+    db.close();
+  }
+}
+
+async function applyChange(id) {
+  const change = getChange(id);
+  if (change.status !== "pending") throw new Error(`Изменение уже не pending: ${change.status}`);
+  await filesWrite(change.target, change.after_text);
+  updateChangeStatus(id, "applied");
+}
+
+async function importDataFile(target, dataset) {
+  const text = await filesRead(target, { maxBytes: 5_000_000 });
+  const ext = path.extname(target).toLocaleLowerCase("ru-RU");
+  let rows = [];
+  if (ext === ".json") {
+    const parsed = JSON.parse(text);
+    rows = Array.isArray(parsed) ? parsed : normalizeItems(parsed);
+  } else if (ext === ".csv") {
+    rows = parseCsv(text);
+  } else {
+    throw new Error("Поддерживается импорт JSON и CSV.");
+  }
+  saveCustomRecords(dataset, rows);
+  return rows.length;
+}
+
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const headers = splitCsvLine(lines.shift() || "");
+  return lines.map((line) => {
+    const values = splitCsvLine(line);
+    return Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+  });
+}
+
+function splitCsvLine(line) {
+  const result = [];
+  let current = "";
+  let quote = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') quote = !quote;
+    else if (char === "," && !quote) {
+      result.push(current);
+      current = "";
+    } else current += char;
+  }
+  result.push(current);
+  return result.map((value) => value.trim());
+}
+
+function saveCustomRecords(dataset, rows) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const insert = db.prepare("INSERT INTO custom_records(dataset, record_key, record_json, searchable_text) VALUES (?, ?, ?, ?) ON CONFLICT(dataset, record_key) DO UPDATE SET record_json = excluded.record_json, searchable_text = excluded.searchable_text, imported_at = datetime('now')");
+    const insertFts = db.prepare("INSERT INTO custom_records_fts(dataset, record_key, searchable_text) VALUES (?, ?, ?)");
+    db.prepare("DELETE FROM custom_records_fts WHERE dataset = ?").run(dataset);
+    rows.forEach((row, index) => {
+      const key = String(row.id || row.inn || index + 1);
+      const json = JSON.stringify(row);
+      const text = json.toLocaleLowerCase("ru-RU");
+      insert.run(dataset, key, json, text);
+      insertFts.run(dataset, key, text);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function indexFolder(target, options = {}) {
+  const rows = await filesTree(target, { depth: Number(options.depth || 5), limit: Number(options.limit || 1000) });
+  let count = 0;
+  for (const row of rows.filter((item) => item.type === "file" && /\.(md|txt|csv|json|html)$/i.test(item.path))) {
+    try {
+      const text = await filesRead(row.path, { maxBytes: 1_000_000 });
+      saveIndexedDoc(row.path, path.basename(row.path), text);
+      count += 1;
+    } catch {
+      // Skip unreadable files.
+    }
+  }
+  return count;
+}
+
+function saveIndexedDoc(file, title, content) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO doc_index(file, title, content) VALUES (?, ?, ?)").run(file, title, content);
+    db.prepare("INSERT INTO doc_index_fts(rowid, file, title, content) VALUES (?, ?, ?, ?)").run(Number(result.lastInsertRowid), file, title, content);
+  } finally {
+    db.close();
+  }
+}
+
+function getIndexStatus() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const docs = db.prepare("SELECT COUNT(*) AS count FROM doc_index").get();
+    return { docs: docs?.count || 0 };
+  } finally {
+    db.close();
+  }
+}
+
+function searchDocs(query, limit = 20) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const rows = db.prepare("SELECT file, title, snippet(doc_index_fts, 2, '[', ']', '...', 16) AS snippet FROM doc_index_fts WHERE doc_index_fts MATCH ? LIMIT ?").all(toFtsQuery(query), limit);
+    return rows;
+  } finally {
+    db.close();
+  }
+}
+
+function listPlugins() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT name, source, COALESCE(command, '-') AS command FROM plugins ORDER BY name").all();
+  } finally {
+    db.close();
+  }
+}
+
+function savePlugin(name, source, command) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO plugins(name, source, command) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET source = excluded.source, command = excluded.command").run(name, source, command);
+  } finally {
+    db.close();
+  }
+}
+
+function getPlugin(name) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM plugins WHERE name = ?").get(name);
+    if (!row) throw new Error(`Plugin не найден: ${name}`);
+    return row;
+  } finally {
+    db.close();
+  }
+}
+
+function deletePlugin(name) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM plugins WHERE name = ?").run(name);
+  } finally {
+    db.close();
+  }
+}
+
 function unifiedPreview(before, after) {
   const beforeLines = before.split(/\r?\n/);
   const afterLines = after.split(/\r?\n/);
@@ -5830,6 +6290,9 @@ async function executeRpc(method, options = {}) {
   }
   if (method === "files.search") {
     return filesSearch(options.query || options.search || "", options);
+  }
+  if (method === "index.search") {
+    return searchDocs(options.query || options.search || "", Number(options.limit || 20));
   }
   throw new Error(`RPC method неизвестен: ${method}. Доступно: status, search, card, quality, sync.`);
 }
