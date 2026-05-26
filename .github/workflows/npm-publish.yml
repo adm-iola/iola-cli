@@ -81,6 +81,13 @@ jobs:
         run: |
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          for attempt in {1..12}; do
+            if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for npm registry to expose $PACKAGE_NAME@$PACKAGE_VERSION ($attempt/12)"
+            sleep 10
+          done
           npm install -g "$PACKAGE_NAME@$PACKAGE_VERSION"
           iola --help
           iola wiki links
