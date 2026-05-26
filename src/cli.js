@@ -65,6 +65,7 @@ Usage:
   iola banner
   iola agent
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
+  iola ai context TEXT [--json]
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
@@ -163,6 +164,21 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "context") {
+    await aiContext(args);
+    return false;
+  }
+
+  if (command === "use") {
+    await useAiProvider(args);
+    return false;
+  }
+
+  if (command === "key") {
+    await handleAiKey(args);
+    return false;
+  }
+
   if (command === "provider") {
     await printAiConfigField("provider");
     return false;
@@ -215,8 +231,13 @@ function printAgentHelp() {
   /kindergartens get --inn 1215077421
   /search лицей --limit 3
   /mcp-info
+  /context школа 29
   /ai doctor
   /ai setup ollama
+  /use openai
+  /use ollama
+  /key status
+  /key set openai
   /config
   /provider
   /model
@@ -290,6 +311,7 @@ async function handleAi(args) {
     showBanner();
     console.log(`AI-команды:
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
+  iola ai context TEXT [--json]
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
@@ -306,6 +328,11 @@ async function handleAi(args) {
 
   if (subcommand === "ask") {
     await aiAsk(rest);
+    return;
+  }
+
+  if (subcommand === "context") {
+    await aiContext(rest);
     return;
   }
 
@@ -401,6 +428,53 @@ async function handleAiKey(args) {
   iola ai key set openrouter
   iola ai key status
   iola ai key delete openai|openrouter`);
+}
+
+async function useAiProvider(args) {
+  const [provider] = args;
+
+  if (provider !== "ollama" && provider !== "openai" && provider !== "openrouter") {
+    throw new Error("Провайдер должен быть ollama, openai или openrouter.");
+  }
+
+  const config = await loadConfig();
+  const defaultModel = {
+    ollama: config.ai.provider === "ollama" ? config.ai.model : "llama3.2:1b",
+    openai: config.ai.provider === "openai" ? config.ai.model : "gpt-4.1-mini",
+    openrouter: config.ai.provider === "openrouter" ? config.ai.model : "openai/gpt-4.1-mini",
+  }[provider];
+
+  await saveConfig({
+    ai: {
+      provider,
+      model: defaultModel,
+      baseUrl: provider === "ollama"
+        ? "http://127.0.0.1:11434"
+        : provider === "openai"
+          ? "https://api.openai.com/v1"
+          : "https://openrouter.ai/api/v1",
+    },
+  });
+
+  console.log(`AI-провайдер переключен: ${provider}, модель: ${defaultModel}`);
+}
+
+async function aiContext(args) {
+  const options = parseOptions(args);
+  const query = options._.join(" ").trim();
+
+  if (!query) {
+    throw new Error('Текст запроса обязателен. Пример: iola ai context "школа 29"');
+  }
+
+  const context = await buildDataContext(query);
+
+  if (options.json) {
+    printJson(context);
+    return;
+  }
+
+  printContext(context);
 }
 
 async function setAiKey(provider) {
@@ -550,11 +624,23 @@ async function buildDataContext(question) {
     fetchJson(`${API_BASE_URL}/kindergartens?limit=100&offset=0`),
   ]);
   const queryTerms = extractSearchTerms(question);
-  const schoolItems = findRelevantItems(normalizeItems(schools), queryTerms).slice(0, 8);
-  const kindergartenItems = findRelevantItems(normalizeItems(kindergartens), queryTerms).slice(0, 8);
+  const patterns = extractStructuredPatterns(question);
+  const includeSchools = patterns.targetLayers.length === 0 || patterns.targetLayers.includes("schools");
+  const includeKindergartens = patterns.targetLayers.length === 0 || patterns.targetLayers.includes("kindergartens");
+  const schoolItems = includeSchools
+    ? findRelevantItems(normalizeItems(schools), queryTerms, patterns, "schools").slice(0, 8)
+    : [];
+  const kindergartenItems = includeKindergartens
+    ? findRelevantItems(normalizeItems(kindergartens), queryTerms, patterns, "kindergartens").slice(0, 8)
+    : [];
 
   return {
     layers: layers.data_layers || [],
+    query: {
+      text: question,
+      terms: queryTerms,
+      patterns,
+    },
     schools: schoolItems.map(selectPublicSummary),
     kindergartens: kindergartenItems.map(selectPublicSummary),
   };
@@ -572,20 +658,83 @@ function extractSearchTerms(question) {
   return normalized.length > 0 ? normalized : [question];
 }
 
-function findRelevantItems(items, terms) {
+function extractStructuredPatterns(question) {
+  const normalized = question.toLocaleLowerCase("ru-RU");
+  const numbers = [...new Set([...normalized.matchAll(/\b\d{1,3}\b/g)].map((match) => match[0]))];
+  const inns = [...new Set([...normalized.matchAll(/\b\d{10,12}\b/g)].map((match) => match[0]))];
+  const targetLayers = [];
+  if (/(^|[^а-яёa-z])(школа|школы|лицей|лицея|гимназия|гимназии)(?=$|[^а-яёa-z])/iu.test(normalized)) {
+    targetLayers.push("schools");
+  }
+  if (/(^|[^а-яёa-z])(сад|сады|детсад|детский|детские|доу|мбдоу)(?=$|[^а-яёa-z])/iu.test(normalized)) {
+    targetLayers.push("kindergartens");
+  }
+  const streetMatches = [
+    ...normalized.matchAll(/(?:улица|ул\.?)\s+([а-яёa-z0-9 .-]+)/giu),
+    ...normalized.matchAll(/([а-яёa-z0-9 .-]+)\s+(?:улица|ул\.?)/giu),
+  ];
+  const streets = [...new Set(streetMatches.map((match) => cleanupPattern(match[1])).filter(Boolean))];
+
+  return { numbers, inns, streets, targetLayers: [...new Set(targetLayers)] };
+}
+
+function cleanupPattern(value) {
+  return value
+    .replace(/\b(школа|школы|сад|детский|детские|сады|лицей|гимназия|контакты|телефон|адрес|найди|покажи)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findRelevantItems(items, terms, patterns, layer) {
   return items
     .map((item) => ({
       item,
-      score: scoreItem(item, terms),
+      score: scoreItem(item, terms, patterns, layer),
     }))
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score)
     .map((entry) => entry.item);
 }
 
-function scoreItem(item, terms) {
-  const text = JSON.stringify(selectPublicSummary(item)).toLocaleLowerCase("ru-RU");
-  return terms.reduce((score, term) => score + (text.includes(term.toLocaleLowerCase("ru-RU")) ? 1 : 0), 0);
+function scoreItem(item, terms, patterns, layer) {
+  const summary = selectPublicSummary(item);
+  const text = JSON.stringify(summary).toLocaleLowerCase("ru-RU");
+  const name = String(summary.name || "").toLocaleLowerCase("ru-RU");
+  const address = String(summary.address || "").toLocaleLowerCase("ru-RU");
+  const generalTerms = terms.filter((term) => !/^\d+$/.test(term));
+  let score = generalTerms.reduce((value, term) => value + (text.includes(term.toLocaleLowerCase("ru-RU")) ? 1 : 0), 0);
+
+  for (const inn of patterns.inns) {
+    if (String(summary.inn) === inn) {
+      score += 20;
+    }
+  }
+
+  for (const number of patterns.numbers) {
+    const numberPatterns = [
+      `№ ${number}`,
+      `№${number}`,
+      `школа ${number}`,
+      `сад ${number}`,
+      `лицей ${number}`,
+      `гимназия ${number}`,
+    ];
+
+    if (numberPatterns.some((pattern) => name.includes(pattern))) {
+      score += 12;
+      if (patterns.targetLayers.length === 0 || patterns.targetLayers.includes(layer)) {
+        score += 5;
+      }
+    }
+  }
+
+  for (const street of patterns.streets) {
+    if (street && address.includes(street)) {
+      score += 8;
+    }
+  }
+
+  return score;
 }
 
 function buildAiMessages(question, dataContext, history) {
@@ -1098,6 +1247,45 @@ async function printAiConfig() {
     file: CONFIG_FILE,
     ai: config.ai,
   });
+}
+
+function printContext(context) {
+  const layerNames = context.layers.map((layer) => layer.name || layer.id || String(layer));
+  console.log(`Запрос: ${context.query.text}`);
+  console.log(`Слова поиска: ${context.query.terms.length > 0 ? context.query.terms.join(", ") : "-"}`);
+  console.log(`Номера: ${context.query.patterns.numbers.length > 0 ? context.query.patterns.numbers.join(", ") : "-"}`);
+  console.log(`ИНН: ${context.query.patterns.inns.length > 0 ? context.query.patterns.inns.join(", ") : "-"}`);
+  console.log(`Улицы: ${context.query.patterns.streets.length > 0 ? context.query.patterns.streets.join(", ") : "-"}`);
+  console.log(`Целевые слои: ${context.query.patterns.targetLayers.length > 0 ? context.query.patterns.targetLayers.join(", ") : "все"}`);
+  console.log("");
+  console.log(`Слои данных: ${layerNames.length > 0 ? layerNames.join(", ") : "-"}`);
+  console.log("");
+
+  if (context.schools.length > 0) {
+    console.log("Школы в контексте:");
+    printTable(context.schools, [
+      ["name", "Название"],
+      ["address", "Адрес"],
+      ["phone", "Телефон"],
+      ["inn", "ИНН"],
+    ]);
+  } else {
+    console.log("Школы в контексте: нет совпадений");
+  }
+
+  console.log("");
+
+  if (context.kindergartens.length > 0) {
+    console.log("Детские сады в контексте:");
+    printTable(context.kindergartens, [
+      ["name", "Название"],
+      ["address", "Адрес"],
+      ["phone", "Телефон"],
+      ["inn", "ИНН"],
+    ]);
+  } else {
+    console.log("Детские сады в контексте: нет совпадений");
+  }
 }
 
 async function printAiConfigField(field) {

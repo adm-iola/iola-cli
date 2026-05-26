@@ -79,6 +79,7 @@ iola agent
 iola ai doctor
 iola ai setup ollama
 iola ai ask "Какие школы есть на улице Петрова?"
+iola ai context "школа 29"
 iola ai key set openai
 iola ai key status
 iola ai setup openai --model gpt-4.1-mini
@@ -115,6 +116,11 @@ iola agent
 /search лицей --limit 3
 /mcp-info
 /ai doctor
+/context школа 29
+/use ollama
+/use openai
+/key status
+/key set openai
 /model
 /provider
 /config
@@ -150,6 +156,16 @@ iola ai setup openrouter --model openai/gpt-4.1-mini
 iola ai ask "Покажи контакты лицея"
 ```
 
+Проверить, какие данные попадут в AI-контекст:
+
+```bash
+iola ai context "школа 29"
+iola ai context "1215067180" --json
+iola ai context "улица Петрова"
+```
+
+Поиск контекста учитывает номера учреждений, ИНН и улицы.
+
 Ключи OpenAI/OpenRouter сохраняются локально на компьютере пользователя:
 
 ```text
@@ -174,9 +190,9 @@ AI-ответ строится по контексту из публичного
 
 ## Назначение
 
-Первый релиз CLI дает прямой терминальный доступ к открытым данным и командам
-подключения MCP/skill. Дальше планируется добавить режим AI-запросов через
-ключ пользователя для OpenAI/OpenRouter и интерактивный агентный режим.
+CLI дает прямой терминальный доступ к открытым данным городского округа,
+командам подключения MCP/skill, AI-запросам через Ollama/OpenAI/OpenRouter и
+интерактивному агентному режиму.
 
 ## Переменные окружения
 
