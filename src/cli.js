@@ -7126,6 +7126,7 @@ async function onboard(args = []) {
     await ensureBrowserRuntimeForGosuslugi();
     if (process.stdin.isTTY && await confirm("Открыть Госуслуги для входа сейчас? [Y/n] ")) {
       await gosuslugiBrowserConnect({ yes: true });
+      await installGosuslugiKeepaliveTask({ interval: "30m" });
     } else {
       console.log("Подключить личные Госуслуги позже: iola gosuslugi connect");
     }
