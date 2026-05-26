@@ -1182,9 +1182,10 @@ function renderAgentInput(state) {
   clearAgentInputArea();
   const prompt = "iola> ";
   const lines = state.buffer.split("\n");
-  output.write(`${prompt}${lines[0] || ""}\n`);
+  output.write(`${prompt}${lines[0] || ""}`);
   for (const line of lines.slice(1)) output.write(`      ${line}\n`);
   if (state.slashOpen) {
+    output.write("\n");
     const matches = currentSlashMatches(state);
     if (matches.length === 0) {
       output.write("  нет команд\n");
@@ -1196,7 +1197,6 @@ function renderAgentInput(state) {
       output.write("  ↑/↓ выбрать • Enter вставить/выполнить • Esc закрыть\n");
     }
   }
-  writePromptBottomPadding();
 }
 
 function clearAgentInputArea() {
@@ -1259,7 +1259,6 @@ function safePrompt(rl, closed = false) {
   }
 
   try {
-    writePromptBottomPadding();
     rl.prompt();
   } catch {
     // The input stream can close while an async slash-command is still running.
@@ -1282,19 +1281,11 @@ function attachSlashSuggestions(rl) {
       lastFilter = filter;
       output.write("\n");
       printSlashMenu(filter, { compact: true, limit: 10 });
-      writePromptBottomPadding();
       rl.prompt(true);
     }, 0);
   };
   input.on("keypress", onKeypress);
   return () => input.off("keypress", onKeypress);
-}
-
-function writePromptBottomPadding() {
-  if (!output.isTTY) return;
-  const padding = Math.max(0, Math.min(5, Number(process.env.IOLA_PROMPT_BOTTOM_PADDING || 2)));
-  if (padding === 0) return;
-  output.write(`${"\n".repeat(padding)}\x1b[${padding}A`);
 }
 
 async function showBanner(options = {}) {
@@ -1312,7 +1303,7 @@ async function showBanner(options = {}) {
   }
 
   console.log(`CLI-Йошкар-Ола ${updateAvailable ? `v${version} -> v${latest}` : `v${version}`}`);
-  console.log("открытые данные • MCP • локальный AI");
+  console.log("Йошкар-Ола • MCP • локальный AI");
   if (updateAvailable) console.log("Обновить: npm install -g @iola_adm/iola-cli@latest");
 }
 
@@ -1333,7 +1324,7 @@ function renderBanner(versionLine, color = false) {
     line(),
     line("CLI-Йошкар-Ола", c.title),
     line(),
-    line("открытые данные • MCP • локальный AI", c.muted),
+    line("Йошкар-Ола • MCP • локальный AI", c.muted),
     line(),
     line(versionLine, c.version),
     `${c.border}└${"─".repeat(BANNER_WIDTH)}┘${c.reset}`,
