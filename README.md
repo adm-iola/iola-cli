@@ -99,6 +99,20 @@ iola features enable api-cache
 iola mcp status
 iola mcp list
 iola mcp install codex
+iola cache status
+iola cache warm
+iola cache clear
+iola sync
+iola search "Петрова" --local
+iola data schools --where address=Петрова --save schools-petrova
+iola views
+iola view schools-petrova --format csv --output schools-petrova.csv
+iola views delete schools-petrova
+iola report missing-phones
+iola privacy
+iola backup create
+iola alias add petrova "data schools --where address=Петрова --columns name,address,phone"
+iola run "выгрузи школы на Петрова в csv"
 iola config get
 iola config set api.baseUrl https://apiiola.yasg.ru/api/v1
 iola config reset
@@ -107,6 +121,7 @@ iola version --check
 iola ask "Найди школу 29"
 iola ask "Найди школу 29" --profile codex --events --output answer.txt
 iola ask "Найди школу 29" --schema json --no-history
+iola data schools --format csv --output schools.csv
 iola data schools --limit 10
 iola data kindergartens --search "29"
 iola data schools --where address=Петрова --columns name,address,phone
@@ -348,6 +363,50 @@ iola mcp remove codex
 iola ask "Найди школу 29" --events
 iola ask "Найди школу 29" --schema json
 iola ask "Найди школу 29" --output answer.txt
+```
+
+## Кеш, локальный поиск и выборки
+
+API-ответы можно кешировать локально:
+
+```bash
+iola cache status
+iola cache warm
+iola cache clear
+iola data schools --cache
+```
+
+Локальная синхронизация сохраняет открытые слои в SQLite и позволяет искать без
+повторного обращения к API:
+
+```bash
+iola sync
+iola search "Петрова" --local
+iola data schools --local --search "лицей"
+```
+
+Сохраненные выборки:
+
+```bash
+iola data schools --where address=Петрова --columns name,address,phone --save schools-petrova
+iola views
+iola view schools-petrova
+iola view schools-petrova --format csv --output schools-petrova.csv
+iola views delete schools-petrova
+```
+
+Отчеты, backup и алиасы:
+
+```bash
+iola report schools-summary
+iola report education-contacts
+iola report missing-phones
+iola report licenses
+iola privacy
+iola backup create
+iola alias add petrova "data schools --where address=Петрова --columns name,address,phone"
+iola petrova
+iola run "выгрузи школы на Петрова в csv"
 ```
 
 ## Переменные окружения

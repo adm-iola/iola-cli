@@ -95,6 +95,15 @@ const COMMANDS = new Map([
   ["fork", forkSession],
   ["features", handleFeatures],
   ["mcp", handleMcp],
+  ["cache", handleCache],
+  ["sync", handleSync],
+  ["views", handleViews],
+  ["view", handleView],
+  ["report", handleReport],
+  ["privacy", handlePrivacy],
+  ["backup", handleBackup],
+  ["alias", handleAlias],
+  ["run", runNaturalLanguage],
   ["config", handleConfig],
   ["banner", showBanner],
   ["agent", startAgent],
@@ -122,6 +131,11 @@ export async function main(argv) {
   const handler = COMMANDS.get(command);
 
   if (!handler) {
+    const alias = getAlias(command);
+    if (alias) {
+      await main([...splitCommandLine(alias.command), ...args]);
+      return;
+    }
     throw new Error(`Unknown command: ${command}\nRun "iola help" to see available commands.`);
   }
 
@@ -147,6 +161,15 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola mcp list|status|install|remove
+  iola cache status|warm|clear
+  iola sync [--dataset schools|kindergartens]
+  iola views
+  iola view NAME [--format table|json|csv] [--output FILE]
+  iola report schools-summary|education-contacts|missing-phones|licenses
+  iola privacy
+  iola backup create
+  iola alias add NAME COMMAND
+  iola run "выгрузи школы на Петрова в csv"
   iola config get
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
@@ -291,6 +314,21 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "cache") {
+    await handleCache(args);
+    return false;
+  }
+
+  if (command === "sync") {
+    await handleSync(args);
+    return false;
+  }
+
+  if (command === "views" || command === "view" || command === "report" || command === "privacy" || command === "backup" || command === "alias" || command === "run") {
+    await COMMANDS.get(command)(args);
+    return false;
+  }
+
   if (command === "config") {
     await handleConfig(args.length > 0 ? args : ["get"]);
     return false;
@@ -376,6 +414,8 @@ async function handleAgentLine(line, state) {
     fork: ["fork", args],
     features: ["features", args],
     mcp: ["mcp", args],
+    cache: ["cache", args],
+    sync: ["sync", args],
     config: ["config", args],
     layers: ["layers", args],
     data: ["data", args],
@@ -407,6 +447,9 @@ function printAgentHelp() {
   /resume SESSION_ID
   /features list
   /mcp status
+  /cache status
+  /sync
+  /views
   /config get
   /config set api.baseUrl URL
   /layers
@@ -1046,6 +1089,148 @@ async function handleMcp(args) {
   throw new Error("Команды mcp: status, list, install codex, remove codex.");
 }
 
+async function handleCache(args) {
+  const [action = "status"] = args;
+  if (action === "status") {
+    printKeyValue(getCacheStatus());
+    return;
+  }
+  if (action === "clear") {
+    clearCache();
+    console.log("Кеш очищен.");
+    return;
+  }
+  if (action === "warm") {
+    const result = await warmCache();
+    printKeyValue(result);
+    return;
+  }
+  throw new Error("Команды cache: status, warm, clear.");
+}
+
+async function handleSync(args) {
+  const options = parseOptions(args);
+  const datasets = options.dataset ? [options.dataset] : Object.keys(DATASETS);
+  const rows = [];
+  for (const dataset of datasets) {
+    rows.push(await syncDataset(dataset));
+  }
+  printTable(rows, [
+    ["dataset", "Слой"],
+    ["records", "Записей"],
+    ["status", "Статус"],
+    ["message", "Сообщение"],
+  ]);
+}
+
+async function handleViews(args) {
+  const [action, name] = args;
+  if (action === "delete" || action === "remove") {
+    deleteSavedView(name);
+    console.log(`View удален: ${name}`);
+    return;
+  }
+  const rows = listSavedViews();
+  printTable(rows, [
+    ["name", "Имя"],
+    ["dataset", "Слой"],
+    ["created_at", "Создано"],
+  ]);
+}
+
+async function handleView(args) {
+  const [name, ...rest] = args;
+  if (!name) {
+    throw new Error("Имя view обязательно.");
+  }
+  const view = getSavedView(name);
+  const query = JSON.parse(view.query_json);
+  await listDataset(view.dataset, [...(query.args || []), ...rest]);
+}
+
+async function handleReport(args) {
+  const [name] = args;
+  await ensureLocalData();
+  if (name === "schools-summary") {
+    printTable(getLocalSummaryRows("schools"), [["metric", "Показатель"], ["value", "Значение"]]);
+    return;
+  }
+  if (name === "education-contacts") {
+    printDatasetTable(searchLocalRecords("", { dataset: "all", limit: 500 }), "name,address,phone,email,website");
+    return;
+  }
+  if (name === "missing-phones") {
+    printDatasetTable(searchLocalRecords("", { dataset: "all", limit: 500 }).filter((item) => !item.phone || item.phone === "-"));
+    return;
+  }
+  if (name === "licenses") {
+    printDatasetTable(searchLocalRecords("", { dataset: "all", limit: 500 }), "name,license_number,license_status");
+    return;
+  }
+  throw new Error("Отчеты: schools-summary, education-contacts, missing-phones, licenses.");
+}
+
+async function handlePrivacy() {
+  printKeyValue({
+    config: CONFIG_FILE,
+    secrets: SECRETS_FILE,
+    sqlite: DB_FILE,
+    api: await getApiBaseUrl(),
+    mcp: await getMcpBaseUrl(),
+    keys_in_sqlite: "no",
+    history_clear: "iola history clear",
+    db_reset: "iola db reset",
+    delete_openai_key: "iola ai key delete openai",
+  });
+}
+
+async function handleBackup(args) {
+  const [action = "create", fileArg] = args;
+  if (action !== "create") {
+    throw new Error("Пока доступно: iola backup create [FILE]");
+  }
+  const file = fileArg || path.join(CONFIG_DIR, `iola-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  const payload = {
+    created_at: new Date().toISOString(),
+    config: await loadConfig(),
+    db: exportDbSnapshot(),
+  };
+  await writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  console.log(`Backup создан: ${file}`);
+}
+
+async function handleAlias(args) {
+  const [action, name, ...commandParts] = args;
+  if (action === "list" || !action) {
+    printTable(listAliases(), [["name", "Алиас"], ["command", "Команда"]]);
+    return;
+  }
+  if (action === "add") {
+    if (!name || commandParts.length === 0) {
+      throw new Error('Пример: iola alias add petrova "data schools --where address=Петрова"');
+    }
+    saveAlias(name, commandParts.join(" "));
+    console.log(`Алиас сохранен: ${name}`);
+    return;
+  }
+  if (action === "delete" || action === "remove") {
+    deleteAlias(name);
+    console.log(`Алиас удален: ${name}`);
+    return;
+  }
+  throw new Error("Команды alias: list, add NAME COMMAND, delete NAME.");
+}
+
+async function runNaturalLanguage(args) {
+  const text = args.join(" ").trim();
+  if (!text) {
+    throw new Error('Пример: iola run "выгрузи школы на Петрова в csv"');
+  }
+  const command = inferCommandFromText(text);
+  console.log(`> iola ${command.join(" ")}`);
+  await main(command);
+}
+
 async function aiDoctor(args) {
   const options = parseOptions(args);
   const diagnostics = await getLocalDiagnostics();
@@ -1600,6 +1785,29 @@ function initDatabase() {
         query_json TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS local_records (
+        dataset TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        searchable_text TEXT NOT NULL,
+        synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(dataset, record_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_records_dataset ON local_records(dataset);
+      CREATE VIRTUAL TABLE IF NOT EXISTS local_records_fts USING fts5(dataset, record_key, searchable_text);
+      CREATE TABLE IF NOT EXISTS sync_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dataset TEXT NOT NULL,
+        records INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS aliases (
+        name TEXT PRIMARY KEY,
+        command TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
     db.prepare(`
       INSERT INTO meta(key, value) VALUES ('schema_version', ?)
@@ -1626,12 +1834,16 @@ function getDbStatus() {
       const schema = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
       const history = db.prepare("SELECT COUNT(*) AS count FROM ask_history").get();
       const sessions = db.prepare("SELECT COUNT(*) AS count FROM sessions").get();
+      const local = db.prepare("SELECT COUNT(*) AS count FROM local_records").get();
+      const cache = db.prepare("SELECT COUNT(*) AS count FROM api_cache").get();
       return {
         status: "ok",
         file: DB_FILE,
         schema: schema?.value || "-",
         history: history?.count ?? 0,
         sessions: sessions?.count ?? 0,
+        local_records: local?.count ?? 0,
+        cache: cache?.count ?? 0,
       };
     } finally {
       db.close();
@@ -1860,6 +2072,309 @@ function setFeatureEnabled(name, enabled) {
   } finally {
     db.close();
   }
+}
+
+async function fetchJsonMaybeCached(url, options = {}) {
+  if (!options.cache && !isFeatureEnabled("api-cache")) {
+    return fetchJson(url);
+  }
+  const cached = getCachedResponse(url);
+  if (cached) {
+    return cached;
+  }
+  const payload = await fetchJson(url);
+  setCachedResponse(url, payload, 3600);
+  return payload;
+}
+
+function getCachedResponse(url) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT response_json, expires_at FROM api_cache WHERE key = ?").get(cacheKey(url));
+    if (!row) return null;
+    if (row.expires_at && new Date(row.expires_at) < new Date()) return null;
+    return JSON.parse(row.response_json);
+  } finally {
+    db.close();
+  }
+}
+
+function setCachedResponse(url, payload, ttlSeconds) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const expires = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO api_cache(key, url, response_json, expires_at, created_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET response_json = excluded.response_json, expires_at = excluded.expires_at, created_at = excluded.created_at
+    `).run(cacheKey(url), url, JSON.stringify(payload), expires);
+  } finally {
+    db.close();
+  }
+}
+
+function cacheKey(url) {
+  return Buffer.from(url).toString("base64url");
+}
+
+function getCacheStatus() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT COUNT(*) AS count FROM api_cache").get();
+    return { status: "ok", entries: row?.count ?? 0 };
+  } finally {
+    db.close();
+  }
+}
+
+function clearCache() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.exec("DELETE FROM api_cache");
+  } finally {
+    db.close();
+  }
+}
+
+async function warmCache() {
+  const urls = [
+    `${await getMcpBaseUrl()}/mcp-version`,
+    `${await getMcpBaseUrl()}/mcp-health`,
+    `${await getApiBaseUrl()}/schools?limit=100&offset=0`,
+    `${await getApiBaseUrl()}/kindergartens?limit=100&offset=0`,
+  ];
+  for (const url of urls) {
+    setCachedResponse(url, await fetchJson(url), 3600);
+  }
+  return { status: "ok", entries: urls.length };
+}
+
+async function syncDataset(dataset) {
+  if (!DATASETS[dataset]) {
+    throw new Error(`Неизвестный слой: ${dataset}`);
+  }
+  try {
+    const payload = await fetchJson(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?limit=500&offset=0`);
+    const items = normalizeItems(payload);
+    saveLocalRecords(dataset, items);
+    recordSyncRun(dataset, items.length, "ok", "");
+    return { dataset, records: items.length, status: "ok", message: "" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordSyncRun(dataset, 0, "error", message);
+    return { dataset, records: 0, status: "error", message };
+  }
+}
+
+function saveLocalRecords(dataset, items) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM local_records WHERE dataset = ?").run(dataset);
+    db.prepare("DELETE FROM local_records_fts WHERE dataset = ?").run(dataset);
+    const insert = db.prepare("INSERT INTO local_records(dataset, record_key, record_json, searchable_text, synced_at) VALUES (?, ?, ?, ?, datetime('now'))");
+    const insertFts = db.prepare("INSERT INTO local_records_fts(dataset, record_key, searchable_text) VALUES (?, ?, ?)");
+    for (const item of items) {
+      const summary = selectPublicSummary(item);
+      const key = String(summary.inn || item.id || `${dataset}-${Math.random()}`);
+      const text = JSON.stringify(summary).toLocaleLowerCase("ru-RU");
+      insert.run(dataset, key, JSON.stringify(item), text);
+      insertFts.run(dataset, key, text);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function recordSyncRun(dataset, records, status, message) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO sync_runs(dataset, records, status, message) VALUES (?, ?, ?, ?)").run(dataset, records, status, message);
+  } finally {
+    db.close();
+  }
+}
+
+async function ensureLocalData() {
+  const status = getDbStatus();
+  if (Number(status.local_records || 0) === 0) {
+    await handleSync([]);
+  }
+}
+
+function searchLocalRecords(query, options = {}) {
+  initDatabase();
+  const db = openDatabase();
+  const dataset = options.dataset || "all";
+  const limit = Number(options.limit || 20);
+  try {
+    const params = [];
+    let sql = "SELECT dataset, record_json FROM local_records";
+    const where = [];
+    if (dataset !== "all") {
+      where.push("dataset = ?");
+      params.push(dataset);
+    }
+    if (query) {
+      where.push("searchable_text LIKE ?");
+      params.push(`%${query.toLocaleLowerCase("ru-RU")}%`);
+    }
+    if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
+    sql += " ORDER BY dataset, record_key LIMIT ?";
+    params.push(limit);
+    return db.prepare(sql).all(...params).map((row) => selectPublicSummary(JSON.parse(row.record_json)));
+  } finally {
+    db.close();
+  }
+}
+
+function saveView(name, dataset, args) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare(`
+      INSERT INTO saved_views(name, dataset, query_json) VALUES (?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET dataset = excluded.dataset, query_json = excluded.query_json
+    `).run(name, dataset, JSON.stringify({ args }));
+  } finally {
+    db.close();
+  }
+}
+
+function listSavedViews() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT name, dataset, created_at FROM saved_views ORDER BY name").all();
+  } finally {
+    db.close();
+  }
+}
+
+function getSavedView(name) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM saved_views WHERE name = ?").get(name);
+    if (!row) throw new Error(`View не найден: ${name}`);
+    return row;
+  } finally {
+    db.close();
+  }
+}
+
+function deleteSavedView(name) {
+  if (!name) {
+    throw new Error("Имя view обязательно.");
+  }
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM saved_views WHERE name = ?").run(name);
+  } finally {
+    db.close();
+  }
+}
+
+function getLocalSummaryRows(dataset) {
+  const rows = searchLocalRecords("", { dataset, limit: 1000 });
+  return [
+    { metric: "records", value: rows.length },
+    { metric: "with_phone", value: rows.filter((row) => row.phone && row.phone !== "-").length },
+    { metric: "with_email", value: rows.filter((row) => row.email).length },
+    { metric: "with_website", value: rows.filter((row) => row.website).length },
+  ];
+}
+
+function exportDbSnapshot() {
+  initDatabase();
+  return {
+    db: getDbStatus(),
+    views: listSavedViews(),
+    aliases: listAliases(),
+    features: listFeatures(),
+    sessions: listSessions(100),
+    history: listHistory(100),
+  };
+}
+
+function listAliases() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT name, command FROM aliases ORDER BY name").all();
+  } finally {
+    db.close();
+  }
+}
+
+function getAlias(name) {
+  try {
+    initDatabase();
+    const db = openDatabase();
+    try {
+      return db.prepare("SELECT name, command FROM aliases WHERE name = ?").get(name);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function saveAlias(name, command) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO aliases(name, command) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET command = excluded.command").run(name, command);
+  } finally {
+    db.close();
+  }
+}
+
+function deleteAlias(name) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM aliases WHERE name = ?").run(name);
+  } finally {
+    db.close();
+  }
+}
+
+function inferCommandFromText(text) {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const dataset = normalized.includes("сад") ? "kindergartens" : "schools";
+  const command = ["data", dataset];
+  const street = normalized.match(/(?:на|по|улица|ул\.?)\s+([а-яёa-z-]+)/iu)?.[1];
+  if (street) command.push("--where", `address=${street}`);
+  if (normalized.includes("csv")) command.push("--format", "csv");
+  if (normalized.includes("json")) command.push("--format", "json");
+  const output = text.match(/(?:в файл|файл)\s+([^\s]+)/iu)?.[1];
+  if (output) command.push("--output", output);
+  return command;
+}
+
+async function outputData(value, options, format) {
+  const text = format === "csv" ? toCsv(value) : `${JSON.stringify(value, null, 2)}\n`;
+  if (options.output) {
+    await writeFile(options.output, text, "utf8");
+    console.log(`Файл сохранен: ${options.output}`);
+    return;
+  }
+  process.stdout.write(text);
+}
+
+function toCsv(rows) {
+  const list = Array.isArray(rows) ? rows : [rows];
+  if (list.length === 0) return "";
+  const columns = [...new Set(list.flatMap((row) => Object.keys(row)))];
+  return `${columns.map(csvCell).join(",")}\n${list.map((row) => columns.map((column) => csvCell(row[column])).join(",")).join("\n")}\n`;
 }
 
 function assertKeyProvider(provider) {
@@ -2396,20 +2911,26 @@ async function listDataset(dataset, args) {
   params.set("limit", options.limit || "20");
   params.set("offset", options.offset || "0");
 
-  const data = await fetchJson(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?${params}`);
-  const items = normalizeItems(data);
+  const data = options.local
+    ? searchLocalRecords(options.search || "", { dataset, limit: Number(options.limit || 20) })
+    : normalizeItems(await fetchJsonMaybeCached(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?${params}`, options));
+  const items = data;
   const filtered = applyDatasetFilters(items, options);
   const limited = filtered.slice(0, Number(options.limit || 20));
   const summarized = limited.map(selectPublicSummary);
   const projected = projectColumns(summarized, options.columns);
+  if (options.save) {
+    saveView(options.save, dataset, args.filter((arg) => arg !== "--save" && arg !== options.save));
+    console.log(`View сохранен: ${options.save}`);
+  }
 
   if (options.json || options.format === "json") {
-    printJson(projected);
+    await outputData(projected, options, "json");
     return;
   }
 
   if (options.format === "csv") {
-    printCsv(projected);
+    await outputData(projected, options, "csv");
     return;
   }
 
@@ -2444,27 +2965,32 @@ async function searchAll(args) {
     throw new Error('Search text is required. Example: iola search "лицей"');
   }
 
-  const [schools, kindergartens] = await Promise.all([
-    fetchJson(`${await getApiBaseUrl()}/schools?limit=100&offset=0`),
-    fetchJson(`${await getApiBaseUrl()}/kindergartens?limit=100&offset=0`),
-  ]);
-
   const limit = Number(options.limit || 5);
+  const [schools, kindergartens] = options.local
+    ? [
+        searchLocalRecords(query, { dataset: "schools", limit }),
+        searchLocalRecords(query, { dataset: "kindergartens", limit }),
+      ]
+    : await Promise.all([
+        fetchJsonMaybeCached(`${await getApiBaseUrl()}/schools?limit=100&offset=0`, options),
+        fetchJsonMaybeCached(`${await getApiBaseUrl()}/kindergartens?limit=100&offset=0`, options),
+      ]);
+
   const result = {
     schools: projectColumns(filterItems(normalizeItems(schools), query).slice(0, limit).map(selectPublicSummary), options.columns),
     kindergartens: projectColumns(filterItems(normalizeItems(kindergartens), query).slice(0, limit).map(selectPublicSummary), options.columns),
   };
 
   if (options.json || options.format === "json") {
-    printJson(result);
+    await outputData(result, options, "json");
     return;
   }
 
   if (options.format === "csv") {
-    printCsv([
+    await outputData([
       ...result.schools.map((item) => ({ layer: "schools", ...item })),
       ...result.kindergartens.map((item) => ({ layer: "kindergartens", ...item })),
-    ]);
+    ], options, "csv");
     return;
   }
 
@@ -2492,12 +3018,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
