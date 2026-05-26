@@ -79,6 +79,8 @@ iola agent
 iola ai doctor
 iola ai setup ollama
 iola ai ask "Какие школы есть на улице Петрова?"
+iola ai key set openai
+iola ai key status
 iola ai setup openai --model gpt-4.1-mini
 iola ai setup openrouter --model openai/gpt-4.1-mini
 iola health
@@ -135,7 +137,7 @@ iola ai ask "Какие школы есть на улице Петрова?"
 OpenAI:
 
 ```bash
-set OPENAI_API_KEY=...
+iola ai key set openai
 iola ai setup openai --model gpt-4.1-mini
 iola ai ask "Найди школу 29"
 ```
@@ -143,10 +145,29 @@ iola ai ask "Найди школу 29"
 OpenRouter:
 
 ```bash
-set OPENROUTER_API_KEY=...
+iola ai key set openrouter
 iola ai setup openrouter --model openai/gpt-4.1-mini
 iola ai ask "Покажи контакты лицея"
 ```
+
+Ключи OpenAI/OpenRouter сохраняются локально на компьютере пользователя:
+
+```text
+%USERPROFILE%\.iola\secrets.json
+```
+
+Управление ключами:
+
+```bash
+iola ai key set openai
+iola ai key set openrouter
+iola ai key status
+iola ai key delete openai
+```
+
+Если одновременно задана переменная окружения (`OPENAI_API_KEY` или
+`OPENROUTER_API_KEY`) и сохранен локальный ключ, CLI использует переменную
+окружения как более приоритетную.
 
 AI-ответ строится по контексту из публичного API. Если данных в контексте
 недостаточно, ассистент должен сообщить об этом, а не выдумывать сведения.

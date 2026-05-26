@@ -9,6 +9,7 @@ const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/a
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DEFAULT_AI_CONFIG = {
   ai: {
     provider: "ollama",
@@ -64,6 +65,10 @@ Usage:
   iola banner
   iola agent
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
+  iola ai key set openai
+  iola ai key set openrouter
+  iola ai key status
+  iola ai key delete openai|openrouter
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -285,6 +290,10 @@ async function handleAi(args) {
     showBanner();
     console.log(`AI-команды:
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
+  iola ai key set openai
+  iola ai key set openrouter
+  iola ai key status
+  iola ai key delete openai|openrouter
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -297,6 +306,11 @@ async function handleAi(args) {
 
   if (subcommand === "ask") {
     await aiAsk(rest);
+    return;
+  }
+
+  if (subcommand === "key") {
+    await handleAiKey(rest);
     return;
   }
 
@@ -362,6 +376,86 @@ async function aiSetup(args) {
   }
 
   throw new Error(`Unknown AI provider: ${provider}`);
+}
+
+async function handleAiKey(args) {
+  const [action, provider] = args;
+
+  if (action === "set") {
+    await setAiKey(provider);
+    return;
+  }
+
+  if (action === "status") {
+    await printAiKeyStatus();
+    return;
+  }
+
+  if (action === "delete") {
+    await deleteAiKey(provider);
+    return;
+  }
+
+  throw new Error(`Unknown key command. Use:
+  iola ai key set openai
+  iola ai key set openrouter
+  iola ai key status
+  iola ai key delete openai|openrouter`);
+}
+
+async function setAiKey(provider) {
+  assertKeyProvider(provider);
+
+  if (!process.stdin.isTTY) {
+    throw new Error("Для сохранения ключа запустите команду в интерактивном терминале.");
+  }
+
+  const envName = provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY";
+  const rl = readline.createInterface({ input, output });
+
+  try {
+    const key = (await rl.question(`Введите ${envName}: `)).trim();
+
+    if (!key) {
+      throw new Error("Ключ пустой, сохранение отменено.");
+    }
+
+    const secrets = await loadSecrets();
+    secrets[provider] = { apiKey: key };
+    await saveSecrets(secrets);
+    console.log(`Ключ ${provider} сохранен локально: ${SECRETS_FILE}`);
+  } finally {
+    rl.close();
+  }
+}
+
+async function printAiKeyStatus() {
+  const secrets = await loadSecrets();
+  const rows = ["openai", "openrouter"].map((provider) => ({
+    provider,
+    env: provider === "openai" ? (process.env.OPENAI_API_KEY ? "yes" : "no") : (process.env.OPENROUTER_API_KEY ? "yes" : "no"),
+    local: secrets[provider]?.apiKey ? "yes" : "no",
+  }));
+
+  printTable(rows, [
+    ["provider", "Провайдер"],
+    ["env", "Env"],
+    ["local", "Локально"],
+  ]);
+}
+
+async function deleteAiKey(provider) {
+  assertKeyProvider(provider);
+  const secrets = await loadSecrets();
+  delete secrets[provider];
+  await saveSecrets(secrets);
+  console.log(`Локальный ключ ${provider} удален.`);
+}
+
+function assertKeyProvider(provider) {
+  if (provider !== "openai" && provider !== "openrouter") {
+    throw new Error("Провайдер должен быть openai или openrouter.");
+  }
 }
 
 async function chooseAiProvider() {
@@ -522,11 +616,11 @@ async function callAiProvider(config, messages) {
   }
 
   if (config.provider === "openai") {
-    return callOpenAiCompatible(config, messages, process.env.OPENAI_API_KEY, "OpenAI");
+    return callOpenAiCompatible(config, messages, await getApiKey("openai"), "OpenAI");
   }
 
   if (config.provider === "openrouter") {
-    return callOpenAiCompatible(config, messages, process.env.OPENROUTER_API_KEY, "OpenRouter");
+    return callOpenAiCompatible(config, messages, await getApiKey("openrouter"), "OpenRouter");
   }
 
   throw new Error(`Неизвестный AI-провайдер: ${config.provider}`);
@@ -584,6 +678,19 @@ async function callOpenAiCompatible(config, messages, apiKey, providerName) {
 
   const payload = await response.json();
   return payload.choices?.[0]?.message?.content || "";
+}
+
+async function getApiKey(provider) {
+  if (provider === "openai" && process.env.OPENAI_API_KEY) {
+    return process.env.OPENAI_API_KEY;
+  }
+
+  if (provider === "openrouter" && process.env.OPENROUTER_API_KEY) {
+    return process.env.OPENROUTER_API_KEY;
+  }
+
+  const secrets = await loadSecrets();
+  return secrets[provider]?.apiKey || "";
 }
 
 async function listLayers(args) {
@@ -970,6 +1077,19 @@ function mergeConfig(base, override) {
       ...(override.ai || {}),
     },
   };
+}
+
+async function loadSecrets() {
+  try {
+    return JSON.parse(await readFile(SECRETS_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function saveSecrets(value) {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(SECRETS_FILE, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 async function printAiConfig() {
