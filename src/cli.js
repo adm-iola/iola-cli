@@ -2431,6 +2431,7 @@ async function handleWiki(args) {
     ["Главная", base],
     ["Установка", `${base}/Установка`],
     ["Первый запуск", `${base}/Первый-запуск`],
+    ["Мастер настройки", `${base}/Мастер-настройки`],
     ["AI-профили", `${base}/AI-профили`],
     ["Локальный инструментальный агент", `${base}/Локальный-инструментальный-агент`],
     ["Skills и toolsets", `${base}/Skills-и-toolsets`],
@@ -7094,7 +7095,8 @@ async function onboard(args = []) {
     }
   }
 
-  const components = options.yes ? ["workspace", "policy", "ollama", "openai", "openrouter", "codex", "codex-mcp", "archive", "index"] : await chooseOnboardComponents();
+  const componentStatus = await getOnboardComponentStatus();
+  const components = options.yes ? defaultOnboardComponents(componentStatus) : await chooseOnboardComponents(componentStatus);
   if (components.includes("workspace")) await handleWorkspace(["init"]);
   if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
   if (components.includes("archive")) await ensureArchiveTool({ install: true });
@@ -7139,25 +7141,19 @@ async function onboard(args = []) {
   console.log("Onboard завершен.");
 }
 
-async function chooseOnboardComponents() {
+async function chooseOnboardComponents(status = null) {
   if (!process.stdin.isTTY) return ["workspace", "policy"];
+  const componentStatus = status || await getOnboardComponentStatus();
   console.log("");
   console.log("Выберите компоненты через запятую:");
-  console.log("1. workspace и контекст");
-  console.log("2. policy analyst");
-  console.log("3. Ollama + локальная модель");
-  console.log("4. OpenAI API");
-  console.log("5. OpenRouter API");
-  console.log("6. Codex CLI");
-  console.log("7. MCP для Codex");
-  console.log("8. 7-Zip / архивы");
-  console.log("9. Индекс локальных документов");
-  console.log("10. Browser runtime");
-  console.log("11. Личное подключение Госуслуг");
+  for (const item of onboardComponentRows(componentStatus)) {
+    console.log(`${item.number}. ${item.title} [${item.status}] - ${item.hint}`);
+  }
   console.log("");
   const rl = readline.createInterface({ input, output });
   try {
-    const answer = (await rl.question("Компоненты [1,2,8]: ")).trim() || "1,2,8";
+    const defaults = defaultOnboardSelection(componentStatus);
+    const answer = (await rl.question(`Компоненты [${defaults.join(",")}]: `)).trim() || defaults.join(",");
     const selected = new Set(answer.split(/[,\s]+/).filter(Boolean));
     const map = {
       1: "workspace",
@@ -7176,6 +7172,64 @@ async function chooseOnboardComponents() {
   } finally {
     rl.close();
   }
+}
+
+async function getOnboardComponentStatus() {
+  const [config, readiness, browser, archive, codexVersion, ollamaVersion, secrets] = await Promise.all([
+    loadConfig(),
+    getAiReadiness(),
+    getBrowserStatus(),
+    findCommand(["7z", "7zz", "7za"], ["--help"]).catch(() => null),
+    getCommandVersion("codex", ["--version"]),
+    getOllamaVersion(),
+    loadSecrets(),
+  ]);
+  const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
+  const policyReady = (config.toolsets?.enabled || []).includes("analyst");
+  const gosuslugiReady = Boolean(config.gosuslugi?.enabled && existsSync(GOSUSLUGI_BROWSER_PROFILE_DIR) && secrets.gosuslugiBrowser?.connectedAt);
+  return {
+    workspace: workspaceReady,
+    policy: policyReady,
+    ollama: Boolean(ollamaVersion && readiness.ollama),
+    openai: Boolean(readiness.openai),
+    openrouter: Boolean(readiness.openrouter),
+    codex: Boolean(codexVersion !== "не найден" && readiness.codex),
+    "codex-mcp": false,
+    archive: Boolean(archive),
+    index: false,
+    browser: browser.installed === "yes",
+    gosuslugi: gosuslugiReady,
+  };
+}
+
+function onboardComponentRows(status) {
+  const rows = [
+    ["1", "workspace", "workspace и контекст", "рабочая папка, IOLA.md и .iola/context.md"],
+    ["2", "policy", "policy analyst", "разрешения и профиль аналитика"],
+    ["3", "ollama", "Ollama + локальная модель", "локальная модель найдена"],
+    ["4", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
+    ["5", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+    ["6", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
+    ["7", "codex-mcp", "MCP для Codex", "можно переустановить/обновить"],
+    ["8", "archive", "7-Zip / архивы", "архиватор найден"],
+    ["9", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
+    ["10", "browser", "Browser runtime", "Playwright/Chromium установлен"],
+    ["11", "gosuslugi", "Личное подключение Госуслуг", "профиль и keepalive"],
+  ];
+  return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
+}
+
+function defaultOnboardSelection(status) {
+  const defaults = [];
+  if (!status.workspace) defaults.push("1");
+  if (!status.policy) defaults.push("2");
+  if (!status.archive) defaults.push("8");
+  return defaults.length ? defaults : ["1", "2"];
+}
+
+function defaultOnboardComponents(status) {
+  const map = { 1: "workspace", 2: "policy", 3: "ollama", 4: "openai", 5: "openrouter", 6: "codex", 7: "codex-mcp", 8: "archive", 9: "index", 10: "browser", 11: "gosuslugi" };
+  return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
 function parseOptions(args) {

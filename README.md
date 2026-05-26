@@ -111,6 +111,7 @@ iola version --check
 
 - [Установка](https://github.com/adm-iola/iola-cli/wiki/Установка)
 - [Первый запуск](https://github.com/adm-iola/iola-cli/wiki/Первый-запуск)
+- [Мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Мастер-настройки)
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
 - [Skills и toolsets](https://github.com/adm-iola/iola-cli/wiki/Skills-и-toolsets)
