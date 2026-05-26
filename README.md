@@ -25,13 +25,19 @@ iola help
 ## Команды
 
 ```bash
+iola health
 iola layers
 iola schools --limit 10
+iola schools get --inn 1215067180
 iola kindergartens --search "29"
+iola kindergartens get --inn 1215077421 --json
 iola search "лицей"
 iola mcp-info
 iola setup codex
 ```
+
+По умолчанию команды выводят компактную таблицу. Для полного ответа API
+используйте `--json`.
 
 ## Назначение
 
