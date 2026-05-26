@@ -647,7 +647,13 @@ async function ensureAgentAiReady() {
   if (readiness.anyReady) {
     const fallback = getFallbackAiProfile(readiness);
     if (fallback) {
-      console.log(`Активный AI-профиль ${readiness.activeProfile} (${readiness.activeProvider}) недоступен. Для текстовых запросов будет использован доступный профиль ${fallback.name} (${fallback.provider}).`);
+      const shouldSwitch = await confirm(`Активный AI-профиль ${readiness.activeProfile} (${readiness.activeProvider}) недоступен, найден ${fallback.name} (${fallback.provider}). Переключить активный профиль на ${fallback.name}? [Y/n] `);
+      if (shouldSwitch) {
+        await setActiveAiProfile(fallback.name, fallback);
+        console.log(`Активный AI-профиль: ${fallback.name} (${fallback.provider}, ${fallback.model || "-"})`);
+      } else {
+        console.log(`Для текстовых запросов будет использован доступный профиль ${fallback.name} (${fallback.provider}).`);
+      }
       return readiness;
     }
   }
@@ -744,7 +750,7 @@ async function hasUsableCodexAuth() {
 }
 
 async function startAgentReadline() {
-  const rl = readline.createInterface({ input, output, prompt: "iola> " });
+  const rl = readline.createInterface({ input, output, prompt: "> " });
   const state = {
     history: [],
   };
@@ -835,7 +841,7 @@ async function startAgentRawInput() {
           render();
           continue;
         }
-        output.write(`iola> ${line}\n`);
+        output.write(`> ${line}\n`);
         try {
           const shouldExit = await handleAgentLine(line, state);
           if (shouldExit) break;
@@ -1285,7 +1291,7 @@ function currentSlashMatches(state) {
 
 function renderAgentInput(state) {
   clearAgentInputArea(state);
-  const prompt = "iola> ";
+  const prompt = "> ";
   const lines = state.buffer.split("\n");
   const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1).map((line) => `      ${line}`)];
   const cwdLine = colorMuted(`  ${process.cwd()}`);
@@ -4384,6 +4390,13 @@ async function useAiProfile(name) {
     throw new Error(`AI-профиль не найден: ${name}`);
   }
 
+  await setActiveAiProfile(name, profile, config);
+
+  console.log(`Активный AI-профиль: ${name} (${profile.provider}, ${profile.model || "-"})`);
+}
+
+async function setActiveAiProfile(name, profile, loadedConfig = null) {
+  const config = loadedConfig || await loadConfig();
   await saveConfig({
     ai: {
       ...config.ai,
@@ -4393,8 +4406,6 @@ async function useAiProfile(name) {
       baseUrl: profile.baseUrl || config.ai.baseUrl,
     },
   });
-
-  console.log(`Активный AI-профиль: ${name} (${profile.provider}, ${profile.model || "-"})`);
 }
 
 async function deleteAiProfile(name) {
