@@ -1,6 +1,6 @@
 {
   "name": "@iola_adm/iola-cli",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "CLI и AI-агент для работы с открытыми данными городского округа Йошкар-Ола.",
   "license": "MIT",
   "homepage": "https://github.com/adm-iola/iola-cli#readme",
@@ -36,6 +36,6 @@
     "cli"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5.0"
   }
 }

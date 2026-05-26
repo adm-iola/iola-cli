@@ -18,7 +18,11 @@ node --version
 npm --version
 ```
 
-Нужен Node.js `18` или новее. Если Node.js не установлен:
+Нужен Node.js `22.5.0` или новее. Это нужно для встроенной SQLite-БД
+`node:sqlite`, которую CLI будет использовать для локальной истории, кеша и
+сессий без дополнительных нативных зависимостей.
+
+Если Node.js не установлен или версия ниже `22.5.0`:
 
 ```bash
 # Windows
@@ -54,6 +58,8 @@ curl -fsSL https://ollama.com/install.sh | sh
 Диагностика ПК и подбор локальной модели:
 
 ```bash
+npx -y @iola_adm/iola-cli init
+npx -y @iola_adm/iola-cli init --upgrade-node
 npx -y @iola_adm/iola-cli ai doctor
 npx -y @iola_adm/iola-cli ai setup ollama
 ```

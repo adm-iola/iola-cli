@@ -7,6 +7,7 @@ import { stdin as input, stdout as output } from "node:process";
 
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
+const MIN_NODE_VERSION = "22.5.0";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
@@ -94,6 +95,11 @@ const COMMANDS = new Map([
 
 export async function main(argv) {
   const [command = "help", ...args] = argv;
+  const nodeStatus = getNodeRequirementStatus();
+  if (!nodeStatus.ok && !["help", "version", "doctor", "init"].includes(command)) {
+    throw new Error(`Нужен Node.js ${MIN_NODE_VERSION} или новее. Сейчас: ${nodeStatus.current}. Запустите: iola init --upgrade-node`);
+  }
+
   const handler = COMMANDS.get(command);
 
   if (!handler) {
@@ -148,6 +154,9 @@ Usage:
 Environment:
   IOLA_API_BASE_URL   default: ${API_BASE_URL}
   IOLA_MCP_BASE_URL   default: ${MCP_BASE_URL}
+
+Requirements:
+  Node.js >= ${MIN_NODE_VERSION}
 `);
 }
 
@@ -461,6 +470,9 @@ async function doctor(args = []) {
       version: packageJson.default.version,
       npmLatest: latest || "-",
       update: getUpdateStatus(packageJson.default.version, latest),
+      node: process.version,
+      nodeRequired: `>=${MIN_NODE_VERSION}`,
+      nodeStatus: getNodeRequirementStatus().ok ? "ok" : "upgrade-required",
     },
     api: {
       baseUrl: apiBaseUrl,
@@ -514,6 +526,69 @@ function getUpdateStatus(current, latest) {
   return "ok";
 }
 
+function getNodeRequirementStatus() {
+  const current = process.versions.node;
+  return {
+    current,
+    required: MIN_NODE_VERSION,
+    ok: compareVersions(current, MIN_NODE_VERSION) >= 0,
+  };
+}
+
+async function offerNodeUpgrade(options, status) {
+  console.log(`Текущая версия Node.js: ${status.current}. Нужна ${MIN_NODE_VERSION} или новее.`);
+
+  if (!process.stdin.isTTY && !options["upgrade-node"]) {
+    printNodeUpgradeInstructions();
+    return;
+  }
+
+  const shouldUpgrade = options["upgrade-node"] || (await confirm("Обновить Node.js установщиком сейчас? [y/N] "));
+
+  if (!shouldUpgrade) {
+    printNodeUpgradeInstructions();
+    return;
+  }
+
+  await upgradeNodeWithInstaller();
+  console.log("");
+  console.log("После обновления перезапустите терминал и проверьте:");
+  console.log("  node --version");
+  console.log("  iola init");
+}
+
+function printNodeUpgradeInstructions() {
+  console.log("Обновите Node.js:");
+  console.log("  Windows: winget install OpenJS.NodeJS.LTS");
+  console.log("  macOS:   brew install node");
+  console.log("  Linux:   curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs");
+}
+
+async function upgradeNodeWithInstaller() {
+  if (process.platform === "win32") {
+    try {
+      await runCommand("winget", ["upgrade", "OpenJS.NodeJS.LTS", "--accept-package-agreements", "--accept-source-agreements"], { inherit: true });
+    } catch {
+      await runCommand("winget", ["install", "OpenJS.NodeJS.LTS", "--accept-package-agreements", "--accept-source-agreements"], { inherit: true });
+    }
+    return;
+  }
+
+  if (process.platform === "darwin") {
+    try {
+      await runCommand("brew", ["upgrade", "node"], { inherit: true });
+    } catch {
+      await runCommand("brew", ["install", "node"], { inherit: true });
+    }
+    return;
+  }
+
+  await runCommand("sh", [
+    "-c",
+    "curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs",
+  ], { inherit: true });
+}
+
 async function checkConfiguredModel(config) {
   if (config.ai.provider !== "ollama") {
     return "external-api";
@@ -536,16 +611,24 @@ async function checkConfiguredModel(config) {
 
 async function initCli(args = []) {
   const options = parseOptions(args);
+  const nodeStatus = getNodeRequirementStatus();
 
   showBanner();
   console.log("Проверка окружения");
   printKeyValue({
     node: process.version,
+    node_required: `>=${MIN_NODE_VERSION}`,
+    node_status: nodeStatus.ok ? "ok" : "нужно обновить",
     npm: await getCommandVersion("npm", ["--version"]),
     api: await probeEndpoint(`${await getMcpBaseUrl()}/mcp-health`),
     mcp: await getMcpBaseUrl(),
   });
   console.log("");
+
+  if (!nodeStatus.ok) {
+    await offerNodeUpgrade(options, nodeStatus);
+    console.log("");
+  }
 
   await aiDoctor(options.json ? ["--json"] : []);
 
@@ -1744,8 +1827,9 @@ function parseOptions(args) {
     const arg = args[index];
     if (arg === "--json" || arg === "--yes") {
       result[arg.slice(2)] = true;
-    } else if (arg === "--check") {
+    } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
+      result[arg.slice(2)] = true;
     } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
