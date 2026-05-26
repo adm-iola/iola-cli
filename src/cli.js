@@ -1343,23 +1343,26 @@ function clearAgentInputArea(state = null) {
 }
 
 function startActivityIndicator(label = "работаю") {
+  const doneLabel = "готово";
   if (!output.isTTY || process.env.NO_COLOR === "1") {
     output.write(`${label}...\n`);
-    return () => {};
+    const started = Date.now();
+    return () => {
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      output.write(`- ${doneLabel} ${seconds}s\n`);
+    };
   }
-  const frames = ["|", "/", "-", "\\"];
   const started = Date.now();
-  let index = 0;
   const render = () => {
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
-    output.write(`\r\x1b[2K${colorMuted(`${frames[index % frames.length]} ${label} ${seconds}s`)}`);
-    index += 1;
+    output.write(`\r\x1b[2K${colorMuted(`─ ${label} ${seconds}s`)}`);
   };
   render();
   const timer = setInterval(render, 120);
   return () => {
     clearInterval(timer);
-    output.write("\r\x1b[2K");
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    output.write(`\r\x1b[2K${colorMuted(`─ ${doneLabel} ${seconds}s`)}\n`);
   };
 }
 
