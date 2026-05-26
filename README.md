@@ -87,6 +87,10 @@ iola agent
 iola chat
 iola init
 iola doctor
+iola db status
+iola db init
+iola history --limit 20
+iola history clear
 iola config get
 iola config set api.baseUrl https://apiiola.yasg.ru/api/v1
 iola config reset
@@ -139,6 +143,7 @@ iola agent
 /help
 /health
 /doctor
+/db status
 /config get
 /layers
 /data schools --limit 10
@@ -160,6 +165,7 @@ iola agent
 /provider
 /config
 /history
+/history --limit 20
 /clear
 /update
 /init
@@ -270,6 +276,34 @@ iola ai key delete openai
 CLI дает прямой терминальный доступ к открытым данным городского округа,
 командам подключения MCP/skill, AI-запросам через Ollama/OpenAI/OpenRouter,
 интерактивному агентному режиму, экспорту данных и проверке обновлений.
+
+## Локальная SQLite-БД
+
+CLI использует встроенный `node:sqlite` и хранит локальную БД в профиле
+пользователя:
+
+```text
+%USERPROFILE%\.iola\iola.db
+```
+
+БД создается автоматически при установке npm-пакета и при `iola init`.
+В ней хранятся история AI-запросов, контекст ответа, ошибки выполнения,
+служебная таблица версии схемы, а также подготовлены таблицы для кеша API и
+сохраненных выборок.
+
+Команды:
+
+```bash
+iola db status
+iola db init
+iola db reset
+iola history --limit 20
+iola history --json
+iola history clear
+```
+
+Ключи OpenAI/OpenRouter в SQLite не сохраняются. Они остаются в локальном
+`secrets.json` или в переменных окружения.
 
 ## Переменные окружения
 

@@ -1,6 +1,6 @@
 {
   "name": "@iola_adm/iola-cli",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "CLI и AI-агент для работы с открытыми данными городского округа Йошкар-Ола.",
   "license": "MIT",
   "homepage": "https://github.com/adm-iola/iola-cli#readme",
@@ -15,6 +15,11 @@
   "bin": {
     "iola": "bin/iola.js"
   },
+  "scripts": {
+    "postinstall": "node --no-warnings bin/iola.js db init --silent || true",
+    "start": "node --no-warnings bin/iola.js",
+    "test": "node --no-warnings --check bin/iola.js && node --no-warnings --check src/cli.js"
+  },
   "files": [
     "bin",
     "src",
@@ -24,10 +29,6 @@
   ],
   "publishConfig": {
     "access": "public"
-  },
-  "scripts": {
-    "start": "node bin/iola.js",
-    "test": "node --check bin/iola.js && node --check src/cli.js"
   },
   "keywords": [
     "yoshkar-ola",

@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { DatabaseSync } from "node:sqlite";
 
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
@@ -11,6 +13,8 @@ const MIN_NODE_VERSION = "22.5.0";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
+const DB_FILE = path.join(CONFIG_DIR, "iola.db");
+const DB_SCHEMA_VERSION = 1;
 const DEFAULT_AI_CONFIG = {
   api: {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
@@ -76,6 +80,8 @@ const COMMANDS = new Map([
   ["version", showVersion],
   ["update", checkUpdate],
   ["doctor", doctor],
+  ["db", handleDb],
+  ["history", handleHistory],
   ["config", handleConfig],
   ["banner", showBanner],
   ["agent", startAgent],
@@ -119,6 +125,10 @@ Usage:
   iola chat
   iola init
   iola doctor
+  iola db status
+  iola db init
+  iola history [--limit 20]
+  iola history clear
   iola config get
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
@@ -225,7 +235,16 @@ async function handleAgentLine(line, state) {
   }
 
   if (command === "history") {
-    printAgentHistory(state.history);
+    if (args.length > 0) {
+      await handleHistory(args);
+    } else {
+      printAgentHistory(state.history);
+    }
+    return false;
+  }
+
+  if (command === "db") {
+    await handleDb(args);
     return false;
   }
 
@@ -307,6 +326,8 @@ async function handleAgentLine(line, state) {
   const mapped = {
     health: ["health", args],
     doctor: ["doctor", args],
+    db: ["db", args],
+    history: ["history", args],
     config: ["config", args],
     layers: ["layers", args],
     data: ["data", args],
@@ -333,6 +354,7 @@ function printAgentHelp() {
   /help
   /health
   /doctor
+  /db status
   /config get
   /config set api.baseUrl URL
   /layers
@@ -357,6 +379,7 @@ function printAgentHelp() {
   /provider
   /model
   /history
+  /history --limit 20
   /clear
   /banner
   /update
@@ -474,6 +497,7 @@ async function doctor(args = []) {
       nodeRequired: `>=${MIN_NODE_VERSION}`,
       nodeStatus: getNodeRequirementStatus().ok ? "ok" : "upgrade-required",
     },
+    db: getDbStatus(),
     api: {
       baseUrl: apiBaseUrl,
       mcpBaseUrl,
@@ -498,6 +522,9 @@ async function doctor(args = []) {
 
   console.log("CLI");
   printKeyValue(report.cli);
+  console.log("");
+  console.log("SQLite");
+  printKeyValue(report.db);
   console.log("");
   console.log("API/MCP");
   printKeyValue(report.api);
@@ -615,6 +642,8 @@ async function initCli(args = []) {
 
   showBanner();
   console.log("Проверка окружения");
+  initDatabase();
+  const dbStatus = getDbStatus();
   printKeyValue({
     node: process.version,
     node_required: `>=${MIN_NODE_VERSION}`,
@@ -622,6 +651,8 @@ async function initCli(args = []) {
     npm: await getCommandVersion("npm", ["--version"]),
     api: await probeEndpoint(`${await getMcpBaseUrl()}/mcp-health`),
     mcp: await getMcpBaseUrl(),
+    sqlite: dbStatus.status,
+    sqlite_file: dbStatus.file,
   });
   console.log("");
 
@@ -761,6 +792,65 @@ async function handleConfig(args) {
   }
 
   throw new Error("Команды config: get, set, reset.");
+}
+
+async function handleDb(args) {
+  const [action = "status"] = args;
+  const options = parseOptions(args);
+
+  if (action === "init") {
+    initDatabase();
+    if (!options.silent) {
+      console.log(`SQLite-БД готова: ${DB_FILE}`);
+    }
+    return;
+  }
+
+  if (action === "status") {
+    printKeyValue(getDbStatus());
+    return;
+  }
+
+  if (action === "reset") {
+    const shouldReset = await confirm("Удалить локальную SQLite-БД iola.db? [y/N] ");
+    if (!shouldReset) {
+      console.log("Сброс отменен.");
+      return;
+    }
+    await rm(DB_FILE, { force: true });
+    initDatabase();
+    console.log(`SQLite-БД пересоздана: ${DB_FILE}`);
+    return;
+  }
+
+  throw new Error("Команды db: status, init, reset.");
+}
+
+async function handleHistory(args) {
+  const [action] = args;
+  const options = parseOptions(args);
+
+  if (action === "clear") {
+    clearHistory();
+    console.log("История очищена.");
+    return;
+  }
+
+  const rows = listHistory(Number(options.limit || 20));
+
+  if (options.json) {
+    printJson(rows);
+    return;
+  }
+
+  printTable(rows, [
+    ["id", "ID"],
+    ["created_at", "Дата"],
+    ["profile", "Профиль"],
+    ["provider", "Провайдер"],
+    ["question", "Вопрос"],
+    ["answer", "Ответ"],
+  ]);
 }
 
 async function aiDoctor(args) {
@@ -1250,6 +1340,142 @@ async function deleteAiKey(provider) {
   console.log(`Локальный ключ ${provider} удален.`);
 }
 
+function openDatabase() {
+  const db = new DatabaseSync(DB_FILE);
+  db.exec("PRAGMA busy_timeout = 5000;");
+  return db;
+}
+
+function initDatabase() {
+  mkdirSyncSafe(CONFIG_DIR);
+  const db = openDatabase();
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS ask_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        profile TEXT,
+        provider TEXT,
+        model TEXT,
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        context_json TEXT NOT NULL,
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ask_history_created_at ON ask_history(created_at DESC);
+      CREATE TABLE IF NOT EXISTS api_cache (
+        key TEXT PRIMARY KEY,
+        url TEXT NOT NULL,
+        response_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS saved_views (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        dataset TEXT NOT NULL,
+        query_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    db.prepare(`
+      INSERT INTO meta(key, value) VALUES ('schema_version', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(DB_SCHEMA_VERSION));
+  } finally {
+    db.close();
+  }
+}
+
+function mkdirSyncSafe(directory) {
+  try {
+    mkdirSync(directory, { recursive: true });
+  } catch {
+    // Directory creation is retried by write operations where needed.
+  }
+}
+
+function getDbStatus() {
+  try {
+    initDatabase();
+    const db = openDatabase();
+    try {
+      const schema = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
+      const history = db.prepare("SELECT COUNT(*) AS count FROM ask_history").get();
+      return {
+        status: "ok",
+        file: DB_FILE,
+        schema: schema?.value || "-",
+        history: history?.count ?? 0,
+      };
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    return {
+      status: "error",
+      file: DB_FILE,
+      schema: "-",
+      history: "-",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function recordAskHistory({ question, answer, providerConfig, dataContext, error }) {
+  try {
+    initDatabase();
+    const db = openDatabase();
+    try {
+      db.prepare(`
+        INSERT INTO ask_history(profile, provider, model, question, answer, context_json, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        providerConfig.name || "",
+        providerConfig.provider || "",
+        providerConfig.model || "",
+        question,
+        answer,
+        JSON.stringify(dataContext),
+        error || "",
+      );
+    } finally {
+      db.close();
+    }
+  } catch {
+    // History must never break the main answer path.
+  }
+}
+
+function listHistory(limit) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare(`
+      SELECT id, created_at, profile, provider, model, question, answer, error
+      FROM ask_history
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(limit);
+  } finally {
+    db.close();
+  }
+}
+
+function clearHistory() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.exec("DELETE FROM ask_history");
+  } finally {
+    db.close();
+  }
+}
+
 function assertKeyProvider(provider) {
   if (provider !== "openai" && provider !== "openrouter") {
     throw new Error("Провайдер должен быть openai или openrouter.");
@@ -1341,7 +1567,18 @@ async function aiAsk(args, context = {}) {
   const providerConfig = resolveAiProfile(config, options);
   const dataContext = await buildDataContext(question);
   const messages = buildAiMessages(question, dataContext, context.history || []);
-  const answer = await callAiProvider(providerConfig, messages);
+  let answer = "";
+  let errorMessage = "";
+
+  try {
+    answer = await callAiProvider(providerConfig, messages);
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
+    recordAskHistory({ question, answer: "", providerConfig, dataContext, error: errorMessage });
+    throw error;
+  }
+
+  recordAskHistory({ question, answer, providerConfig, dataContext, error: "" });
 
   console.log(answer);
   return answer;
@@ -1825,7 +2062,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
