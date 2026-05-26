@@ -31,6 +31,20 @@ const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
+const GOSUSLUGI_CONSENT_VERSION = "2026-05-26-personal-local-v1";
+const GOSUSLUGI_CONSENT_TEXT = `Подключение личных Госуслуг
+
+Вы подключаете личную учетную запись Госуслуг к локальному CLI-агенту iola-cli на этом компьютере.
+
+Нажимая "Да", вы подтверждаете, что:
+- используете собственную учетную запись Госуслуг;
+- понимаете, что все действия, выполненные через CLI-агента после подключения, считаются действиями владельца этой учетной записи;
+- разрешаете iola-cli локально сохранить данные доступа, необходимые для повторного входа или выполнения запросов от вашего имени;
+- понимаете, что данные доступа хранятся только на этом компьютере в локальном хранилище пользователя и не передаются разработчикам CLI, администрации города или третьим лицам;
+- обязуетесь не подключать чужие учетные записи и не передавать локальные файлы доступа другим лицам;
+- понимаете, что перед юридически значимыми действиями, отправкой заявлений, оплатой, подписанием или изменением персональных данных CLI должен запросить отдельное подтверждение.
+
+Продолжить подключение?`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUILTIN_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 const USER_SKILLS_DIR = path.join(CONFIG_DIR, "skills");
@@ -112,6 +126,7 @@ const DEFAULT_AI_CONFIG = {
   },
   gosuslugi: {
     enabled: false,
+    mode: "personal-local",
     authUrl: "",
     tokenUrl: "",
     userinfoUrl: "",
@@ -402,7 +417,7 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
-  iola gosuslugi configure|status|login|logout|userinfo
+  iola gosuslugi terms|consent|configure|status|login|logout|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -1726,13 +1741,27 @@ async function handleGosuslugi(args) {
   const [action = "status", ...rest] = args;
   const options = parseOptions(rest);
 
+  if (action === "terms") {
+    console.log(GOSUSLUGI_CONSENT_TEXT);
+    return;
+  }
+
+  if (action === "consent") {
+    await acceptGosuslugiConsent(options);
+    return;
+  }
+
   if (action === "status") {
     const config = await loadConfig();
     const secrets = await loadSecrets();
     const tokens = secrets.gosuslugi?.tokens || null;
+    const consent = secrets.gosuslugiConsent || null;
     printKeyValue({
+      mode: config.gosuslugi?.mode || "personal-local",
       enabled: config.gosuslugi?.enabled ? "yes" : "no",
       configured: isGosuslugiConfigured(config) ? "yes" : "no",
+      consent: consent?.version === GOSUSLUGI_CONSENT_VERSION ? "accepted" : "not accepted",
+      consentAt: consent?.acceptedAt || "-",
       clientId: config.gosuslugi?.clientId ? maskSecret(config.gosuslugi.clientId) : "-",
       authUrl: config.gosuslugi?.authUrl || "-",
       tokenUrl: config.gosuslugi?.tokenUrl || "-",
@@ -1750,6 +1779,7 @@ async function handleGosuslugi(args) {
     const next = {
       ...(current.gosuslugi || {}),
       enabled: true,
+      mode: "personal-local",
       authUrl: options["auth-url"] || current.gosuslugi?.authUrl || "",
       tokenUrl: options["token-url"] || current.gosuslugi?.tokenUrl || "",
       userinfoUrl: options["userinfo-url"] || current.gosuslugi?.userinfoUrl || "",
@@ -1761,7 +1791,7 @@ async function handleGosuslugi(args) {
       redirectPath: options["redirect-path"] || current.gosuslugi?.redirectPath || "/gosuslugi/callback",
     };
     await saveConfig({ gosuslugi: next });
-    console.log("Настройки подключения к Госуслугам сохранены.");
+    console.log("Настройки личного локального подключения Госуслуг сохранены.");
     console.log(`Redirect URI: ${gosuslugiRedirectUri({ gosuslugi: next })}`);
     return;
   }
@@ -1787,7 +1817,7 @@ async function handleGosuslugi(args) {
     return;
   }
 
-  throw new Error("Команды gosuslugi: configure, status, login, logout, userinfo.");
+  throw new Error("Команды gosuslugi: terms, consent, configure, status, login, logout, userinfo.");
 }
 
 async function handleWiki(args) {
@@ -2734,8 +2764,9 @@ async function openUrl(url) {
 async function gosuslugiLogin(options = {}) {
   const config = await loadConfig();
   if (!isGosuslugiConfigured(config)) {
-    throw new Error("Подключение не настроено. Пример: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
+    throw new Error("Личное подключение не настроено. Пример: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
   }
+  await ensureGosuslugiConsent(options);
 
   const state = randomUrlSafe(24);
   const codeVerifier = randomUrlSafe(64);
@@ -2751,8 +2782,8 @@ async function gosuslugiLogin(options = {}) {
   authUrl.searchParams.set("code_challenge", codeChallenge);
   authUrl.searchParams.set("code_challenge_method", "S256");
 
-  console.log("Открываю официальный экран входа Госуслуг/ЕСИА в браузере.");
-  console.log("После входа CLI примет callback на локальном адресе и сохранит токены только на этом компьютере.");
+  console.log("Открываю экран входа Госуслуг в браузере для личного локального подключения.");
+  console.log("После входа CLI примет callback на локальном адресе и сохранит данные доступа только на этом компьютере.");
   await openUrl(authUrl.toString());
   const params = await callback;
   if (params.error) throw new Error(`Госуслуги вернули ошибку: ${params.error} ${params.error_description || ""}`.trim());
@@ -2779,6 +2810,31 @@ async function gosuslugiLogin(options = {}) {
     tokenType: tokens.token_type || "-",
     scope: tokens.scope || config.gosuslugi.scope || "-",
   };
+}
+
+async function acceptGosuslugiConsent(options = {}) {
+  console.log(GOSUSLUGI_CONSENT_TEXT);
+  if (!options.yes) {
+    const accepted = await confirm("Да, подключить личные Госуслуги к локальному iola-cli? [y/N] ");
+    if (!accepted) {
+      throw new Error("Подключение Госуслуг отменено пользователем.");
+    }
+  }
+  const secrets = await loadSecrets();
+  secrets.gosuslugiConsent = {
+    version: GOSUSLUGI_CONSENT_VERSION,
+    acceptedAt: new Date().toISOString(),
+    user: os.userInfo().username,
+    host: os.hostname(),
+  };
+  await saveSecrets(secrets);
+  console.log("Согласие сохранено локально.");
+}
+
+async function ensureGosuslugiConsent(options = {}) {
+  const secrets = await loadSecrets();
+  if (secrets.gosuslugiConsent?.version === GOSUSLUGI_CONSENT_VERSION) return;
+  await acceptGosuslugiConsent(options);
 }
 
 function waitForOAuthCallback(settings, expectedState, timeoutMs) {
@@ -2826,6 +2882,7 @@ async function exchangeGosuslugiCode(config, { code, codeVerifier, redirectUri }
   body.set("redirect_uri", redirectUri);
   body.set("client_id", config.gosuslugi.clientId);
   body.set("code_verifier", codeVerifier);
+  body.set("client_mode", config.gosuslugi.mode || "personal-local");
   if (config.gosuslugi.clientSecret) body.set("client_secret", config.gosuslugi.clientSecret);
 
   const response = await fetch(config.gosuslugi.tokenUrl, {

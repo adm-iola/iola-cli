@@ -121,7 +121,7 @@ iola version --check
 - subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
 - полноценный локальный MCP server по stdio/http: tools, resources и prompts;
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
-- локальный OAuth/OIDC-каркас для подключения Госуслуг/ЕСИА через официальный redirect flow;
+- личное локальное подключение Госуслуг с явным согласием пользователя и хранением доступа только на его ПК;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
