@@ -264,6 +264,71 @@ const DATASETS = {
     endpoint: "kindergartens",
   },
 };
+const SLASH_COMMANDS = [
+  { command: "/help", description: "список slash-команд" },
+  { command: "/health", description: "проверка публичного API/MCP" },
+  { command: "/doctor", description: "диагностика CLI" },
+  { command: "/wizard", description: "мастер настройки" },
+  { command: "/db status", description: "статус локальной SQLite-БД" },
+  { command: "/sessions", description: "AI-сессии" },
+  { command: "/resume SESSION_ID", description: "продолжить сессию" },
+  { command: "/features list", description: "feature flags" },
+  { command: "/gosuslugi status", description: "личное подключение Госуслуг" },
+  { command: "/wiki", description: "ссылки на документацию" },
+  { command: "/context list", description: "локальный контекст проекта" },
+  { command: "/skills list", description: "skills" },
+  { command: "/permissions", description: "разрешения" },
+  { command: "/tools", description: "tools и toolsets" },
+  { command: "/files status", description: "локальные файловые операции" },
+  { command: "/archive doctor", description: "архиватор" },
+  { command: "/changes list", description: "подготовленные изменения" },
+  { command: "/index status", description: "индекс документов" },
+  { command: "/reports list", description: "пакеты отчетов" },
+  { command: "/plugins list", description: "plugins" },
+  { command: "/workspace status", description: "workspace" },
+  { command: "/tasks list", description: "задачи" },
+  { command: "/artifacts list", description: "artifacts" },
+  { command: "/trace last", description: "последние tools trace" },
+  { command: "/policy use safe", description: "переключить policy" },
+  { command: "/cron list", description: "cron-задачи" },
+  { command: "/daemon status", description: "локальный daemon" },
+  { command: "/rpc call status", description: "RPC status" },
+  { command: "/memory show", description: "память агента" },
+  { command: "/hooks list", description: "hooks" },
+  { command: "/agents list", description: "agents" },
+  { command: "/mcp status", description: "MCP" },
+  { command: "/cache status", description: "cache" },
+  { command: "/sync", description: "обновить локальные данные" },
+  { command: "/diff", description: "изменения данных" },
+  { command: "/card школа 29", description: "карточка объекта" },
+  { command: "/quality", description: "качество данных" },
+  { command: "/views", description: "saved views" },
+  { command: "/config get", description: "конфигурация" },
+  { command: "/layers", description: "слои данных" },
+  { command: "/data schools --limit 10", description: "данные слоя" },
+  { command: "/schools --limit 10", description: "школы" },
+  { command: "/kindergartens --search 29", description: "детские сады" },
+  { command: "/search лицей --limit 3", description: "поиск" },
+  { command: "/mcp-info", description: "публичный MCP" },
+  { command: "/profiles", description: "AI-профили" },
+  { command: "/models openrouter --search qwen", description: "модели" },
+  { command: "/ai doctor", description: "AI diagnostics" },
+  { command: "/ai setup ollama", description: "настройка Ollama" },
+  { command: "/use openai", description: "выбрать OpenAI" },
+  { command: "/use ollama", description: "выбрать Ollama" },
+  { command: "/key status", description: "API-ключи" },
+  { command: "/history", description: "история текущей сессии" },
+  { command: "/new", description: "новая agent-сессия" },
+  { command: "/retry", description: "повторить последний вопрос" },
+  { command: "/undo", description: "удалить последний обмен" },
+  { command: "/compact", description: "сжать контекст" },
+  { command: "/usage", description: "использование контекста" },
+  { command: "/clear", description: "очистить историю agent-сессии" },
+  { command: "/banner", description: "показать баннер" },
+  { command: "/update", description: "проверить обновления" },
+  { command: "/init", description: "проверить окружение" },
+  { command: "/exit", description: "выйти" },
+];
 const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
 │                                                                            │
 │\x1b[38;5;51m   ____ _     ___       __   ______  ____  _   _ _  __    _    ____       \x1b[38;5;45m│
@@ -616,8 +681,18 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (line === "/") {
+    printSlashMenu("");
+    return false;
+  }
+
   const [command, ...args] = splitCommandLine(line.slice(1));
   state.lastCommand = { command, args };
+
+  if (!command) {
+    printSlashMenu("");
+    return false;
+  }
 
   if (command === "exit" || command === "quit") {
     return true;
@@ -968,8 +1043,13 @@ async function handleAgentLine(line, state) {
   }[command];
 
   if (!mapped) {
-    console.log(`Неизвестная slash-команда: /${command}`);
-    printAgentHelp();
+    const matches = getSlashCommandMatches(command);
+    if (matches.length > 0) {
+      printSlashMenu(command);
+    } else {
+      console.log(`Неизвестная slash-команда: /${command}`);
+      printSlashMenu(command);
+    }
     return false;
   }
 
@@ -979,83 +1059,33 @@ async function handleAgentLine(line, state) {
 }
 
 function printAgentHelp() {
-  console.log(`Slash-команды:
-  /help
-  /health
-  /doctor
-  /wizard
-  /db status
-  /sessions
-  /resume SESSION_ID
-  /features list
-  /gosuslugi status
-  /wiki
-  /context list
-  /skills list
-  /permissions
-  /tools
-  /files status
-  /archive doctor
-  /changes list
-  /index status
-  /reports list
-  /plugins list
-  /workspace status
-  /tasks list
-  /artifacts list
-  /trace last
-  /policy use safe
-  /cron list
-  /daemon status
-  /rpc call status
-  /memory show
-  /hooks list
-  /agents list
-  /mcp status
-  /cache status
-  /sync
-  /diff
-  /card школа 29
-  /quality
-  /views
-  /config get
-  /config set api.baseUrl URL
-  /layers
-  /data schools --limit 10
-  /schools --limit 10
-  /schools get --inn 1215067180
-  /kindergartens --search 29
-  /kindergartens get --inn 1215077421
-  /search лицей --limit 3
-  /mcp-info
-  /context школа 29
-  /profiles
-  /profile use local
-  /models openrouter --search qwen
-  /ai doctor
-  /ai setup ollama
-  /use openai
-  /use ollama
-  /key status
-  /key set openai
-  /config
-  /provider
-  /model
-  /history
-  /history --limit 20
-  /new
-  /reset
-  /retry
-  /undo
-  /compact
-  /usage
-  /clear
-  /banner
-  /update
-  /init
-  /exit
+  printSlashMenu("");
+  console.log("");
+  console.log("Обычный текст без slash-команды отправляется в настроенный AI-провайдер.");
+}
 
-Обычный текст без slash-команды отправляется в настроенный AI-провайдер.`);
+function printSlashMenu(filter = "") {
+  const normalized = String(filter || "").replace(/^\//, "");
+  const rows = getSlashCommandMatches(normalized)
+    .slice(0, 30)
+    .map((item) => ({ command: item.command, description: item.description }));
+  if (rows.length === 0) {
+    console.log(`Нет slash-команд по фильтру: ${filter}`);
+    console.log("Введите / для списка команд.");
+    return;
+  }
+  console.log(normalized ? `Slash-команды по фильтру "${filter}":` : "Slash-команды:");
+  printTable(rows, [["command", "Команда"], ["description", "Описание"]]);
+  if (SLASH_COMMANDS.length > rows.length && !normalized) {
+    console.log(`Показано ${rows.length} из ${SLASH_COMMANDS.length}. Введите /текст для фильтра.`);
+  }
+}
+
+function getSlashCommandMatches(filter = "") {
+  const normalized = String(filter || "").replace(/^\//, "").toLocaleLowerCase("ru-RU");
+  return SLASH_COMMANDS.filter((item) => !normalized
+    || item.command.toLocaleLowerCase("ru-RU").includes(normalized)
+    || item.description.toLocaleLowerCase("ru-RU").includes(normalized));
 }
 
 function printAgentHistory(history) {
