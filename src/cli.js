@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { emitKeypressEvents } from "node:readline";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { DatabaseSync } from "node:sqlite";
@@ -331,13 +332,7 @@ const SLASH_COMMANDS = [
 ];
 const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
 │                                                                            │
-│\x1b[38;5;51m   ____ _     ___       __   ______  ____  _   _ _  __    _    ____       \x1b[38;5;45m│
-│\x1b[38;5;51m  / ___| |   |_ _|      \\ \\ / / ___||  _ \\| | | | |/ /   / \\  |  _ \\      \x1b[38;5;45m│
-│\x1b[38;5;51m | |   | |    | |  _____ \\ V /\\___ \\| | | | |_| | ' /   / _ \\ | |_) |     \x1b[38;5;45m│
-│\x1b[38;5;51m | |___| |___ | | |_____| | |  ___) | |_| |  _  | . \\  / ___ \\|  _ <      \x1b[38;5;45m│
-│\x1b[38;5;51m  \\____|_____|___|        |_| |____/|____/|_| |_|_|\\_\\/_/   \\_\\_| \\_\\     \x1b[38;5;45m│
-│                                                                            │
-│\x1b[38;5;213m                    CLI-ЙОШКАР-ОЛА                                         \x1b[38;5;45m│
+│\x1b[38;5;213m                         CLI-Йошкар-Ола                                    \x1b[38;5;45m│
 │                                                                            │
 │\x1b[38;5;250m        открытые данные • MCP • локальный AI                               \x1b[38;5;45m│
 │                                                                            │
@@ -645,6 +640,7 @@ async function startAgent() {
   rl.on("close", () => {
     closed = true;
   });
+  const detachSlashSuggestions = attachSlashSuggestions(rl);
   safePrompt(rl);
 
   for await (const rawLine of rl) {
@@ -670,6 +666,7 @@ async function startAgent() {
   if (!closed) {
     rl.close();
   }
+  detachSlashSuggestions();
   await runHooks("SessionEnd", { mode: "agent" });
 }
 
@@ -1064,10 +1061,10 @@ function printAgentHelp() {
   console.log("Обычный текст без slash-команды отправляется в настроенный AI-провайдер.");
 }
 
-function printSlashMenu(filter = "") {
+function printSlashMenu(filter = "", options = {}) {
   const normalized = String(filter || "").replace(/^\//, "");
   const rows = getSlashCommandMatches(normalized)
-    .slice(0, 30)
+    .slice(0, Number(options.limit || 30))
     .map((item) => ({ command: item.command, description: item.description }));
   if (rows.length === 0) {
     console.log(`Нет slash-команд по фильтру: ${filter}`);
@@ -1076,7 +1073,7 @@ function printSlashMenu(filter = "") {
   }
   console.log(normalized ? `Slash-команды по фильтру "${filter}":` : "Slash-команды:");
   printTable(rows, [["command", "Команда"], ["description", "Описание"]]);
-  if (SLASH_COMMANDS.length > rows.length && !normalized) {
+  if (!options.compact && SLASH_COMMANDS.length > rows.length && !normalized) {
     console.log(`Показано ${rows.length} из ${SLASH_COMMANDS.length}. Введите /текст для фильтра.`);
   }
 }
@@ -1126,10 +1123,42 @@ function safePrompt(rl, closed = false) {
   }
 
   try {
+    writePromptBottomPadding();
     rl.prompt();
   } catch {
     // The input stream can close while an async slash-command is still running.
   }
+}
+
+function attachSlashSuggestions(rl) {
+  if (!input.isTTY) return () => {};
+  emitKeypressEvents(input, rl);
+  let lastFilter = null;
+  const onKeypress = () => {
+    setTimeout(() => {
+      const line = rl.line || "";
+      if (!line.startsWith("/")) {
+        lastFilter = null;
+        return;
+      }
+      const filter = line.slice(1);
+      if (filter === lastFilter) return;
+      lastFilter = filter;
+      output.write("\n");
+      printSlashMenu(filter, { compact: true, limit: 10 });
+      writePromptBottomPadding();
+      rl.prompt(true);
+    }, 0);
+  };
+  input.on("keypress", onKeypress);
+  return () => input.off("keypress", onKeypress);
+}
+
+function writePromptBottomPadding() {
+  if (!output.isTTY) return;
+  const padding = Math.max(0, Math.min(5, Number(process.env.IOLA_PROMPT_BOTTOM_PADDING || 2)));
+  if (padding === 0) return;
+  output.write(`${"\n".repeat(padding)}\x1b[${padding}A`);
 }
 
 async function showBanner(options = {}) {
@@ -1146,7 +1175,7 @@ async function showBanner(options = {}) {
     return;
   }
 
-  console.log(`CLI-ЙОШКАР-ОЛА ${updateAvailable ? `v${version} -> v${latest}` : `v${version}`}`);
+  console.log(`CLI-Йошкар-Ола ${updateAvailable ? `v${version} -> v${latest}` : `v${version}`}`);
   console.log("открытые данные • MCP • локальный AI");
   if (updateAvailable) console.log("Обновить: npm install -g @iola_adm/iola-cli@latest");
 }
