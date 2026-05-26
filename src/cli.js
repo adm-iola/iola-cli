@@ -9,10 +9,24 @@ const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/a
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
+│\x1b[38;5;51m   ____ _     ___      ____  ____   ___  _____ _  _______                  \x1b[38;5;45m│
+│\x1b[38;5;51m  / ___| |   |_ _|    |  _ \\|  _ \\ / _ \\| ____| |/ /_   _|                 \x1b[38;5;45m│
+│\x1b[38;5;51m | |   | |    | |_____| |_) | |_) | | | |  _| | ' /  | |                   \x1b[38;5;45m│
+│\x1b[38;5;51m | |___| |___ | |_____|  __/|  _ <| |_| | |___| . \\  | |                   \x1b[38;5;45m│
+│\x1b[38;5;51m  \\____|_____|___|    |_|   |_| \\_\\\\___/|_____|_|\\_\\ |_|                   \x1b[38;5;45m│
+│                                                                            │
+│\x1b[38;5;213m                    Й О Ш К А Р - О Л Ы                                    \x1b[38;5;45m│
+│                                                                            │
+│\x1b[38;5;250m        открытые данные • MCP • локальный AI                               \x1b[38;5;45m│
+│                                                                            │
+│\x1b[38;5;82m        > iola help                                                         \x1b[38;5;45m│
+└────────────────────────────────────────────────────────────────────────────┘\x1b[0m`;
 
 const COMMANDS = new Map([
   ["help", showHelp],
   ["version", showVersion],
+  ["banner", showBanner],
   ["ai", handleAi],
   ["health", checkHealth],
   ["layers", listLayers],
@@ -35,9 +49,11 @@ export async function main(argv) {
 }
 
 async function showHelp() {
+  showBanner();
   console.log(`iola - CLI для открытых данных городского округа "Город Йошкар-Ола"
 
 Usage:
+  iola banner
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -56,6 +72,16 @@ Environment:
   IOLA_API_BASE_URL   default: ${API_BASE_URL}
   IOLA_MCP_BASE_URL   default: ${MCP_BASE_URL}
 `);
+}
+
+function showBanner() {
+  if (process.stdout.isTTY && process.env.NO_COLOR !== "1") {
+    console.log(BANNER);
+    return;
+  }
+
+  console.log("CLI-ПРОЕКТ ЙОШКАР-ОЛЫ");
+  console.log("открытые данные • MCP • локальный AI");
 }
 
 async function showVersion() {
@@ -84,6 +110,7 @@ async function handleAi(args) {
   const [subcommand = "help", ...rest] = args;
 
   if (subcommand === "help") {
+    showBanner();
     console.log(`AI-команды:
   iola ai doctor [--json]
   iola ai setup
@@ -123,6 +150,7 @@ async function aiSetup(args) {
   const [provider] = args;
 
   if (!provider) {
+    showBanner();
     const selected = await chooseAiProvider();
     await aiSetup([selected]);
     return;

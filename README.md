@@ -74,6 +74,7 @@ iola help
 ## Команды
 
 ```bash
+iola banner
 iola ai doctor
 iola ai setup ollama
 iola health
