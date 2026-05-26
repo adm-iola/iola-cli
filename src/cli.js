@@ -14,7 +14,15 @@ const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 1;
+const DB_SCHEMA_VERSION = 2;
+const FEATURES = {
+  "sqlite-history": { stage: "stable", defaultEnabled: true, description: "Запись истории AI-запросов в SQLite." },
+  sessions: { stage: "stable", defaultEnabled: true, description: "Сессии, resume и fork для AI-диалогов." },
+  "api-cache": { stage: "experimental", defaultEnabled: false, description: "Локальный кеш API-ответов." },
+  events: { stage: "experimental", defaultEnabled: true, description: "JSONL-события выполнения ask." },
+  "mcp-management": { stage: "stable", defaultEnabled: true, description: "Команды управления MCP-интеграциями." },
+  "web-search": { stage: "experimental", defaultEnabled: false, description: "Резерв под web-search режимы AI." },
+};
 const DEFAULT_AI_CONFIG = {
   api: {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
@@ -82,6 +90,11 @@ const COMMANDS = new Map([
   ["doctor", doctor],
   ["db", handleDb],
   ["history", handleHistory],
+  ["sessions", handleSessions],
+  ["resume", resumeSession],
+  ["fork", forkSession],
+  ["features", handleFeatures],
+  ["mcp", handleMcp],
   ["config", handleConfig],
   ["banner", showBanner],
   ["agent", startAgent],
@@ -129,12 +142,17 @@ Usage:
   iola db init
   iola history [--limit 20]
   iola history clear
+  iola sessions [--limit 20]
+  iola resume SESSION_ID [TEXT]
+  iola fork SESSION_ID [TEXT]
+  iola features list|enable|disable
+  iola mcp list|status|install|remove
   iola config get
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
   iola config reset
   iola update
-  iola ask TEXT
+  iola ask TEXT [--profile NAME] [--model MODEL] [--output FILE] [--schema json|table] [--events] [--no-history]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
@@ -248,6 +266,31 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "sessions") {
+    await handleSessions(args);
+    return false;
+  }
+
+  if (command === "resume") {
+    await resumeSession(args);
+    return false;
+  }
+
+  if (command === "fork") {
+    await forkSession(args);
+    return false;
+  }
+
+  if (command === "features") {
+    await handleFeatures(args);
+    return false;
+  }
+
+  if (command === "mcp") {
+    await handleMcp(args);
+    return false;
+  }
+
   if (command === "config") {
     await handleConfig(args.length > 0 ? args : ["get"]);
     return false;
@@ -328,6 +371,11 @@ async function handleAgentLine(line, state) {
     doctor: ["doctor", args],
     db: ["db", args],
     history: ["history", args],
+    sessions: ["sessions", args],
+    resume: ["resume", args],
+    fork: ["fork", args],
+    features: ["features", args],
+    mcp: ["mcp", args],
     config: ["config", args],
     layers: ["layers", args],
     data: ["data", args],
@@ -355,6 +403,10 @@ function printAgentHelp() {
   /health
   /doctor
   /db status
+  /sessions
+  /resume SESSION_ID
+  /features list
+  /mcp status
   /config get
   /config set api.baseUrl URL
   /layers
@@ -520,6 +572,20 @@ async function doctor(args = []) {
     return;
   }
 
+  if (options.summary) {
+    printTable([
+      { group: "cli", status: report.cli.nodeStatus === "ok" && report.cli.update !== "available" ? "ok" : "check" },
+      { group: "sqlite", status: report.db.status },
+      { group: "api", status: report.api.health },
+      { group: "ai", status: report.ai.provider },
+      { group: "ollama", status: report.ai.ollama },
+    ], [
+      ["group", "Группа"],
+      ["status", "Статус"],
+    ]);
+    return;
+  }
+
   console.log("CLI");
   printKeyValue(report.cli);
   console.log("");
@@ -533,6 +599,11 @@ async function doctor(args = []) {
   printKeyValue(report.ai);
   console.log("");
   printDiagnostics(diagnostics, recommendOllamaModel(diagnostics));
+  if (options.all) {
+    console.log("");
+    console.log("Фичи");
+    await handleFeatures(["list"]);
+  }
 }
 
 function getUpdateStatus(current, latest) {
@@ -851,6 +922,128 @@ async function handleHistory(args) {
     ["question", "Вопрос"],
     ["answer", "Ответ"],
   ]);
+}
+
+async function handleSessions(args) {
+  const [action] = args;
+  if (action === "clear") {
+    clearSessions();
+    console.log("Сессии очищены.");
+    return;
+  }
+
+  const options = parseOptions(args);
+  const rows = listSessions(Number(options.limit || 20));
+
+  if (options.json) {
+    printJson(rows);
+    return;
+  }
+
+  printTable(rows, [
+    ["id", "ID"],
+    ["updated_at", "Обновлена"],
+    ["profile", "Профиль"],
+    ["provider", "Провайдер"],
+    ["model", "Модель"],
+    ["messages", "Сообщ."],
+    ["title", "Название"],
+  ]);
+}
+
+async function resumeSession(args) {
+  const [sessionId, ...questionParts] = args;
+  if (!sessionId) {
+    throw new Error("SESSION_ID обязателен. Пример: iola resume 1 \"продолжи\"");
+  }
+
+  const question = questionParts.join(" ").trim();
+  if (!question) {
+    printSessionMessages(Number(sessionId));
+    return;
+  }
+
+  const session = getSession(Number(sessionId));
+  await aiAsk([question, "--session", sessionId, "--profile", session.profile || "local"]);
+}
+
+async function forkSession(args) {
+  const [sessionId, ...questionParts] = args;
+  if (!sessionId) {
+    throw new Error("SESSION_ID обязателен. Пример: iola fork 1 \"новый вопрос\"");
+  }
+
+  const forkedId = forkSessionInDb(Number(sessionId));
+  console.log(`Создана новая сессия: ${forkedId}`);
+  const question = questionParts.join(" ").trim();
+  if (question) {
+    const session = getSession(forkedId);
+    await aiAsk([question, "--session", String(forkedId), "--profile", session.profile || "local"]);
+  }
+}
+
+async function handleFeatures(args) {
+  const [action = "list", name] = args;
+
+  if (action === "list" || action === "ls") {
+    const rows = listFeatures();
+    printTable(rows, [
+      ["name", "Фича"],
+      ["enabled", "Вкл"],
+      ["stage", "Стадия"],
+      ["description", "Описание"],
+    ]);
+    return;
+  }
+
+  if (action === "enable" || action === "disable") {
+    if (!name || !FEATURES[name]) {
+      throw new Error(`Неизвестная фича. Доступно: ${Object.keys(FEATURES).join(", ")}`);
+    }
+    setFeatureEnabled(name, action === "enable");
+    console.log(`${name}: ${action === "enable" ? "enabled" : "disabled"}`);
+    return;
+  }
+
+  throw new Error("Команды features: list, enable NAME, disable NAME.");
+}
+
+async function handleMcp(args) {
+  const [action = "status", target = "codex"] = args;
+
+  if (action === "status") {
+    const [health, version] = await Promise.all([
+      fetchJson(`${await getMcpBaseUrl()}/mcp-health`),
+      fetchJson(`${await getMcpBaseUrl()}/mcp-version`),
+    ]);
+    printKeyValue({
+      endpoint: `${await getMcpBaseUrl()}/mcp`,
+      status: health.status,
+      server_version: version.server_version,
+      layers: version.data_layers?.map((layer) => layer.id).join(", "),
+    });
+    return;
+  }
+
+  if (action === "list") {
+    await runCommand("codex", ["mcp", "list"], { inherit: true });
+    return;
+  }
+
+  if (action === "install" || action === "add") {
+    await setupClient([target]);
+    return;
+  }
+
+  if (action === "remove" || action === "delete") {
+    if (target !== "codex") {
+      throw new Error("Пока доступно удаление только Codex MCP.");
+    }
+    await runCommand("codex", ["mcp", "remove", "yoshkarOlaPublicData"], { inherit: true });
+    return;
+  }
+
+  throw new Error("Команды mcp: status, list, install codex, remove codex.");
 }
 
 async function aiDoctor(args) {
@@ -1367,6 +1560,32 @@ function initDatabase() {
         error TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_ask_history_created_at ON ask_history(created_at DESC);
+      CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER,
+        title TEXT NOT NULL,
+        profile TEXT,
+        provider TEXT,
+        model TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS session_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        context_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id, id);
+      CREATE TABLE IF NOT EXISTS feature_flags (
+        name TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       CREATE TABLE IF NOT EXISTS api_cache (
         key TEXT PRIMARY KEY,
         url TEXT NOT NULL,
@@ -1406,11 +1625,13 @@ function getDbStatus() {
     try {
       const schema = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
       const history = db.prepare("SELECT COUNT(*) AS count FROM ask_history").get();
+      const sessions = db.prepare("SELECT COUNT(*) AS count FROM sessions").get();
       return {
         status: "ok",
         file: DB_FILE,
         schema: schema?.value || "-",
         history: history?.count ?? 0,
+        sessions: sessions?.count ?? 0,
       };
     } finally {
       db.close();
@@ -1426,7 +1647,7 @@ function getDbStatus() {
   }
 }
 
-function recordAskHistory({ question, answer, providerConfig, dataContext, error }) {
+function recordAskHistory({ question, answer, providerConfig, dataContext, error, sessionId }) {
   try {
     initDatabase();
     const db = openDatabase();
@@ -1471,6 +1692,171 @@ function clearHistory() {
   const db = openDatabase();
   try {
     db.exec("DELETE FROM ask_history");
+  } finally {
+    db.close();
+  }
+}
+
+function clearSessions() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.exec("DELETE FROM session_messages; DELETE FROM sessions;");
+  } finally {
+    db.close();
+  }
+}
+
+function createSession(providerConfig, title, parentId = null) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare(`
+      INSERT INTO sessions(parent_id, title, profile, provider, model)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(parentId, title.slice(0, 120), providerConfig.name || "", providerConfig.provider || "", providerConfig.model || "");
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function ensureSessionForAsk(options, providerConfig, question) {
+  if (options.session) {
+    return Number(options.session);
+  }
+  return createSession(providerConfig, question);
+}
+
+function appendSessionExchange(sessionId, question, answer, dataContext, error) {
+  if (!sessionId) {
+    return;
+  }
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, 'user', ?, ?)")
+      .run(sessionId, question, JSON.stringify(dataContext));
+    db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, 'assistant', ?, ?)")
+      .run(sessionId, error || answer || "", JSON.stringify({ error: error || "" }));
+    db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(sessionId);
+  } finally {
+    db.close();
+  }
+}
+
+function listSessions(limit) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare(`
+      SELECT s.id, s.updated_at, s.profile, s.provider, s.model, s.title, COUNT(m.id) AS messages
+      FROM sessions s
+      LEFT JOIN session_messages m ON m.session_id = s.id
+      GROUP BY s.id
+      ORDER BY s.updated_at DESC, s.id DESC
+      LIMIT ?
+    `).all(limit);
+  } finally {
+    db.close();
+  }
+}
+
+function getSessionAiHistory(sessionId) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT role, content FROM session_messages WHERE session_id = ? ORDER BY id ASC")
+      .all(sessionId)
+      .map((row) => ({ role: row.role, content: row.content }));
+  } finally {
+    db.close();
+  }
+}
+
+function getSession(sessionId) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId);
+    if (!session) {
+      throw new Error(`Сессия не найдена: ${sessionId}`);
+    }
+    return session;
+  } finally {
+    db.close();
+  }
+}
+
+function printSessionMessages(sessionId) {
+  const rows = getSessionAiHistory(sessionId).map((row, index) => ({ id: index + 1, ...row }));
+  printTable(rows, [
+    ["id", "#"],
+    ["role", "Роль"],
+    ["content", "Текст"],
+  ]);
+}
+
+function forkSessionInDb(sessionId) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId);
+    if (!session) {
+      throw new Error(`Сессия не найдена: ${sessionId}`);
+    }
+    const result = db.prepare(`
+      INSERT INTO sessions(parent_id, title, profile, provider, model)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionId, `Fork: ${session.title}`, session.profile, session.provider, session.model);
+    const newId = Number(result.lastInsertRowid);
+    const messages = db.prepare("SELECT role, content, context_json FROM session_messages WHERE session_id = ? ORDER BY id ASC").all(sessionId);
+    const insert = db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, ?, ?, ?)");
+    for (const message of messages) {
+      insert.run(newId, message.role, message.content, message.context_json);
+    }
+    return newId;
+  } finally {
+    db.close();
+  }
+}
+
+function listFeatures() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return Object.entries(FEATURES).map(([name, meta]) => {
+      const row = db.prepare("SELECT enabled FROM feature_flags WHERE name = ?").get(name);
+      const enabled = row ? Boolean(row.enabled) : meta.defaultEnabled;
+      return { name, enabled: enabled ? "yes" : "no", stage: meta.stage, description: meta.description };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function isFeatureEnabled(name) {
+  const meta = FEATURES[name];
+  if (!meta) {
+    return false;
+  }
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT enabled FROM feature_flags WHERE name = ?").get(name);
+    return row ? Boolean(row.enabled) : meta.defaultEnabled;
+  } finally {
+    db.close();
+  }
+}
+
+function setFeatureEnabled(name, enabled) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare(`
+      INSERT INTO feature_flags(name, enabled, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at
+    `).run(name, enabled ? 1 : 0);
   } finally {
     db.close();
   }
@@ -1565,20 +1951,43 @@ async function aiAsk(args, context = {}) {
 
   const config = await loadConfig();
   const providerConfig = resolveAiProfile(config, options);
+  applyRuntimeConfig(providerConfig, options.config);
   const dataContext = await buildDataContext(question);
-  const messages = buildAiMessages(question, dataContext, context.history || []);
+  emitEvent(options, "context_loaded", { schools: dataContext.schools.length, kindergartens: dataContext.kindergartens.length });
+  const historyEnabled = !options["no-history"] && isFeatureEnabled("sqlite-history");
+  const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
+  const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
+  const messages = buildAiMessages(question, dataContext, history, options);
   let answer = "";
   let errorMessage = "";
 
   try {
+    emitEvent(options, "provider_selected", { profile: providerConfig.name, provider: providerConfig.provider, model: providerConfig.model });
     answer = await callAiProvider(providerConfig, messages);
   } catch (error) {
     errorMessage = error instanceof Error ? error.message : String(error);
-    recordAskHistory({ question, answer: "", providerConfig, dataContext, error: errorMessage });
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: "", providerConfig, dataContext, error: errorMessage, sessionId });
+      appendSessionExchange(sessionId, question, "", dataContext, errorMessage);
+    }
     throw error;
   }
 
-  recordAskHistory({ question, answer, providerConfig, dataContext, error: "" });
+  if (historyEnabled) {
+    recordAskHistory({ question, answer, providerConfig, dataContext, error: "", sessionId });
+    appendSessionExchange(sessionId, question, answer, dataContext, "");
+  }
+
+  emitEvent(options, "answer", { length: answer.length, sessionId });
+
+  if (options.output) {
+    await writeFile(options.output, answer, "utf8");
+  }
+
+  if (options.format === "json" || options.schema === "json") {
+    printJson({ answer, profile: providerConfig.name, provider: providerConfig.provider, model: providerConfig.model, sessionId, context: dataContext });
+    return answer;
+  }
 
   console.log(answer);
   return answer;
@@ -1601,7 +2010,26 @@ function resolveAiProfile(config, options = {}) {
     provider,
     model: options.model || activeProfile.model || config.ai.model,
     baseUrl: options["base-url"] || activeProfile.baseUrl || config.ai.baseUrl,
+    temperature: options.temperature || activeProfile.temperature,
   };
+}
+
+function applyRuntimeConfig(target, value) {
+  if (!value) {
+    return;
+  }
+  const [key, ...parts] = String(value).split("=");
+  if (!key || parts.length === 0) {
+    throw new Error("Флаг --config должен быть в формате key=value.");
+  }
+  setConfigValue(target, key, parts.join("="));
+}
+
+function emitEvent(options, type, data) {
+  if (!options.events) {
+    return;
+  }
+  printJson({ type, at: new Date().toISOString(), ...data });
 }
 
 async function buildDataContext(question) {
@@ -1726,7 +2154,7 @@ function scoreItem(item, terms, patterns, layer) {
   return score;
 }
 
-function buildAiMessages(question, dataContext, history) {
+function buildAiMessages(question, dataContext, history, options = {}) {
   const sourceLines = buildSourceLines(dataContext);
   const system = [
     "Ты терминальный AI-ассистент CLI-проекта Йошкар-Олы.",
@@ -1735,8 +2163,10 @@ function buildAiMessages(question, dataContext, history) {
     "Если в контексте нет нужных сведений, прямо напиши, что данных недостаточно.",
     "Не выдумывай адреса, телефоны, лицензии и руководителей.",
     "Если отвечаешь по конкретным организациям, укажи источник в конце: слой, название и ИНН.",
+    options.schema === "json" ? "Верни валидный JSON без markdown-обертки." : "",
+    options.schema === "table" ? "Если уместно, верни ответ в виде markdown-таблицы." : "",
     "Отвечай кратко и по делу.",
-  ].join(" ");
+  ].filter(Boolean).join(" ");
   const contextText = JSON.stringify(dataContext, null, 2);
   const recentHistory = history.slice(-6);
 
@@ -1862,7 +2292,7 @@ async function callOpenAiCompatible(config, messages, apiKey, providerName) {
     body: JSON.stringify({
       model: config.model,
       messages,
-      temperature: 0.2,
+      temperature: Number(config.temperature ?? 0.2),
     }),
   });
 
@@ -2052,9 +2482,9 @@ async function setupClient(args) {
     throw new Error('Only "iola setup codex" is available in this first release.');
   }
 
-  console.log("Run:");
-  console.log("  codex mcp add yoshkarOlaPublicData --url https://apiiola.yasg.ru/mcp");
-  console.log("  npx -y @iola_adm/yoshkar-ola-public-mcp install-skill codex");
+  await runCommand("codex", ["mcp", "add", "yoshkarOlaPublicData", "--url", `${await getMcpBaseUrl()}/mcp`], { inherit: true });
+  await runCommand("npx", ["-y", "@iola_adm/yoshkar-ola-public-mcp", "install-skill", "codex"], { inherit: true });
+  console.log("Codex MCP и skill установлены.");
 }
 
 function parseOptions(args) {
@@ -2062,12 +2492,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {

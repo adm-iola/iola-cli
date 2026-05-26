@@ -91,12 +91,22 @@ iola db status
 iola db init
 iola history --limit 20
 iola history clear
+iola sessions --limit 20
+iola resume 1 "продолжи"
+iola fork 1 "новый вопрос"
+iola features list
+iola features enable api-cache
+iola mcp status
+iola mcp list
+iola mcp install codex
 iola config get
 iola config set api.baseUrl https://apiiola.yasg.ru/api/v1
 iola config reset
 iola update
 iola version --check
 iola ask "Найди школу 29"
+iola ask "Найди школу 29" --profile codex --events --output answer.txt
+iola ask "Найди школу 29" --schema json --no-history
 iola data schools --limit 10
 iola data kindergartens --search "29"
 iola data schools --where address=Петрова --columns name,address,phone
@@ -144,6 +154,10 @@ iola agent
 /health
 /doctor
 /db status
+/sessions
+/resume 1
+/features list
+/mcp status
 /config get
 /layers
 /data schools --limit 10
@@ -300,10 +314,41 @@ iola db reset
 iola history --limit 20
 iola history --json
 iola history clear
+iola sessions --limit 20
+iola sessions clear
+iola resume 1 "продолжи"
+iola fork 1 "новая ветка разговора"
 ```
 
 Ключи OpenAI/OpenRouter в SQLite не сохраняются. Они остаются в локальном
 `secrets.json` или в переменных окружения.
+
+## Feature flags, MCP и машинный вывод
+
+Экспериментальные и системные возможности можно включать отдельно:
+
+```bash
+iola features list
+iola features enable api-cache
+iola features disable sqlite-history
+```
+
+MCP-интеграции:
+
+```bash
+iola mcp status
+iola mcp list
+iola mcp install codex
+iola mcp remove codex
+```
+
+Для автоматизации доступны события, JSON-ответ и запись результата в файл:
+
+```bash
+iola ask "Найди школу 29" --events
+iola ask "Найди школу 29" --schema json
+iola ask "Найди школу 29" --output answer.txt
+```
 
 ## Переменные окружения
 
