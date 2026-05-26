@@ -330,14 +330,7 @@ const SLASH_COMMANDS = [
   { command: "/init", description: "проверить окружение" },
   { command: "/exit", description: "выйти" },
 ];
-const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
-│                                                                            │
-│\x1b[38;5;213m                         CLI-Йошкар-Ола                                    \x1b[38;5;45m│
-│                                                                            │
-│\x1b[38;5;250m        открытые данные • MCP • локальный AI                               \x1b[38;5;45m│
-│                                                                            │
-│\x1b[38;5;82m        VERSION_LINE                                                        \x1b[38;5;45m│
-└────────────────────────────────────────────────────────────────────────────┘\x1b[0m`;
+const BANNER_WIDTH = 76;
 
 const COMMANDS = new Map([
   ["help", showHelp],
@@ -632,6 +625,17 @@ async function startAgent() {
   console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
   await runHooks("SessionStart", { mode: "agent" });
 
+  if (input.isTTY && output.isTTY) {
+    await startAgentRawInput();
+    await runHooks("SessionEnd", { mode: "agent" });
+    return;
+  }
+
+  await startAgentReadline();
+  await runHooks("SessionEnd", { mode: "agent" });
+}
+
+async function startAgentReadline() {
   const rl = readline.createInterface({ input, output, prompt: "iola> " });
   const state = {
     history: [],
@@ -667,7 +671,86 @@ async function startAgent() {
     rl.close();
   }
   detachSlashSuggestions();
-  await runHooks("SessionEnd", { mode: "agent" });
+}
+
+async function startAgentRawInput() {
+  const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false };
+  emitKeypressEvents(input);
+  const wasRaw = input.isRaw;
+  input.setRawMode(true);
+  input.resume();
+
+  const render = () => renderAgentInput(state);
+  render();
+
+  try {
+    while (true) {
+      const { str, key } = await readKeypress();
+      if (key?.ctrl && key.name === "c") break;
+      if (key?.name === "escape") {
+        state.slashOpen = false;
+        render();
+        continue;
+      }
+      if (key?.name === "backspace") {
+        state.buffer = [...state.buffer].slice(0, -1).join("");
+        updateSlashState(state);
+        render();
+        continue;
+      }
+      if (key?.name === "up" && state.slashOpen) {
+        const matches = currentSlashMatches(state);
+        state.selected = Math.max(0, Math.min(matches.length - 1, state.selected - 1));
+        render();
+        continue;
+      }
+      if (key?.name === "down" && state.slashOpen) {
+        const matches = currentSlashMatches(state);
+        state.selected = Math.max(0, Math.min(matches.length - 1, state.selected + 1));
+        render();
+        continue;
+      }
+      if (isShiftEnter(str, key)) {
+        state.buffer += "\n";
+        state.slashOpen = false;
+        render();
+        continue;
+      }
+      if (key?.name === "return" || key?.name === "enter") {
+        const matches = currentSlashMatches(state);
+        const selected = matches[state.selected];
+        if (state.slashOpen && selected && state.buffer.trim() !== selected.command) {
+          state.buffer = selected.command;
+          state.slashOpen = false;
+          render();
+          continue;
+        }
+        const line = state.buffer.trim();
+        state.buffer = "";
+        state.slashOpen = false;
+        clearAgentInputArea();
+        if (!line) {
+          render();
+          continue;
+        }
+        try {
+          const shouldExit = await handleAgentLine(line, state);
+          if (shouldExit) break;
+        } catch (error) {
+          console.error(error instanceof Error ? error.message : String(error));
+        }
+        render();
+        continue;
+      }
+      if (str && !key?.ctrl && !key?.meta) {
+        state.buffer += str;
+        updateSlashState(state);
+        render();
+      }
+    }
+  } finally {
+    if (!wasRaw) input.setRawMode(false);
+  }
 }
 
 async function handleAgentLine(line, state) {
@@ -1085,6 +1168,59 @@ function getSlashCommandMatches(filter = "") {
     || item.description.toLocaleLowerCase("ru-RU").includes(normalized));
 }
 
+function updateSlashState(state) {
+  state.slashOpen = state.buffer.startsWith("/");
+  state.selected = 0;
+}
+
+function currentSlashMatches(state) {
+  if (!state.buffer.startsWith("/")) return [];
+  return getSlashCommandMatches(state.buffer.slice(1)).slice(0, 10);
+}
+
+function renderAgentInput(state) {
+  clearAgentInputArea();
+  const prompt = "iola> ";
+  const lines = state.buffer.split("\n");
+  output.write(`${prompt}${lines[0] || ""}\n`);
+  for (const line of lines.slice(1)) output.write(`      ${line}\n`);
+  if (state.slashOpen) {
+    const matches = currentSlashMatches(state);
+    if (matches.length === 0) {
+      output.write("  нет команд\n");
+    } else {
+      for (let index = 0; index < matches.length; index += 1) {
+        const marker = index === state.selected ? ">" : " ";
+        output.write(`${marker} ${matches[index].command.padEnd(24)} ${matches[index].description}\n`);
+      }
+      output.write("  ↑/↓ выбрать • Enter вставить/выполнить • Esc закрыть\n");
+    }
+  }
+  writePromptBottomPadding();
+}
+
+function clearAgentInputArea() {
+  if (!output.isTTY) return;
+  output.write("\x1b[2K\r");
+}
+
+function readKeypress() {
+  return new Promise((resolve) => {
+    const handler = (str, key) => {
+      input.off("keypress", handler);
+      resolve({ str, key });
+    };
+    input.on("keypress", handler);
+  });
+}
+
+function isShiftEnter(str, key) {
+  return (key?.name === "return" && key.shift)
+    || (key?.name === "enter" && key.shift)
+    || String(str || "").includes("[13;2")
+    || String(str || "").includes("[27;2;13");
+}
+
 function printAgentHistory(history) {
   if (history.length === 0) {
     console.log("История пуста.");
@@ -1167,7 +1303,7 @@ async function showBanner(options = {}) {
   const updateAvailable = latest && compareVersions(latest, version) > 0;
   const versionLine = updateAvailable ? `v${version} -> v${latest} • npm install -g @iola_adm/iola-cli@latest` : `v${version} • iola help`;
   if (process.stdout.isTTY && process.env.NO_COLOR !== "1") {
-    console.log(BANNER.replace("VERSION_LINE", padBannerLine(versionLine)));
+    console.log(renderBanner(versionLine, true));
     if (updateAvailable) {
       console.log(`Доступно обновление: v${version} -> v${latest}`);
       console.log("Обновить: npm install -g @iola_adm/iola-cli@latest");
@@ -1180,9 +1316,37 @@ async function showBanner(options = {}) {
   if (updateAvailable) console.log("Обновить: npm install -g @iola_adm/iola-cli@latest");
 }
 
-function padBannerLine(value) {
-  const text = String(value).slice(0, 62);
-  return `${text}${" ".repeat(Math.max(0, 62 - bannerVisibleLength(text)))}`;
+function renderBanner(versionLine, color = false) {
+  const c = color ? {
+    border: "\x1b[38;5;45m",
+    title: "\x1b[38;5;213m",
+    muted: "\x1b[38;5;250m",
+    version: "\x1b[38;5;82m",
+    reset: "\x1b[0m",
+  } : { border: "", title: "", muted: "", version: "", reset: "" };
+  const line = (text = "", style = "") => {
+    const value = centerBannerText(text);
+    return `${c.border}│${style}${value}${c.border}│`;
+  };
+  return [
+    `${c.border}┌${"─".repeat(BANNER_WIDTH)}┐`,
+    line(),
+    line("CLI-Йошкар-Ола", c.title),
+    line(),
+    line("открытые данные • MCP • локальный AI", c.muted),
+    line(),
+    line(versionLine, c.version),
+    `${c.border}└${"─".repeat(BANNER_WIDTH)}┘${c.reset}`,
+  ].join("\n");
+}
+
+function centerBannerText(value) {
+  const text = String(value || "");
+  const length = bannerVisibleLength(text);
+  if (length >= BANNER_WIDTH) return [...text].slice(0, BANNER_WIDTH).join("");
+  const left = Math.floor((BANNER_WIDTH - length) / 2);
+  const right = BANNER_WIDTH - length - left;
+  return `${" ".repeat(left)}${text}${" ".repeat(right)}`;
 }
 
 function bannerVisibleLength(value) {
