@@ -75,3 +75,12 @@ jobs:
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Smoke test published package
+        shell: bash
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          npm install -g "$PACKAGE_NAME@$PACKAGE_VERSION"
+          iola --help
+          iola wiki links

@@ -153,6 +153,7 @@ const COMMANDS = new Map([
   ["resume", resumeSession],
   ["fork", forkSession],
   ["features", handleFeatures],
+  ["wiki", handleWiki],
   ["permissions", handlePermissions],
   ["memory", handleMemory],
   ["hooks", handleHooks],
@@ -248,6 +249,7 @@ Usage:
   iola resume SESSION_ID [TEXT]
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
+  iola wiki [open|links]
   iola permissions list|allow|deny
   iola memory show|add|set|clear|export
   iola hooks list|add|delete|run
@@ -408,6 +410,11 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "wiki") {
+    await handleWiki(args);
+    return false;
+  }
+
   if (command === "permissions") {
     await handlePermissions(args);
     return false;
@@ -537,6 +544,7 @@ async function handleAgentLine(line, state) {
     resume: ["resume", args],
     fork: ["fork", args],
     features: ["features", args],
+    wiki: ["wiki", args],
     permissions: ["permissions", args],
     memory: ["memory", args],
     hooks: ["hooks", args],
@@ -576,6 +584,7 @@ function printAgentHelp() {
   /sessions
   /resume SESSION_ID
   /features list
+  /wiki
   /permissions
   /tools
   /memory show
@@ -1187,6 +1196,47 @@ async function handleFeatures(args) {
   }
 
   throw new Error("Команды features: list, enable NAME, disable NAME.");
+}
+
+async function handleWiki(args) {
+  const [action = "links"] = args;
+  const base = "https://github.com/adm-iola/iola-cli/wiki";
+  const links = [
+    ["Главная", base],
+    ["Установка", `${base}/Установка`],
+    ["Первый запуск", `${base}/Первый-запуск`],
+    ["AI-профили", `${base}/AI-профили`],
+    ["Локальный инструментальный агент", `${base}/Локальный-инструментальный-агент`],
+    ["Команды", `${base}/Команды`],
+    ["Решение проблем", `${base}/Решение-проблем`],
+  ].map(([title, url]) => ({ title, url }));
+
+  if (action === "open") {
+    await openUrl(base);
+    return;
+  }
+
+  if (action === "links" || action === "list" || action === "ls") {
+    printTable(links, [
+      ["title", "Раздел"],
+      ["url", "Ссылка"],
+    ]);
+    return;
+  }
+
+  throw new Error("Команды wiki: links, open.");
+}
+
+async function openUrl(url) {
+  if (process.platform === "win32") {
+    await runCommand("rundll32", ["url.dll,FileProtocolHandler", url], { inherit: false });
+    return;
+  }
+  if (process.platform === "darwin") {
+    await runCommand("open", [url], { inherit: false });
+    return;
+  }
+  await runCommand("xdg-open", [url], { inherit: false });
 }
 
 async function handlePermissions(args) {
