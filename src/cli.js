@@ -271,7 +271,7 @@ const BANNER = `\x1b[38;5;45m┌────────────────
 │\x1b[38;5;51m | |___| |___ | |_____|  __/|  _ <| |_| | |___| . \\  | |                   \x1b[38;5;45m│
 │\x1b[38;5;51m  \\____|_____|___|    |_|   |_| \\_\\\\___/|_____|_|\\_\\ |_|                   \x1b[38;5;45m│
 │                                                                            │
-│\x1b[38;5;213m                    Й О Ш К А Р - О Л Ы                                    \x1b[38;5;45m│
+│\x1b[38;5;213m                    C L I - Й О Ш К А Р - О Л А                            \x1b[38;5;45m│
 │                                                                            │
 │\x1b[38;5;250m        открытые данные • MCP • локальный AI                               \x1b[38;5;45m│
 │                                                                            │
@@ -353,6 +353,7 @@ const COMMANDS = new Map([
   ["mcp-info", showMcpInfo],
   ["setup", setupClient],
   ["onboard", onboard],
+  ["wizard", onboard],
 ]);
 
 export async function main(argv) {
@@ -405,11 +406,11 @@ export async function main(argv) {
 
 async function showHelp() {
   showBanner();
-  console.log(`iola - локальный CLI и AI-агент для данных городского округа "Город Йошкар-Ола"
+  console.log(`iola - CLI и AI-агент городского округа "Город Йошкар-Ола"
 
 Запуск:
   iola                         открыть интерактивный агент
-  iola onboard                 мастер настройки
+  iola wizard                  мастер настройки
   iola ask "найди школу 29"    задать вопрос
   iola search "Петрова"        поиск по открытым данным
 
@@ -533,6 +534,7 @@ Usage:
   iola mcp-info [--json]
   iola setup codex
   iola onboard
+  iola wizard
   iola version
 
 Environment:
@@ -960,6 +962,8 @@ async function handleAgentLine(line, state) {
     search: ["search", args],
     "mcp-info": ["mcp-info", args],
     setup: ["setup", args],
+    wizard: ["wizard", args],
+    onboard: ["onboard", args],
   }[command];
 
   if (!mapped) {
@@ -978,6 +982,7 @@ function printAgentHelp() {
   /help
   /health
   /doctor
+  /wizard
   /db status
   /sessions
   /resume SESSION_ID
@@ -1097,12 +1102,13 @@ function safePrompt(rl, closed = false) {
 }
 
 function showBanner() {
+  const version = getPackageVersion();
   if (process.stdout.isTTY && process.env.NO_COLOR !== "1") {
-    console.log(BANNER);
+    console.log(BANNER.replace("> iola help", `v${version} • iola help`));
     return;
   }
 
-  console.log("CLI-ПРОЕКТ ЙОШКАР-ОЛЫ");
+  console.log(`CLI-ЙОШКАР-ОЛА v${version}`);
   console.log("открытые данные • MCP • локальный AI");
 }
 
@@ -6314,10 +6320,15 @@ async function searchAll(args) {
 }
 
 async function setupClient(args) {
-  const [client] = args;
+  const [client, ...rest] = args;
+
+  if (client === "wizard" || client === "onboard") {
+    await onboard(rest);
+    return;
+  }
 
   if (client !== "codex") {
-    throw new Error('Only "iola setup codex" is available in this first release.');
+    throw new Error('Доступно: iola setup codex, iola setup wizard.');
   }
 
   await runCommand("codex", ["mcp", "add", "yoshkarOlaPublicData", "--url", `${await getMcpBaseUrl()}/mcp`], { inherit: true });
@@ -6328,6 +6339,9 @@ async function setupClient(args) {
 async function onboard(args = []) {
   const options = parseOptions(args);
   showBanner();
+  console.log("Мастер настройки iola-cli.");
+  console.log("Повторный запуск обновляет только выбранные разделы и не сбрасывает остальные настройки.");
+  console.log("");
   initDatabase();
   await handleConfig(["validate"]);
   await doctor(["--summary"]);
@@ -6360,6 +6374,16 @@ async function onboard(args = []) {
     await aiSetup(["codex"]);
   }
   if (components.includes("codex-mcp")) await setupClient(["codex"]);
+  if (components.includes("browser")) {
+    const status = await getBrowserStatus();
+    if (status.installed === "yes") console.log("Browser runtime уже установлен.");
+    else await installBrowserRuntime();
+  }
+  if (components.includes("gosuslugi")) {
+    await handleGosuslugi(["terms"]);
+    if (process.stdin.isTTY) await handleGosuslugi(["consent"]);
+    console.log("Параметры подключения можно указать командой: iola gosuslugi configure --auth-url URL --token-url URL --client-id ID --scope openid");
+  }
   if (components.includes("index")) {
     await setFilesMode("read-only", await loadConfig());
     console.log("Индекс документов можно запустить командой: iola index folder ./docs");
@@ -6380,6 +6404,8 @@ async function chooseOnboardComponents() {
   console.log("6. Codex CLI");
   console.log("7. MCP для Codex");
   console.log("8. Индекс локальных документов");
+  console.log("9. Browser runtime");
+  console.log("10. Личное подключение Госуслуг");
   console.log("");
   const rl = readline.createInterface({ input, output });
   try {
@@ -6394,6 +6420,8 @@ async function chooseOnboardComponents() {
       6: "codex",
       7: "codex-mcp",
       8: "index",
+      9: "browser",
+      10: "gosuslugi",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
