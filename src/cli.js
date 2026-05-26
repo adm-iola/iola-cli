@@ -6937,9 +6937,10 @@ async function onboard(args = []) {
     }
   }
 
-  const components = options.yes ? ["workspace", "policy", "ollama", "openai", "openrouter", "codex", "codex-mcp", "index"] : await chooseOnboardComponents();
+  const components = options.yes ? ["workspace", "policy", "ollama", "openai", "openrouter", "codex", "codex-mcp", "archive", "index"] : await chooseOnboardComponents();
   if (components.includes("workspace")) await handleWorkspace(["init"]);
   if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
+  if (components.includes("archive")) await ensureArchiveTool({ install: true });
   if (components.includes("ollama")) {
     await installOllamaIfMissing();
     await setupOllama(["--yes"]);
@@ -6986,9 +6987,10 @@ async function chooseOnboardComponents() {
   console.log("5. OpenRouter API");
   console.log("6. Codex CLI");
   console.log("7. MCP для Codex");
-  console.log("8. Индекс локальных документов");
-  console.log("9. Browser runtime");
-  console.log("10. Личное подключение Госуслуг");
+  console.log("8. 7-Zip / архивы");
+  console.log("9. Индекс локальных документов");
+  console.log("10. Browser runtime");
+  console.log("11. Личное подключение Госуслуг");
   console.log("");
   const rl = readline.createInterface({ input, output });
   try {
@@ -7002,9 +7004,10 @@ async function chooseOnboardComponents() {
       5: "openrouter",
       6: "codex",
       7: "codex-mcp",
-      8: "index",
-      9: "browser",
-      10: "gosuslugi",
+      8: "archive",
+      9: "index",
+      10: "browser",
+      11: "gosuslugi",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
