@@ -120,6 +120,7 @@ const SKILL_BUNDLES = {
     requirements: ["Ollama", "локальная модель"],
   },
 };
+let onboardRanThisProcess = false;
 const DEFAULT_AI_CONFIG = {
   api: {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
@@ -622,6 +623,7 @@ async function runDefaultCli() {
 
 async function startAgent() {
   await showBanner();
+  await ensureAgentAiReady();
   console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
   await runHooks("SessionStart", { mode: "agent" });
 
@@ -633,6 +635,73 @@ async function startAgent() {
 
   await startAgentReadline();
   await runHooks("SessionEnd", { mode: "agent" });
+}
+
+async function ensureAgentAiReady() {
+  const readiness = await getAiReadiness();
+  if (readiness.ready) return readiness;
+
+  if (!input.isTTY || !output.isTTY) {
+    console.log("AI-провайдер не настроен. Для настройки запустите: iola wizard");
+    return readiness;
+  }
+
+  if (onboardRanThisProcess) {
+    console.log("AI-провайдер пока не настроен. Агент откроется, но AI-запросы потребуют настройки.");
+    console.log("Повторно открыть мастер можно командой: /wizard");
+    return readiness;
+  }
+
+  console.log("AI-провайдер не настроен: нет локальной модели Ollama, API-ключей OpenAI/OpenRouter и авторизации Codex.");
+  console.log("Сейчас откроется мастер настройки. Уже существующие настройки не будут сброшены.");
+  console.log("");
+  await onboard([]);
+
+  const updated = await getAiReadiness();
+  if (!updated.ready) {
+    console.log("");
+    console.log("AI-провайдер пока не настроен. Агент откроется, но AI-запросы потребуют настройки.");
+    console.log("Повторно открыть мастер можно командой: /wizard");
+  }
+  return updated;
+}
+
+async function getAiReadiness() {
+  const [secrets, ollama, codex] = await Promise.all([
+    loadSecrets(),
+    hasUsableOllamaModel(),
+    hasUsableCodexAuth(),
+  ]);
+  const openai = Boolean(process.env.OPENAI_API_KEY || secrets.openai?.apiKey);
+  const openrouter = Boolean(process.env.OPENROUTER_API_KEY || secrets.openrouter?.apiKey);
+  return {
+    ready: Boolean(ollama || openai || openrouter || codex),
+    ollama,
+    openai,
+    openrouter,
+    codex,
+  };
+}
+
+async function hasUsableOllamaModel() {
+  try {
+    const config = await loadConfig();
+    const baseUrl = config.ai.profiles?.local?.baseUrl || "http://127.0.0.1:11434";
+    const response = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(1200) });
+    if (!response.ok) return false;
+    const payload = await response.json();
+    const models = Array.isArray(payload.models) ? payload.models : [];
+    return models.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function hasUsableCodexAuth() {
+  const version = await getCommandVersion("codex", ["--version"]);
+  if (version === "не найден") return false;
+  if (process.env.OPENAI_API_KEY) return true;
+  return existsSync(path.join(os.homedir(), ".codex", "auth.json"));
 }
 
 async function startAgentReadline() {
@@ -6590,6 +6659,7 @@ async function setupClient(args) {
 }
 
 async function onboard(args = []) {
+  onboardRanThisProcess = true;
   const options = parseOptions(args);
   await showBanner();
   console.log("Мастер настройки iola-cli.");
