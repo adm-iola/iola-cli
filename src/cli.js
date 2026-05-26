@@ -524,7 +524,7 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
-  iola gosuslugi terms|consent|status|check|keepalive|install-keepalive|connect|open|text|screenshot|whoami|debt|notifications|mark-read|logout|configure|login|userinfo
+  iola gosuslugi terms|consent|status|check|keepalive|install-keepalive|keepalive-status|uninstall-keepalive|connect|open|text|screenshot|whoami|debt|notifications|mark-read|logout|configure|login|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -2026,25 +2026,6 @@ async function handleDb(args) {
     return;
   }
 
-  if (action === "check") {
-    const result = await gosuslugiCheck(options);
-    if (options.json) printJson(result);
-    else printKeyValue(result);
-    return;
-  }
-
-  if (action === "keepalive") {
-    await gosuslugiKeepalive(options);
-    return;
-  }
-
-  if (action === "install-keepalive") {
-    const id = addCronJob("каждые 30 минут", "gosuslugi check --silent");
-    console.log(`Keepalive-задача добавлена: ${id}`);
-    console.log("Для выполнения запускайте периодически: iola cron tick");
-    return;
-  }
-
   if (action === "reset") {
     const shouldReset = await confirm("Удалить локальную SQLite-БД iola.db? [y/N] ");
     if (!shouldReset) {
@@ -2319,9 +2300,17 @@ async function handleGosuslugi(args) {
   }
 
   if (action === "install-keepalive") {
-    const id = addCronJob("каждые 30 минут", "gosuslugi check --silent");
-    console.log(`Keepalive-задача добавлена: ${id}`);
-    console.log("Для выполнения запускайте периодически: iola cron tick");
+    await installGosuslugiKeepaliveTask(options);
+    return;
+  }
+
+  if (action === "uninstall-keepalive") {
+    await uninstallGosuslugiKeepaliveTask(options);
+    return;
+  }
+
+  if (action === "keepalive-status") {
+    await printGosuslugiKeepaliveTaskStatus(options);
     return;
   }
 
@@ -2428,7 +2417,7 @@ async function handleGosuslugi(args) {
     return;
   }
 
-  throw new Error("Команды gosuslugi: terms, consent, status, check, keepalive, install-keepalive, connect, open, text, screenshot, whoami, debt, notifications, mark-read, logout, configure, login, userinfo.");
+  throw new Error("Команды gosuslugi: terms, consent, status, check, keepalive, install-keepalive, keepalive-status, uninstall-keepalive, connect, open, text, screenshot, whoami, debt, notifications, mark-read, logout, configure, login, userinfo.");
 }
 
 function targetOrDefault(args, options = {}) {
@@ -7883,6 +7872,78 @@ async function gosuslugiKeepalive(options = {}) {
     if (once) return;
     await sleep(intervalMs);
   }
+}
+
+function gosuslugiKeepaliveTaskName() {
+  return "iola-gosuslugi-keepalive";
+}
+
+function gosuslugiKeepaliveLogFile() {
+  return path.join(CONFIG_DIR, "gosuslugi-keepalive.log");
+}
+
+function cliEntrypointFile() {
+  return path.resolve(__dirname, "..", "bin", "iola.js");
+}
+
+async function installGosuslugiKeepaliveTask(options = {}) {
+  const intervalMinutes = Math.max(1, Math.round(parseDurationMs(options.interval || "30m") / 60000));
+  if (process.platform === "win32") {
+    await installWindowsGosuslugiKeepaliveTask(intervalMinutes);
+    return;
+  }
+  const id = addCronJob(`каждые ${intervalMinutes} минут`, "gosuslugi check --silent");
+  console.log(`Локальная cron-задача добавлена: ${id}`);
+  console.log("Для автоматического выполнения настройте системный планировщик на запуск: iola cron tick");
+}
+
+async function installWindowsGosuslugiKeepaliveTask(intervalMinutes) {
+  await mkdir(CONFIG_DIR, { recursive: true });
+  const taskName = gosuslugiKeepaliveTaskName();
+  const logFile = gosuslugiKeepaliveLogFile();
+  const script = path.join(CONFIG_DIR, "gosuslugi-keepalive-task.cmd");
+  const command = `"${process.execPath}" --no-warnings "${cliEntrypointFile()}" gosuslugi check --silent >> "${logFile}" 2>&1`;
+  await writeFile(script, `@echo off\r\n${command}\r\n`, "utf8");
+  await runCommand("schtasks.exe", [
+    "/Create",
+    "/TN", taskName,
+    "/SC", "MINUTE",
+    "/MO", String(intervalMinutes),
+    "/TR", script,
+    "/F",
+  ]);
+  console.log(`Windows Task Scheduler задача создана: ${taskName}`);
+  console.log(`Интервал: ${intervalMinutes} мин.`);
+  console.log(`Лог: ${logFile}`);
+  console.log("Проверить: iola gosuslugi keepalive-status");
+}
+
+async function uninstallGosuslugiKeepaliveTask() {
+  if (process.platform === "win32") {
+    await runCommand("schtasks.exe", ["/Delete", "/TN", gosuslugiKeepaliveTaskName(), "/F"]).catch(() => {});
+    console.log(`Windows Task Scheduler задача удалена: ${gosuslugiKeepaliveTaskName()}`);
+    return;
+  }
+  console.log("Для не-Windows удалите локальную cron-задачу вручную: iola cron list, затем iola cron delete ID.");
+}
+
+async function printGosuslugiKeepaliveTaskStatus(options = {}) {
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await runCommand("schtasks.exe", ["/Query", "/TN", gosuslugiKeepaliveTaskName(), "/FO", "LIST"]);
+      console.log(stdout.trim());
+    } catch {
+      console.log(`Задача не найдена: ${gosuslugiKeepaliveTaskName()}`);
+    }
+    if (existsSync(gosuslugiKeepaliveLogFile())) {
+      console.log("");
+      console.log(`Лог: ${gosuslugiKeepaliveLogFile()}`);
+    }
+    return;
+  }
+  const rows = listCronJobs().filter((job) => String(job.command).includes("gosuslugi check"));
+  if (options.json) printJson(rows);
+  else printTable(rows, [["id", "ID"], ["enabled", "Вкл"], ["schedule_text", "Расписание"], ["command", "Команда"], ["last_run_at", "Последний запуск"]]);
 }
 
 function parseDurationMs(value) {

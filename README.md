@@ -90,6 +90,7 @@ iola gosuslugi whoami
 iola gosuslugi debt
 iola gosuslugi notifications --unread
 iola gosuslugi keepalive
+iola gosuslugi install-keepalive
 ```
 
 Локальная модель через Ollama:
@@ -139,7 +140,7 @@ iola version --check
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
 - личное локальное подключение Госуслуг через отдельный браузерный профиль на ПК пользователя;
 - read-only tools Госуслуг для агента: ФИО, дата рождения, задолженности и уведомления;
-- keepalive-проверка сессии Госуслуг каждые 30 минут без обхода 2FA;
+- keepalive-проверка сессии Госуслуг каждые 30 минут через Windows Task Scheduler без висящего окна терминала;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
 - планы выполнения, traces, tasks, artifacts, snapshots и policy-профили;
 - экспорт отчетов в Excel/Word-совместимые файлы;
