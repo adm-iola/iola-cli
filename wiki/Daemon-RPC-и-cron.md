@@ -34,3 +34,9 @@ iola cron delete 1
 
 `cron tick` проверяет задачи, которые пора выполнить. Его можно запускать вручную, через Windows Task Scheduler или другой планировщик.
 
+Пример проверки сессии Госуслуг каждые 30 минут:
+
+```bash
+iola gosuslugi install-keepalive
+iola cron tick
+```

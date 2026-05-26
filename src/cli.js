@@ -290,6 +290,7 @@ const SLASH_COMMANDS = [
   { command: "/gosuslugi connect", description: "открыть личный вход Госуслуг" },
   { command: "/gosuslugi debt", description: "задолженности Госуслуг" },
   { command: "/gosuslugi notifications", description: "уведомления Госуслуг" },
+  { command: "/gosuslugi keepalive", description: "проверка сессии каждые 30 минут" },
   { command: "/wiki", description: "ссылки на документацию" },
   { command: "/context list", description: "локальный контекст проекта" },
   { command: "/skills list", description: "skills" },
@@ -523,7 +524,7 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola settings list|get|validate|doctor|init
-  iola gosuslugi terms|consent|status|connect|open|text|screenshot|whoami|debt|notifications|mark-read|logout|configure|login|userinfo
+  iola gosuslugi terms|consent|status|check|keepalive|install-keepalive|connect|open|text|screenshot|whoami|debt|notifications|mark-read|logout|configure|login|userinfo
   iola wiki [open|links]
   iola context list|show|init
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
@@ -2025,6 +2026,25 @@ async function handleDb(args) {
     return;
   }
 
+  if (action === "check") {
+    const result = await gosuslugiCheck(options);
+    if (options.json) printJson(result);
+    else printKeyValue(result);
+    return;
+  }
+
+  if (action === "keepalive") {
+    await gosuslugiKeepalive(options);
+    return;
+  }
+
+  if (action === "install-keepalive") {
+    const id = addCronJob("каждые 30 минут", "gosuslugi check --silent");
+    console.log(`Keepalive-задача добавлена: ${id}`);
+    console.log("Для выполнения запускайте периодически: iola cron tick");
+    return;
+  }
+
   if (action === "reset") {
     const shouldReset = await confirm("Удалить локальную SQLite-БД iola.db? [y/N] ");
     if (!shouldReset) {
@@ -2286,6 +2306,25 @@ async function handleGosuslugi(args) {
     return;
   }
 
+  if (action === "check") {
+    const result = await gosuslugiCheck(options);
+    if (options.json) printJson(result);
+    else printKeyValue(result);
+    return;
+  }
+
+  if (action === "keepalive") {
+    await gosuslugiKeepalive(options);
+    return;
+  }
+
+  if (action === "install-keepalive") {
+    const id = addCronJob("каждые 30 минут", "gosuslugi check --silent");
+    console.log(`Keepalive-задача добавлена: ${id}`);
+    console.log("Для выполнения запускайте периодически: iola cron tick");
+    return;
+  }
+
   if (action === "connect") {
     await gosuslugiBrowserConnect(options);
     return;
@@ -2389,7 +2428,7 @@ async function handleGosuslugi(args) {
     return;
   }
 
-  throw new Error("Команды gosuslugi: terms, consent, status, connect, open, text, screenshot, whoami, debt, notifications, mark-read, logout, configure, login, userinfo.");
+  throw new Error("Команды gosuslugi: terms, consent, status, check, keepalive, install-keepalive, connect, open, text, screenshot, whoami, debt, notifications, mark-read, logout, configure, login, userinfo.");
 }
 
 function targetOrDefault(args, options = {}) {
@@ -5775,6 +5814,10 @@ function isCronDue(job) {
   if (normalized.includes("каждый час") || normalized.includes("hourly")) {
     return !lastRun || now.getTime() - lastRun.getTime() >= 60 * 60 * 1000;
   }
+  const everyMinutes = normalized.match(/кажд(?:ые|ую)\s+(\d+)\s*(?:мин|минут)/u) || normalized.match(/every\s+(\d+)\s*(?:m|min|minutes)/u);
+  if (everyMinutes) {
+    return !lastRun || now.getTime() - lastRun.getTime() >= Number(everyMinutes[1]) * 60 * 1000;
+  }
   if (normalized.includes("каждый день") || normalized.includes("daily")) {
     return !lastRun || now.toISOString().slice(0, 10) !== lastRun.toISOString().slice(0, 10);
   }
@@ -7150,7 +7193,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
@@ -7797,6 +7840,61 @@ async function gosuslugiMarkNotificationsRead(options = {}) {
     waitMs: Number(options.wait || 5000),
   });
   console.log("Команда отметки прочитанным выполнена. Проверьте статус: iola gosuslugi notifications --unread");
+}
+
+async function gosuslugiCheck(options = {}) {
+  try {
+    const result = await gosuslugiWhoami({ wait: options.wait || 2000 });
+    return {
+      status: "ok",
+      authorized: "yes",
+      fio: result.summary.fio,
+      checkedAt: new Date().toISOString(),
+      nextAction: "-",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const result = {
+      status: "needs-login",
+      authorized: "unknown",
+      checkedAt: new Date().toISOString(),
+      nextAction: "iola gosuslugi connect",
+      error: message,
+    };
+    if (!options.silent) {
+      console.error("Сессия Госуслуг недоступна или требует повторный вход.");
+      console.error("Запустите: iola gosuslugi connect");
+    }
+    return result;
+  }
+}
+
+async function gosuslugiKeepalive(options = {}) {
+  const intervalMs = parseDurationMs(options.interval || "30m");
+  const once = Boolean(options.once);
+  console.log(`Gosuslugi keepalive запущен. Интервал: ${Math.round(intervalMs / 60000)} мин.`);
+  console.log("Остановить: Ctrl+C");
+  while (true) {
+    const result = await gosuslugiCheck({ silent: true });
+    const line = result.status === "ok"
+      ? `[${result.checkedAt}] Госуслуги: сессия активна (${result.fio || "-"})`
+      : `[${result.checkedAt}] Госуслуги: нужен повторный вход. Запустите: iola gosuslugi connect`;
+    console.log(line);
+    if (once) return;
+    await sleep(intervalMs);
+  }
+}
+
+function parseDurationMs(value) {
+  const text = String(value || "30m").trim().toLocaleLowerCase("ru-RU");
+  const match = text.match(/^(\d+(?:[.,]\d+)?)(ms|s|m|h|мин|минут|час|часа|часов)?$/u);
+  if (!match) throw new Error("Интервал задается как 30m, 1800s или 1h.");
+  const amount = Number(match[1].replace(",", "."));
+  const unit = match[2] || "m";
+  if (unit === "ms") return Math.max(1000, amount);
+  if (unit === "s") return Math.max(1000, amount * 1000);
+  if (unit === "h" || unit.startsWith("час")) return Math.max(1000, amount * 60 * 60 * 1000);
+  return Math.max(1000, amount * 60 * 1000);
 }
 
 function printGosuslugiDebt(result) {
