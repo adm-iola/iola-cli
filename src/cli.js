@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -14,7 +14,9 @@ const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 2;
+const DB_SCHEMA_VERSION = 3;
+const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
+const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "AfterSync", "BeforeExport", "SessionEnd"];
 const FEATURES = {
   "sqlite-history": { stage: "stable", defaultEnabled: true, description: "Запись истории AI-запросов в SQLite." },
   sessions: { stage: "stable", defaultEnabled: true, description: "Сессии, resume и fork для AI-диалогов." },
@@ -58,6 +60,63 @@ const DEFAULT_AI_CONFIG = {
       },
     },
   },
+  permissions: {
+    localTools: {
+      search_local: true,
+      get_card: true,
+      export_data: true,
+      run_report: true,
+      save_view: true,
+    },
+    writeFiles: true,
+    sync: true,
+    externalApi: true,
+    externalAi: true,
+    codex: true,
+  },
+  memory: {
+    enabled: true,
+  },
+  hooks: {},
+};
+const AGENTS = {
+  "data-analyst": {
+    profile: null,
+    tools: true,
+    reasoning: "verify",
+    description: "Анализирует открытые данные, ищет объекты и отвечает с опорой на локальные данные.",
+  },
+  "quality-checker": {
+    profile: "local",
+    tools: true,
+    reasoning: "verify",
+    prefix: "Проверь качество данных и укажи найденные проблемы: ",
+    description: "Проверяет телефоны, email, ИНН и неполные карточки.",
+  },
+  exporter: {
+    profile: "local",
+    tools: true,
+    reasoning: "fast",
+    prefix: "Подготовь выгрузку данных: ",
+    description: "Готовит CSV/JSON выгрузки через локальные инструменты.",
+  },
+  "mcp-helper": {
+    profile: null,
+    tools: false,
+    description: "Помогает с MCP, профилями AI и диагностикой подключения.",
+  },
+  "local-fast": {
+    profile: "local",
+    tools: true,
+    reasoning: "fast",
+    description: "Быстрый локальный режим для простых запросов.",
+  },
+  reviewer: {
+    profile: null,
+    tools: false,
+    prefix: "Проверь ответ и найди слабые места: ",
+    description: "Режим проверки и уточнения ответов.",
+  },
 };
 const DATASETS = {
   schools: {
@@ -94,6 +153,10 @@ const COMMANDS = new Map([
   ["resume", resumeSession],
   ["fork", forkSession],
   ["features", handleFeatures],
+  ["permissions", handlePermissions],
+  ["memory", handleMemory],
+  ["hooks", handleHooks],
+  ["agents", handleAgents],
   ["mcp", handleMcp],
   ["cache", handleCache],
   ["sync", handleSync],
@@ -125,6 +188,28 @@ const COMMANDS = new Map([
 ]);
 
 export async function main(argv) {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+    await showHelp();
+    return;
+  }
+
+  const runtime = parseGlobalOptions(argv);
+  if (runtime.help) {
+    await showHelp();
+    return;
+  }
+  if (runtime.debug) {
+    process.env.IOLA_DEBUG = "1";
+  }
+  if (runtime.debugFile) {
+    process.env.IOLA_DEBUG = "1";
+    process.env.IOLA_DEBUG_FILE = runtime.debugFile;
+  }
+  if (runtime.noColor) {
+    process.env.NO_COLOR = "1";
+  }
+
+  argv = runtime.args;
   const [command = "help", ...args] = argv;
   const nodeStatus = getNodeRequirementStatus();
   if (!nodeStatus.ok && !["help", "version", "doctor", "init"].includes(command)) {
@@ -142,7 +227,7 @@ export async function main(argv) {
     throw new Error(`Unknown command: ${command}\nRun "iola help" to see available commands.`);
   }
 
-  await handler(args);
+  await handler(runtime.debugFile ? [...args, "--debug-file", runtime.debugFile] : args);
 }
 
 async function showHelp() {
@@ -163,6 +248,10 @@ Usage:
   iola resume SESSION_ID [TEXT]
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
+  iola permissions list|allow|deny
+  iola memory show|add|set|clear|export
+  iola hooks list|add|delete|run
+  iola agents list|run
   iola mcp list|status|install|remove
   iola cache status|warm|clear
   iola sync [--dataset schools|kindergartens]
@@ -183,7 +272,7 @@ Usage:
   iola config set api.mcpBaseUrl URL
   iola config reset
   iola update
-  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history]
+  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
@@ -222,6 +311,7 @@ Requirements:
 async function startAgent() {
   showBanner();
   console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
+  await runHooks("SessionStart", { mode: "agent" });
 
   const rl = readline.createInterface({ input, output, prompt: "iola> " });
   const state = {
@@ -256,6 +346,7 @@ async function startAgent() {
   if (!closed) {
     rl.close();
   }
+  await runHooks("SessionEnd", { mode: "agent" });
 }
 
 async function handleAgentLine(line, state) {
@@ -314,6 +405,31 @@ async function handleAgentLine(line, state) {
 
   if (command === "features") {
     await handleFeatures(args);
+    return false;
+  }
+
+  if (command === "permissions") {
+    await handlePermissions(args);
+    return false;
+  }
+
+  if (command === "memory") {
+    await handleMemory(args);
+    return false;
+  }
+
+  if (command === "hooks") {
+    await handleHooks(args);
+    return false;
+  }
+
+  if (command === "agents") {
+    await handleAgents(args);
+    return false;
+  }
+
+  if (command === "tools") {
+    await handlePermissions(["tools"]);
     return false;
   }
 
@@ -421,6 +537,11 @@ async function handleAgentLine(line, state) {
     resume: ["resume", args],
     fork: ["fork", args],
     features: ["features", args],
+    permissions: ["permissions", args],
+    memory: ["memory", args],
+    hooks: ["hooks", args],
+    agents: ["agents", args],
+    tools: ["permissions", ["tools", ...args]],
     mcp: ["mcp", args],
     cache: ["cache", args],
     sync: ["sync", args],
@@ -455,6 +576,11 @@ function printAgentHelp() {
   /sessions
   /resume SESSION_ID
   /features list
+  /permissions
+  /tools
+  /memory show
+  /hooks list
+  /agents list
   /mcp status
   /cache status
   /sync
@@ -1063,6 +1189,208 @@ async function handleFeatures(args) {
   throw new Error("Команды features: list, enable NAME, disable NAME.");
 }
 
+async function handlePermissions(args) {
+  const [action = "list", name] = args;
+  const config = await loadConfig();
+
+  if (action === "list" || action === "ls" || action === "tools") {
+    const permissions = config.permissions || DEFAULT_AI_CONFIG.permissions;
+    const rows = [
+      ...LOCAL_TOOLS.map((tool) => ({
+        permission: `localTools.${tool}`,
+        value: permissions.localTools?.[tool] === false ? "deny" : "allow",
+        scope: "local-tool",
+      })),
+      { permission: "writeFiles", value: permissions.writeFiles === false ? "deny" : "allow", scope: "runtime" },
+      { permission: "sync", value: permissions.sync === false ? "deny" : "allow", scope: "runtime" },
+      { permission: "externalApi", value: permissions.externalApi === false ? "deny" : "allow", scope: "network" },
+      { permission: "externalAi", value: permissions.externalAi === false ? "deny" : "allow", scope: "network" },
+      { permission: "codex", value: permissions.codex === false ? "deny" : "allow", scope: "external-cli" },
+    ];
+    printTable(rows, [
+      ["permission", "Разрешение"],
+      ["value", "Статус"],
+      ["scope", "Область"],
+    ]);
+    return;
+  }
+
+  if (action === "allow" || action === "deny") {
+    if (!name) {
+      throw new Error("Пример: iola permissions deny export_data");
+    }
+    const allow = action === "allow";
+    const next = { ...(config.permissions || DEFAULT_AI_CONFIG.permissions) };
+    next.localTools = { ...(next.localTools || {}) };
+    if (LOCAL_TOOLS.includes(name)) {
+      next.localTools[name] = allow;
+    } else if (name in DEFAULT_AI_CONFIG.permissions) {
+      next[name] = allow;
+    } else {
+      throw new Error(`Неизвестное разрешение: ${name}. Доступно: ${[...LOCAL_TOOLS, "writeFiles", "sync", "externalApi", "externalAi", "codex"].join(", ")}`);
+    }
+    await saveConfig({ permissions: next });
+    console.log(`${name}: ${allow ? "allow" : "deny"}`);
+    return;
+  }
+
+  throw new Error("Команды permissions: list, tools, allow NAME, deny NAME.");
+}
+
+async function handleMemory(args) {
+  const [action = "show", ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "show" || action === "list" || action === "ls") {
+    const rows = listMemory(Number(options.limit || 50));
+    if (options.json) {
+      printJson(rows);
+      return;
+    }
+    printTable(rows, [
+      ["id", "ID"],
+      ["scope", "Область"],
+      ["content", "Память"],
+      ["created_at", "Дата"],
+    ]);
+    return;
+  }
+
+  if (action === "add" || action === "set") {
+    const text = rest.join(" ").trim();
+    if (!text) {
+      throw new Error('Пример: iola memory add "Отвечай кратко и по данным Йошкар-Олы"');
+    }
+    const id = addMemory(text, options.scope || "user");
+    console.log(`Память сохранена: ${id}`);
+    return;
+  }
+
+  if (action === "delete" || action === "remove" || action === "rm") {
+    const id = rest[0];
+    if (!id) throw new Error("Пример: iola memory delete 1");
+    deleteMemory(Number(id));
+    console.log(`Память удалена: ${id}`);
+    return;
+  }
+
+  if (action === "clear") {
+    clearMemory();
+    console.log("Память очищена.");
+    return;
+  }
+
+  if (action === "export") {
+    const rows = listMemory(1000);
+    const file = rest[0] || path.join(CONFIG_DIR, "memory-export.json");
+    await writeFile(file, `${JSON.stringify(rows, null, 2)}\n`, "utf8");
+    console.log(`Память экспортирована: ${file}`);
+    return;
+  }
+
+  throw new Error("Команды memory: show, add TEXT, delete ID, clear, export [FILE].");
+}
+
+async function handleHooks(args) {
+  const [action = "list", event, ...commandParts] = args;
+  const config = await loadConfig();
+
+  if (action === "list" || action === "ls") {
+    const rows = Object.entries(config.hooks || {}).flatMap(([hookEvent, commands]) =>
+      (commands || []).map((command, index) => ({ event: hookEvent, index, command })));
+    printTable(rows, [
+      ["event", "Событие"],
+      ["index", "#"],
+      ["command", "Команда"],
+    ]);
+    return;
+  }
+
+  if (action === "events") {
+    printTable(HOOK_EVENTS.map((name) => ({ name })), [["name", "Событие"]]);
+    return;
+  }
+
+  if (action === "add") {
+    if (!HOOK_EVENTS.includes(event) || commandParts.length === 0) {
+      throw new Error(`Пример: iola hooks add AfterSync "iola quality" Доступно: ${HOOK_EVENTS.join(", ")}`);
+    }
+    const hooks = { ...(config.hooks || {}) };
+    hooks[event] = [...(hooks[event] || []), commandParts.join(" ")];
+    await saveConfig({ hooks });
+    console.log(`Hook добавлен: ${event}`);
+    return;
+  }
+
+  if (action === "delete" || action === "remove") {
+    const index = Number(commandParts[0] ?? event);
+    const hookEvent = Number.isFinite(Number(event)) ? null : event;
+    const hooks = { ...(config.hooks || {}) };
+    if (hookEvent) {
+      hooks[hookEvent] = (hooks[hookEvent] || []).filter((_, itemIndex) => itemIndex !== index);
+    } else {
+      for (const key of Object.keys(hooks)) hooks[key] = (hooks[key] || []).filter((_, itemIndex) => itemIndex !== index);
+    }
+    await saveConfig({ hooks });
+    console.log("Hook удален.");
+    return;
+  }
+
+  if (action === "run") {
+    if (!HOOK_EVENTS.includes(event)) throw new Error(`Событие обязательно: ${HOOK_EVENTS.join(", ")}`);
+    await runHooks(event, { manual: true });
+    return;
+  }
+
+  throw new Error("Команды hooks: list, events, add EVENT COMMAND, delete EVENT INDEX, run EVENT.");
+}
+
+async function handleAgents(args) {
+  const [action = "list", name, ...rest] = args;
+
+  if (action === "list" || action === "ls") {
+    const rows = Object.entries(AGENTS).map(([agent, meta]) => ({
+      agent,
+      profile: meta.profile || "active",
+      tools: meta.tools ? "yes" : "no",
+      reasoning: meta.reasoning || "-",
+      description: meta.description,
+    }));
+    printTable(rows, [
+      ["agent", "Агент"],
+      ["profile", "Профиль"],
+      ["tools", "Tools"],
+      ["reasoning", "Reasoning"],
+      ["description", "Описание"],
+    ]);
+    return;
+  }
+
+  if (action === "run") {
+    if (!AGENTS[name]) {
+      throw new Error(`Неизвестный агент: ${name}. Доступно: ${Object.keys(AGENTS).join(", ")}`);
+    }
+    const agent = AGENTS[name];
+    const options = parseOptions(rest);
+    const question = options._.join(" ").trim();
+    if (!question) throw new Error(`Пример: iola agents run ${name} "найди школы на Петрова"`);
+    const askArgs = [agent.prefix ? `${agent.prefix}${question}` : question, "--agent", name];
+    if (agent.profile) askArgs.push("--profile", agent.profile);
+    if (agent.tools) askArgs.push("--tools");
+    if (agent.reasoning) askArgs.push("--reasoning", agent.reasoning);
+    for (const flag of ["no-history", "quiet", "bare", "events", "fail-on-empty"]) {
+      if (options[flag]) askArgs.push(`--${flag}`);
+    }
+    for (const flag of ["profile", "model", "output", "schema", "format", "reasoning"]) {
+      if (options[flag]) askArgs.push(`--${flag}`, options[flag]);
+    }
+    await aiAsk(askArgs);
+    return;
+  }
+
+  throw new Error("Команды agents: list, run NAME TEXT.");
+}
+
 async function handleMcp(args) {
   const [action = "status", target = "codex"] = args;
 
@@ -1131,12 +1459,14 @@ async function handleSync(args) {
     ]);
     return;
   }
+  await assertPermission("sync");
   const options = parseOptions(args);
   const datasets = options.dataset ? [options.dataset] : Object.keys(DATASETS);
   const rows = [];
   for (const dataset of datasets) {
     rows.push(await syncDataset(dataset));
   }
+  await runHooks("AfterSync", { datasets, rows });
   printTable(rows, [
     ["dataset", "Слой"],
     ["records", "Записей"],
@@ -1878,6 +2208,13 @@ function initDatabase() {
         command TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL DEFAULT 'user',
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_created_at ON memory(created_at DESC);
     `);
     db.prepare(`
       INSERT INTO meta(key, value) VALUES ('schema_version', ?)
@@ -1906,6 +2243,7 @@ function getDbStatus() {
       const sessions = db.prepare("SELECT COUNT(*) AS count FROM sessions").get();
       const local = db.prepare("SELECT COUNT(*) AS count FROM local_records").get();
       const cache = db.prepare("SELECT COUNT(*) AS count FROM api_cache").get();
+      const memory = db.prepare("SELECT COUNT(*) AS count FROM memory").get();
       return {
         status: "ok",
         file: DB_FILE,
@@ -1914,6 +2252,7 @@ function getDbStatus() {
         sessions: sessions?.count ?? 0,
         local_records: local?.count ?? 0,
         cache: cache?.count ?? 0,
+        memory: memory?.count ?? 0,
       };
     } finally {
       db.close();
@@ -2227,6 +2566,7 @@ async function syncDataset(dataset) {
   if (!DATASETS[dataset]) {
     throw new Error(`Неизвестный слой: ${dataset}`);
   }
+  await assertPermission("externalApi");
   try {
     const payload = await fetchJson(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?limit=500&offset=0`);
     const items = normalizeItems(payload);
@@ -2458,9 +2798,56 @@ function exportDbSnapshot() {
     views: listSavedViews(),
     aliases: listAliases(),
     features: listFeatures(),
+    memory: listMemory(1000),
     sessions: listSessions(100),
     history: listHistory(100),
   };
+}
+
+function listMemory(limit = 50) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, scope, content, created_at FROM memory ORDER BY id DESC LIMIT ?").all(limit);
+  } finally {
+    db.close();
+  }
+}
+
+function addMemory(content, scope = "user") {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO memory(scope, content) VALUES (?, ?)").run(scope, content);
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function deleteMemory(id) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM memory WHERE id = ?").run(id);
+  } finally {
+    db.close();
+  }
+}
+
+function clearMemory() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.exec("DELETE FROM memory");
+  } finally {
+    db.close();
+  }
+}
+
+function buildMemoryText(limit = 20) {
+  const rows = listMemory(limit).reverse();
+  return rows.map((row) => `- ${row.content}`).join("\n");
 }
 
 function listAliases() {
@@ -2523,6 +2910,7 @@ function inferCommandFromText(text) {
 async function outputData(value, options, format) {
   const text = format === "csv" ? toCsv(value) : `${JSON.stringify(value, null, 2)}\n`;
   if (options.output) {
+    await assertPermission("writeFiles");
     await writeFile(options.output, text, "utf8");
     console.log(`Файл сохранен: ${options.output}`);
     return;
@@ -2626,13 +3014,15 @@ async function aiAsk(args, context = {}) {
 
   const config = await loadConfig();
   const providerConfig = resolveAiProfile(config, options);
+  if (providerConfig.provider === "codex") await assertPermission("codex");
+  if (providerConfig.provider !== "ollama") await assertPermission("externalAi");
   if (options.tools && providerConfig.provider === "ollama") {
     return localToolAsk(question, providerConfig, options);
   }
   applyRuntimeConfig(providerConfig, options.config);
-  const dataContext = await buildDataContext(question);
+  const dataContext = options.bare ? { layers: [], query: { text: question, terms: [], patterns: { numbers: [], inns: [], streets: [], targetLayers: [] } }, schools: [], kindergartens: [] } : await buildDataContext(question);
   emitEvent(options, "context_loaded", { schools: dataContext.schools.length, kindergartens: dataContext.kindergartens.length });
-  const historyEnabled = !options["no-history"] && isFeatureEnabled("sqlite-history");
+  const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
   const messages = buildAiMessages(question, dataContext, history, options);
@@ -2659,7 +3049,12 @@ async function aiAsk(args, context = {}) {
   emitEvent(options, "answer", { length: answer.length, sessionId });
 
   if (options.output) {
+    await assertPermission("writeFiles");
     await writeFile(options.output, answer, "utf8");
+  }
+
+  if (options["fail-on-empty"] && !answer.trim()) {
+    throw new Error("AI вернул пустой ответ.");
   }
 
   if (options.format === "json" || options.schema === "json") {
@@ -2667,7 +3062,7 @@ async function aiAsk(args, context = {}) {
     return answer;
   }
 
-  console.log(answer);
+  if (!options.quiet) console.log(answer);
   return answer;
 }
 
@@ -2711,11 +3106,14 @@ async function localToolAsk(question, providerConfig, options) {
   }
 
   emitEvent(options, "tool_plan", { plan: validated });
-  if (options.output) await writeFile(options.output, answer, "utf8");
+  if (options.output) {
+    await assertPermission("writeFiles");
+    await writeFile(options.output, answer, "utf8");
+  }
   if (options.format === "json" || options.schema === "json") {
     printJson({ answer, plan: validated, result });
   } else {
-    console.log(answer);
+    if (!options.quiet) console.log(answer);
   }
   return answer;
 }
@@ -2776,7 +3174,7 @@ function chooseBestPlan(plans) {
 }
 
 function validateToolPlan(plan) {
-  const allowed = new Set(["search_local", "get_card", "export_data", "run_report", "save_view"]);
+  const allowed = new Set(LOCAL_TOOLS);
   if (!plan || !Array.isArray(plan.steps)) throw new Error("Некорректный tool-plan.");
   for (const step of plan.steps) {
     if (!allowed.has(step.tool)) throw new Error(`Недопустимый tool: ${step.tool}`);
@@ -2788,6 +3186,8 @@ async function executeToolPlan(plan) {
   let current = [];
   const outputs = [];
   for (const step of plan.steps) {
+    await assertPermission(step.tool);
+    await runHooks("BeforeTool", { tool: step.tool, args: step.args || {} });
     if (step.tool === "search_local") {
       current = searchLocalRecords(step.args?.query || "", { dataset: step.args?.dataset || "all", limit: step.args?.limit || 20, fts: true });
       outputs.push({ tool: step.tool, rows: current.length });
@@ -2802,10 +3202,13 @@ async function executeToolPlan(plan) {
       saveView(step.args?.name, step.args?.dataset || "all", step.args?.args || []);
       outputs.push({ tool: step.tool, saved: step.args?.name });
     } else if (step.tool === "export_data") {
+      await assertPermission("writeFiles");
+      await runHooks("BeforeExport", { output: step.args?.output || "iola-export.csv", format: step.args?.format || "csv", rows: current.length });
       const text = step.args?.format === "json" ? JSON.stringify(current, null, 2) : toCsv(current);
       await writeFile(step.args?.output || "iola-export.csv", text, "utf8");
       outputs.push({ tool: step.tool, output: step.args?.output || "iola-export.csv", rows: current.length });
     }
+    await runHooks("AfterTool", { tool: step.tool, rows: current.length });
   }
   return { rows: current, outputs };
 }
@@ -2829,6 +3232,36 @@ function applyRuntimeConfig(target, value) {
   setConfigValue(target, key, parts.join("="));
 }
 
+async function runHooks(event, payload = {}) {
+  const config = await loadConfig();
+  const commands = config.hooks?.[event] || [];
+  for (const command of commands) {
+    const parts = splitCommandLine(command);
+    if (parts.length === 0) continue;
+    await runCommand(parts[0], parts.slice(1), {
+      inherit: true,
+      env: {
+        IOLA_HOOK_EVENT: event,
+        IOLA_HOOK_PAYLOAD: JSON.stringify(payload),
+      },
+    });
+  }
+}
+
+async function assertPermission(name) {
+  const config = await loadConfig();
+  const permissions = config.permissions || DEFAULT_AI_CONFIG.permissions;
+  if (LOCAL_TOOLS.includes(name)) {
+    if (permissions.localTools?.[name] === false) {
+      throw new Error(`Tool запрещен политикой permissions: ${name}`);
+    }
+    return;
+  }
+  if (permissions[name] === false) {
+    throw new Error(`Действие запрещено политикой permissions: ${name}`);
+  }
+}
+
 function emitEvent(options, type, data) {
   if (!options.events) {
     return;
@@ -2837,6 +3270,7 @@ function emitEvent(options, type, data) {
 }
 
 async function buildDataContext(question) {
+  await assertPermission("externalApi");
   const apiBaseUrl = await getApiBaseUrl();
   const mcpBaseUrl = await getMcpBaseUrl();
   const [layers, schools, kindergartens] = await Promise.all([
@@ -2960,6 +3394,7 @@ function scoreItem(item, terms, patterns, layer) {
 
 function buildAiMessages(question, dataContext, history, options = {}) {
   const sourceLines = buildSourceLines(dataContext);
+  const memoryText = options.bare ? "" : buildMemoryText();
   const system = [
     "Ты терминальный AI-ассистент CLI-проекта Йошкар-Олы.",
     "Отвечай на русском языке.",
@@ -2969,6 +3404,7 @@ function buildAiMessages(question, dataContext, history, options = {}) {
     "Если отвечаешь по конкретным организациям, укажи источник в конце: слой, название и ИНН.",
     options.schema === "json" ? "Верни валидный JSON без markdown-обертки." : "",
     options.schema === "table" ? "Если уместно, верни ответ в виде markdown-таблицы." : "",
+    memoryText ? `Учитывай пользовательскую память:\n${memoryText}` : "",
     "Отвечай кратко и по делу.",
   ].filter(Boolean).join(" ");
   const contextText = JSON.stringify(dataContext, null, 2);
@@ -3307,12 +3743,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--fts") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -3320,6 +3756,21 @@ function parseOptions(args) {
     }
   }
 
+  return result;
+}
+
+function parseGlobalOptions(argv) {
+  const result = { args: [] };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") result.help = true;
+    else if (arg === "--debug") result.debug = true;
+    else if (arg === "--no-color") result.noColor = true;
+    else if (arg === "--debug-file") {
+      result.debugFile = argv[index + 1];
+      index += 1;
+    } else result.args.push(arg);
+  }
   return result;
 }
 
@@ -3786,9 +4237,17 @@ async function printAiConfigField(field) {
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    if (process.env.IOLA_DEBUG) {
+      console.error(`[debug] run: ${command} ${args.join(" ")}`);
+      debugLog(`run: ${command} ${args.join(" ")}`);
+    }
     const child = execFile(command, args, {
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 5,
+      env: {
+        ...process.env,
+        ...(options.env || {}),
+      },
     }, (error, stdout, stderr) => {
       if (error) {
         if (process.platform === "win32" && (error.code === "ENOENT" || error.code === "EINVAL") && !options.cmdFallback) {
@@ -3815,6 +4274,11 @@ function runCommand(command, args, options = {}) {
       child.stdin?.end(options.input);
     }
   });
+}
+
+function debugLog(message) {
+  if (!process.env.IOLA_DEBUG_FILE) return;
+  appendFile(process.env.IOLA_DEBUG_FILE, `[${new Date().toISOString()}] ${message}\n`, "utf8").catch(() => {});
 }
 
 function quoteWindowsCommand(command, args) {

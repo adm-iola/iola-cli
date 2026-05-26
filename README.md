@@ -96,6 +96,15 @@ iola resume 1 "продолжи"
 iola fork 1 "новый вопрос"
 iola features list
 iola features enable api-cache
+iola permissions list
+iola permissions deny export_data
+iola permissions allow export_data
+iola memory add "Отвечай кратко и указывай источник данных"
+iola memory show
+iola hooks events
+iola hooks add AfterSync "iola quality"
+iola agents list
+iola agents run quality-checker "проверь школы"
 iola mcp status
 iola mcp list
 iola mcp install codex
@@ -127,6 +136,7 @@ iola version --check
 iola ask "Найди школу 29"
 iola ask "Найди школу 29" --profile codex --events --output answer.txt
 iola ask "Найди школу 29" --schema json --no-history
+iola ask "Найди школу 29" --bare --quiet
 iola ask "выгрузи школы на Петрова в csv" --profile local --tools --reasoning verify
 iola data schools --format csv --output schools.csv
 iola data schools --limit 10
@@ -179,6 +189,11 @@ iola agent
 /sessions
 /resume 1
 /features list
+/permissions
+/tools
+/memory show
+/hooks list
+/agents list
 /mcp status
 /config get
 /layers
@@ -467,6 +482,62 @@ iola sync status
 iola diff
 iola diff schools
 ```
+
+## Permissions, memory, hooks и agents
+
+Permissions ограничивают, что может делать локальный tool-agent:
+
+```bash
+iola permissions list
+iola permissions deny export_data
+iola permissions allow export_data
+```
+
+Memory хранит пользовательские предпочтения в локальной SQLite-БД и добавляет их
+в AI-контекст, кроме режима `--bare`:
+
+```bash
+iola memory add "Если найден конкретный объект, показывай ИНН"
+iola memory show
+iola memory export
+```
+
+Hooks запускают локальные команды на события CLI:
+
+```bash
+iola hooks events
+iola hooks add AfterSync "iola quality"
+iola hooks list
+```
+
+Поддерживаемые события: `SessionStart`, `BeforeTool`, `AfterTool`,
+`AfterSync`, `BeforeExport`, `SessionEnd`.
+
+Agents - готовые режимы работы поверх AI-профилей и локальных инструментов:
+
+```bash
+iola agents list
+iola agents run quality-checker "проверь школы"
+iola agents run exporter "выгрузи школы на Петрова в csv"
+```
+
+Для скриптов доступны минимальные режимы:
+
+```bash
+iola ask "Найди школу 29" --bare
+iola ask "Найди школу 29" --quiet
+iola ask "Найди школу 29" --schema json --fail-on-empty
+iola --debug --debug-file iola-debug.log doctor
+```
+
+## Wiki
+
+Подробные пользовательские инструкции ведутся в GitHub Wiki. Исходники страниц
+лежат в папке `wiki/`, чтобы их можно было редактировать и коммитить как обычные
+Markdown-файлы.
+
+Рекомендуемая структура: `Home`, `Installation`, `First-run`, `AI-profiles`,
+`Local-tool-agent`, `Commands`, `Troubleshooting`.
 
 ## Переменные окружения
 
