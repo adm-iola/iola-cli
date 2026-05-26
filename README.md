@@ -80,10 +80,16 @@ iola banner
 iola agent
 iola chat
 iola init
+iola doctor
+iola config get
+iola config set api.baseUrl https://apiiola.yasg.ru/api/v1
+iola config reset
 iola update
 iola version --check
+iola ask "Найди школу 29"
 iola data schools --limit 10
 iola data kindergartens --search "29"
+iola data schools --where address=Петрова --columns name,address,phone
 iola data schools --format csv
 iola ai doctor
 iola ai setup ollama
@@ -120,6 +126,8 @@ iola agent
 ```text
 /help
 /health
+/doctor
+/config get
 /layers
 /data schools --limit 10
 /schools --limit 10
@@ -153,6 +161,7 @@ iola agent
 ```bash
 iola ai setup ollama
 iola ai ask "Какие школы есть на улице Петрова?"
+iola ask "Какие школы есть на улице Петрова?"
 ```
 
 OpenAI:
@@ -218,4 +227,13 @@ CLI дает прямой терминальный доступ к открыт�
 ```bash
 IOLA_API_BASE_URL=https://apiiola.yasg.ru/api/v1
 IOLA_MCP_BASE_URL=https://apiiola.yasg.ru
+```
+
+Переменные окружения имеют приоритет над локальной конфигурацией. Локальные
+endpoints можно настроить так:
+
+```bash
+iola config set api.baseUrl https://apiiola.yasg.ru/api/v1
+iola config set api.mcpBaseUrl https://apiiola.yasg.ru
+iola config get
 ```

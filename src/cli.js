@@ -11,6 +11,10 @@ const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DEFAULT_AI_CONFIG = {
+  api: {
+    baseUrl: "https://apiiola.yasg.ru/api/v1",
+    mcpBaseUrl: "https://apiiola.yasg.ru",
+  },
   ai: {
     provider: "ollama",
     model: "llama3.2:1b",
@@ -45,9 +49,12 @@ const COMMANDS = new Map([
   ["help", showHelp],
   ["version", showVersion],
   ["update", checkUpdate],
+  ["doctor", doctor],
+  ["config", handleConfig],
   ["banner", showBanner],
   ["agent", startAgent],
   ["chat", startAgent],
+  ["ask", aiAsk],
   ["ai", handleAi],
   ["init", initCli],
   ["health", checkHealth],
@@ -80,8 +87,14 @@ Usage:
   iola agent
   iola chat
   iola init
+  iola doctor
+  iola config get
+  iola config set api.baseUrl URL
+  iola config set api.mcpBaseUrl URL
+  iola config reset
   iola update
-  iola data LAYER [--limit 10] [--search TEXT] [--format table|json|csv]
+  iola ask TEXT
+  iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
   iola ai key set openai
@@ -93,9 +106,9 @@ Usage:
   iola ai setup ollama [--yes] [--model MODEL]
   iola health [--json]
   iola layers [--json]
-  iola schools [--limit 10] [--search TEXT] [--format table|json|csv]
+  iola schools [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola schools get --inn INN [--json]
-  iola kindergartens [--limit 10] [--search TEXT] [--format table|json|csv]
+  iola kindergartens [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola kindergartens get --inn INN [--json]
   iola search TEXT [--limit 5] [--format table|json|csv]
   iola mcp-info [--json]
@@ -178,7 +191,17 @@ async function handleAgentLine(line, state) {
   }
 
   if (command === "config") {
-    await printAiConfig();
+    await handleConfig(args.length > 0 ? args : ["get"]);
+    return false;
+  }
+
+  if (command === "doctor") {
+    await doctor(args);
+    return false;
+  }
+
+  if (command === "cfg" || command === "settings") {
+    await handleConfig(args);
     return false;
   }
 
@@ -229,6 +252,8 @@ async function handleAgentLine(line, state) {
 
   const mapped = {
     health: ["health", args],
+    doctor: ["doctor", args],
+    config: ["config", args],
     layers: ["layers", args],
     data: ["data", args],
     schools: ["schools", args],
@@ -253,6 +278,9 @@ function printAgentHelp() {
   console.log(`Slash-команды:
   /help
   /health
+  /doctor
+  /config get
+  /config set api.baseUrl URL
   /layers
   /data schools --limit 10
   /schools --limit 10
@@ -355,7 +383,7 @@ async function checkUpdate() {
 
 async function checkHealth(args) {
   const options = parseOptions(args);
-  const health = await fetchJson(`${MCP_BASE_URL}/mcp-health`);
+  const health = await fetchJson(`${await getMcpBaseUrl()}/mcp-health`);
 
   if (options.json) {
     printJson(health);
@@ -370,6 +398,92 @@ async function checkHealth(args) {
   });
 }
 
+async function doctor(args = []) {
+  const options = parseOptions(args);
+  const packageJson = await import("../package.json", { with: { type: "json" } });
+  const config = await loadConfig();
+  const secrets = await loadSecrets();
+  const diagnostics = await getLocalDiagnostics();
+  const latest = await getLatestNpmVersion(packageJson.default.name);
+  const apiBaseUrl = await getApiBaseUrl();
+  const mcpBaseUrl = await getMcpBaseUrl();
+  const report = {
+    cli: {
+      version: packageJson.default.version,
+      npmLatest: latest || "-",
+      update: getUpdateStatus(packageJson.default.version, latest),
+    },
+    api: {
+      baseUrl: apiBaseUrl,
+      mcpBaseUrl,
+      health: await probeEndpoint(`${mcpBaseUrl}/mcp-health`),
+    },
+    ai: {
+      provider: config.ai.provider,
+      model: config.ai.model,
+      modelAvailable: await checkConfiguredModel(config),
+      openaiKey: process.env.OPENAI_API_KEY ? "env" : secrets.openai?.apiKey ? "local" : "missing",
+      openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
+      ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
+    },
+    system: diagnostics,
+  };
+
+  if (options.json) {
+    printJson(report);
+    return;
+  }
+
+  console.log("CLI");
+  printKeyValue(report.cli);
+  console.log("");
+  console.log("API/MCP");
+  printKeyValue(report.api);
+  console.log("");
+  console.log("AI");
+  printKeyValue(report.ai);
+  console.log("");
+  printDiagnostics(diagnostics, recommendOllamaModel(diagnostics));
+}
+
+function getUpdateStatus(current, latest) {
+  if (!latest) {
+    return "unknown";
+  }
+
+  const comparison = compareVersions(latest, current);
+
+  if (comparison > 0) {
+    return "available";
+  }
+
+  if (comparison < 0) {
+    return "local-newer";
+  }
+
+  return "ok";
+}
+
+async function checkConfiguredModel(config) {
+  if (config.ai.provider !== "ollama") {
+    return "external-api";
+  }
+
+  try {
+    const response = await fetch(`${config.ai.baseUrl || "http://127.0.0.1:11434"}/api/tags`);
+
+    if (!response.ok) {
+      return "unknown";
+    }
+
+    const payload = await response.json();
+    const models = payload.models || [];
+    return models.some((model) => model.name === config.ai.model) ? "installed" : "missing";
+  } catch {
+    return "ollama-unavailable";
+  }
+}
+
 async function initCli(args = []) {
   const options = parseOptions(args);
 
@@ -378,8 +492,8 @@ async function initCli(args = []) {
   printKeyValue({
     node: process.version,
     npm: await getCommandVersion("npm", ["--version"]),
-    api: await probeEndpoint(`${MCP_BASE_URL}/mcp-health`),
-    mcp: MCP_BASE_URL,
+    api: await probeEndpoint(`${await getMcpBaseUrl()}/mcp-health`),
+    mcp: await getMcpBaseUrl(),
   });
   console.log("");
 
@@ -453,6 +567,47 @@ async function handleAi(args) {
   }
 
   throw new Error(`Unknown AI command: ${subcommand}\nRun "iola ai help" to see available commands.`);
+}
+
+async function handleConfig(args) {
+  const [action = "get", key, ...rest] = args;
+
+  if (action === "get") {
+    const config = await loadConfig();
+    if (key) {
+      console.log(getConfigValue(config, key) ?? "-");
+      return;
+    }
+    printJson({
+      file: CONFIG_FILE,
+      config,
+      effective: {
+        apiBaseUrl: await getApiBaseUrl(),
+        mcpBaseUrl: await getMcpBaseUrl(),
+      },
+    });
+    return;
+  }
+
+  if (action === "set") {
+    const value = rest.join(" ").trim();
+    if (!key || !value) {
+      throw new Error("Пример: iola config set api.baseUrl https://apiiola.yasg.ru/api/v1");
+    }
+    const config = await loadConfig();
+    setConfigValue(config, key, value);
+    await saveConfig(config);
+    console.log(`Сохранено: ${key} = ${value}`);
+    return;
+  }
+
+  if (action === "reset") {
+    await writeConfig(DEFAULT_AI_CONFIG);
+    console.log(`Конфигурация сброшена: ${CONFIG_FILE}`);
+    return;
+  }
+
+  throw new Error("Команды config: get, set, reset.");
 }
 
 async function aiDoctor(args) {
@@ -720,10 +875,12 @@ async function aiAsk(args, context = {}) {
 }
 
 async function buildDataContext(question) {
+  const apiBaseUrl = await getApiBaseUrl();
+  const mcpBaseUrl = await getMcpBaseUrl();
   const [layers, schools, kindergartens] = await Promise.all([
-    fetchJson(`${MCP_BASE_URL}/mcp-version`),
-    fetchJson(`${API_BASE_URL}/schools?limit=100&offset=0`),
-    fetchJson(`${API_BASE_URL}/kindergartens?limit=100&offset=0`),
+    fetchJson(`${mcpBaseUrl}/mcp-version`),
+    fetchJson(`${apiBaseUrl}/schools?limit=100&offset=0`),
+    fetchJson(`${apiBaseUrl}/kindergartens?limit=100&offset=0`),
   ]);
   const queryTerms = extractSearchTerms(question);
   const patterns = extractStructuredPatterns(question);
@@ -921,7 +1078,7 @@ async function callOllama(config, messages) {
 
 async function callOpenAiCompatible(config, messages, apiKey, providerName) {
   if (!apiKey) {
-    throw new Error(`${providerName} API key не найден. Задайте ${providerName === "OpenAI" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
+    throw new Error(`${providerName} API key не найден. Выполните iola ai key set ${providerName === "OpenAI" ? "openai" : "openrouter"} или задайте ${providerName === "OpenAI" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
   }
 
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -963,7 +1120,7 @@ async function getApiKey(provider) {
 
 async function listLayers(args) {
   const options = parseOptions(args);
-  const info = await fetchJson(`${MCP_BASE_URL}/mcp-version`);
+  const info = await fetchJson(`${await getMcpBaseUrl()}/mcp-version`);
 
   if (options.json) {
     printJson(info.data_layers);
@@ -980,7 +1137,7 @@ async function listLayers(args) {
 
 async function showMcpInfo(args) {
   const options = parseOptions(args);
-  const info = await fetchJson(`${MCP_BASE_URL}/mcp-version`);
+  const info = await fetchJson(`${await getMcpBaseUrl()}/mcp-version`);
 
   if (options.json) {
     printJson(info);
@@ -1039,22 +1196,24 @@ async function listDataset(dataset, args) {
   params.set("limit", options.limit || "20");
   params.set("offset", options.offset || "0");
 
-  const data = await fetchJson(`${API_BASE_URL}/${DATASETS[dataset].endpoint}?${params}`);
+  const data = await fetchJson(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?${params}`);
   const items = normalizeItems(data);
-  const filtered = options.search ? filterItems(items, options.search) : items;
+  const filtered = applyDatasetFilters(items, options);
   const limited = filtered.slice(0, Number(options.limit || 20));
+  const summarized = limited.map(selectPublicSummary);
+  const projected = projectColumns(summarized, options.columns);
 
   if (options.json || options.format === "json") {
-    printJson(limited);
+    printJson(projected);
     return;
   }
 
   if (options.format === "csv") {
-    printCsv(limited.map(selectPublicSummary));
+    printCsv(projected);
     return;
   }
 
-  printDatasetTable(limited);
+  printDatasetTable(projected, options.columns);
 }
 
 async function getDatasetItem(dataset, options) {
@@ -1062,7 +1221,7 @@ async function getDatasetItem(dataset, options) {
     throw new Error(`INN is required. Example: iola ${dataset} get --inn 1215067180`);
   }
 
-  const data = await fetchJson(`${API_BASE_URL}/${DATASETS[dataset].endpoint}?limit=500&offset=0`);
+  const data = await fetchJson(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?limit=500&offset=0`);
   const item = normalizeItems(data).find((entry) => String(entry.inn) === String(options.inn));
 
   if (!item) {
@@ -1086,14 +1245,14 @@ async function searchAll(args) {
   }
 
   const [schools, kindergartens] = await Promise.all([
-    fetchJson(`${API_BASE_URL}/schools?limit=100&offset=0`),
-    fetchJson(`${API_BASE_URL}/kindergartens?limit=100&offset=0`),
+    fetchJson(`${await getApiBaseUrl()}/schools?limit=100&offset=0`),
+    fetchJson(`${await getApiBaseUrl()}/kindergartens?limit=100&offset=0`),
   ]);
 
   const limit = Number(options.limit || 5);
   const result = {
-    schools: filterItems(normalizeItems(schools), query).slice(0, limit),
-    kindergartens: filterItems(normalizeItems(kindergartens), query).slice(0, limit),
+    schools: projectColumns(filterItems(normalizeItems(schools), query).slice(0, limit).map(selectPublicSummary), options.columns),
+    kindergartens: projectColumns(filterItems(normalizeItems(kindergartens), query).slice(0, limit).map(selectPublicSummary), options.columns),
   };
 
   if (options.json || options.format === "json") {
@@ -1103,17 +1262,17 @@ async function searchAll(args) {
 
   if (options.format === "csv") {
     printCsv([
-      ...result.schools.map((item) => ({ layer: "schools", ...selectPublicSummary(item) })),
-      ...result.kindergartens.map((item) => ({ layer: "kindergartens", ...selectPublicSummary(item) })),
+      ...result.schools.map((item) => ({ layer: "schools", ...item })),
+      ...result.kindergartens.map((item) => ({ layer: "kindergartens", ...item })),
     ]);
     return;
   }
 
   console.log("Школы");
-  printDatasetTable(result.schools);
+  printDatasetTable(result.schools, options.columns);
   console.log("");
   console.log("Детские сады");
-  printDatasetTable(result.kindergartens);
+  printDatasetTable(result.kindergartens, options.columns);
 }
 
 async function setupClient(args) {
@@ -1137,7 +1296,7 @@ function parseOptions(args) {
       result[arg.slice(2)] = true;
     } else if (arg === "--check") {
       result.check = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--format") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--format") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -1187,6 +1346,42 @@ function filterItems(items, query) {
   return items.filter((item) => JSON.stringify(item).toLocaleLowerCase("ru-RU").includes(normalized));
 }
 
+function applyDatasetFilters(items, options) {
+  let result = options.search ? filterItems(items, options.search) : items;
+
+  if (options.where) {
+    const [field, ...valueParts] = String(options.where).split("=");
+    const value = valueParts.join("=").trim().toLocaleLowerCase("ru-RU");
+    const key = field.trim();
+
+    if (!key || !value) {
+      throw new Error('Фильтр --where должен быть в формате field=value. Пример: --where address=Петрова');
+    }
+
+    result = result.filter((item) => {
+      const summary = selectPublicSummary(item);
+      const raw = summary[key] ?? item[key];
+      return String(raw ?? "").toLocaleLowerCase("ru-RU").includes(value);
+    });
+  }
+
+  return result;
+}
+
+function projectColumns(rows, columnsValue) {
+  if (!columnsValue) {
+    return rows;
+  }
+
+  const columns = String(columnsValue).split(",").map((column) => column.trim()).filter(Boolean);
+
+  if (columns.length === 0) {
+    return rows;
+  }
+
+  return rows.map((row) => Object.fromEntries(columns.map((column) => [column, row[column] ?? ""])));
+}
+
 function normalizeItems(payload) {
   if (Array.isArray(payload)) {
     return payload;
@@ -1206,7 +1401,7 @@ function normalizeItems(payload) {
 function selectPublicSummary(item) {
   return {
     inn: item.inn,
-    name: item.fns_short_name || item.fns_full_name,
+    name: item.name || item.fns_short_name || item.fns_full_name,
     address: item.address || item.legal_address,
     phone: item.phone,
     email: item.email,
@@ -1422,8 +1617,12 @@ async function confirm(question) {
 async function saveConfig(value) {
   const current = await loadConfig();
   const merged = mergeConfig(current, value);
+  await writeConfig(merged);
+}
+
+async function writeConfig(value) {
   await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(CONFIG_FILE, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  await writeFile(CONFIG_FILE, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 async function loadConfig() {
@@ -1439,11 +1638,49 @@ function mergeConfig(base, override) {
   return {
     ...base,
     ...override,
+    api: {
+      ...base.api,
+      ...(override.api || {}),
+    },
     ai: {
       ...base.ai,
       ...(override.ai || {}),
     },
   };
+}
+
+async function getApiBaseUrl() {
+  if (process.env.IOLA_API_BASE_URL) {
+    return process.env.IOLA_API_BASE_URL;
+  }
+
+  const config = await loadConfig();
+  return config.api.baseUrl;
+}
+
+async function getMcpBaseUrl() {
+  if (process.env.IOLA_MCP_BASE_URL) {
+    return process.env.IOLA_MCP_BASE_URL;
+  }
+
+  const config = await loadConfig();
+  return config.api.mcpBaseUrl;
+}
+
+function getConfigValue(config, key) {
+  return key.split(".").reduce((value, part) => value?.[part], config);
+}
+
+function setConfigValue(config, key, value) {
+  const parts = key.split(".");
+  let current = config;
+
+  for (const part of parts.slice(0, -1)) {
+    current[part] = current[part] && typeof current[part] === "object" ? current[part] : {};
+    current = current[part];
+  }
+
+  current[parts.at(-1)] = value;
 }
 
 async function loadSecrets() {
@@ -1573,7 +1810,17 @@ function csvCell(value) {
   return `"${text.replace(/"/g, "\"\"")}"`;
 }
 
-function printDatasetTable(items) {
+function printDatasetTable(items, columnsValue) {
+  if (columnsValue) {
+    const columns = String(columnsValue)
+      .split(",")
+      .map((column) => column.trim())
+      .filter(Boolean)
+      .map((column) => [column, column]);
+    printTable(items, columns);
+    return;
+  }
+
   printTable(items.map(selectPublicSummary), [
     ["inn", "ИНН"],
     ["name", "Название"],
