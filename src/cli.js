@@ -5904,7 +5904,8 @@ async function aiAsk(args, context = {}) {
     return localToolAsk(question, providerConfig, options);
   }
   applyRuntimeConfig(providerConfig, options.config);
-  const dataContext = options.bare ? { layers: [], query: { text: question, terms: [], patterns: { numbers: [], inns: [], streets: [], targetLayers: [] } }, schools: [], kindergartens: [] } : await buildDataContext(question);
+  const useDataContext = !options.bare && shouldUseDataContext(question, options);
+  const dataContext = useDataContext ? await buildDataContext(question) : emptyDataContext(question);
   emitEvent(options, "context_loaded", { schools: dataContext.schools.length, kindergartens: dataContext.kindergartens.length });
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
@@ -6306,6 +6307,29 @@ async function buildDataContext(question) {
   };
 }
 
+function emptyDataContext(question) {
+  return {
+    enabled: false,
+    layers: [],
+    query: {
+      text: question,
+      terms: [],
+      patterns: { numbers: [], inns: [], streets: [], targetLayers: [] },
+    },
+    schools: [],
+    kindergartens: [],
+  };
+}
+
+function shouldUseDataContext(question, options = {}) {
+  if (options.tools || options.files || options.schema || options.output) return true;
+  const normalized = question.toLocaleLowerCase("ru-RU").trim();
+  if (/^(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер|hi|hello|hey)[!.?\s]*$/iu.test(normalized)) return false;
+  if (/^(спасибо|благодарю|ок|окей|понял|поняла|ясно|хорошо|да|нет)[!.?\s]*$/iu.test(normalized)) return false;
+  if (normalized.length <= 24 && /^(как дела|что нового|ты тут|ты здесь|кто ты)[?.!\s]*$/iu.test(normalized)) return false;
+  return /\b(школ|сад|детсад|детский сад|лицей|гимнази|инн|адрес|телефон|почт|email|сайт|лиценз|руководител|директор|слой|слои|данн|отчет|отчёт|выгруз|csv|json|найди|покажи|список|карточк|организац|учрежден|йошкар|ола|петрова|строител|советск|первомайск)\b/iu.test(normalized);
+}
+
 function extractSearchTerms(question) {
   const normalized = question
     .toLocaleLowerCase("ru-RU")
@@ -6402,13 +6426,14 @@ async function buildAiMessages(question, dataContext, history, options = {}, con
   const memoryText = options.bare ? "" : buildMemoryText();
   const projectContext = options.bare ? "" : await buildProjectContextText();
   const skillsText = options.bare ? "" : await buildSkillsText(config);
+  const hasDataContext = dataContext.enabled !== false;
   const system = [
-    "Ты терминальный AI-ассистент CLI-проекта Йошкар-Олы.",
-    "Отвечай на русском языке.",
-    "Используй только данные из переданного контекста.",
-    "Если в контексте нет нужных сведений, прямо напиши, что данных недостаточно.",
-    "Не выдумывай адреса, телефоны, лицензии и руководителей.",
-    "Если отвечаешь по конкретным организациям, укажи источник в конце: слой, название и ИНН.",
+    "Ты терминальный AI-агент городского округа Йошкар-Ола.",
+    "Отвечай на русском языке естественно и по смыслу запроса пользователя.",
+    hasDataContext ? "Используй только данные из переданного контекста открытых данных." : "Для обычного диалога отвечай как полноценный AI-ассистент, не перечисляй слои и возможности без запроса пользователя.",
+    hasDataContext ? "Если в контексте нет нужных сведений, прямо напиши, что данных недостаточно." : "",
+    hasDataContext ? "Не выдумывай адреса, телефоны, лицензии и руководителей." : "",
+    hasDataContext ? "Если отвечаешь по конкретным организациям, укажи источник в конце: слой, название и ИНН." : "",
     options.schema === "json" ? "Верни валидный JSON без markdown-обертки." : "",
     options.schema === "table" ? "Если уместно, верни ответ в виде markdown-таблицы." : "",
     memoryText ? `Учитывай пользовательскую память:\n${memoryText}` : "",
@@ -6418,14 +6443,14 @@ async function buildAiMessages(question, dataContext, history, options = {}, con
   ].filter(Boolean).join(" ");
   const contextText = JSON.stringify(dataContext, null, 2);
   const recentHistory = history.slice(-6);
+  const userContent = hasDataContext
+    ? `Контекст открытых данных городского округа "Город Йошкар-Ола":\n${contextText}\n\nКраткие источники контекста:\n${sourceLines}\n\nВопрос пользователя: ${question}`
+    : question;
 
   return [
     { role: "system", content: system },
     ...recentHistory,
-    {
-      role: "user",
-      content: `Контекст открытых данных городского округа "Город Йошкар-Ола":\n${contextText}\n\nКраткие источники контекста:\n${sourceLines}\n\nВопрос пользователя: ${question}`,
-    },
+    { role: "user", content: userContent },
   ];
 }
 
