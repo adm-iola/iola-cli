@@ -103,7 +103,13 @@ iola cache status
 iola cache warm
 iola cache clear
 iola sync
+iola sync status
+iola diff schools
 iola search "Петрова" --local
+iola search "Петрова" --local --fts
+iola card "школа 29"
+iola quality
+iola quality missing-phones
 iola data schools --where address=Петрова --save schools-petrova
 iola views
 iola view schools-petrova --format csv --output schools-petrova.csv
@@ -121,6 +127,7 @@ iola version --check
 iola ask "Найди школу 29"
 iola ask "Найди школу 29" --profile codex --events --output answer.txt
 iola ask "Найди школу 29" --schema json --no-history
+iola ask "выгрузи школы на Петрова в csv" --profile local --tools --reasoning verify
 iola data schools --format csv --output schools.csv
 iola data schools --limit 10
 iola data kindergartens --search "29"
@@ -381,7 +388,10 @@ iola data schools --cache
 
 ```bash
 iola sync
+iola sync status
+iola diff
 iola search "Петрова" --local
+iola search "школа Петрова" --local --fts
 iola data schools --local --search "лицей"
 ```
 
@@ -407,6 +417,55 @@ iola backup create
 iola alias add petrova "data schools --where address=Петрова --columns name,address,phone"
 iola petrova
 iola run "выгрузи школы на Петрова в csv"
+```
+
+## Локальный tool-agent для слабых моделей
+
+Для локального профиля Ollama доступен режим `--tools`. Он сделан специально
+для маленьких моделей, которые хуже отвечают свободным текстом, но могут быть
+полезны как планировщик действий.
+
+В этом режиме CLI не доверяет модели напрямую. Модель предлагает JSON-план,
+CLI валидирует список разрешенных tools и сам выполняет действия через
+проверенные локальные функции:
+
+- `search_local`
+- `get_card`
+- `export_data`
+- `run_report`
+- `save_view`
+
+Пример:
+
+```bash
+iola ask "выгрузи школы на Петрова в csv" --profile local --tools
+iola ask "найди детсады без телефона" --profile local --tools --reasoning verify
+```
+
+Режимы:
+
+```bash
+--reasoning fast    # один план
+--reasoning verify  # план с валидацией результата
+--reasoning vote    # несколько вариантов, выбирается валидный
+```
+
+OpenAI, OpenRouter и Codex работают как раньше. `--tools` применяется только
+к локальному Ollama-профилю, чтобы не менять поведение внешних провайдеров.
+
+Карточки, качество данных и изменения:
+
+```bash
+iola card schools 1215067180
+iola card "школа 29"
+iola quality
+iola quality schools
+iola quality missing-phones
+iola quality invalid-emails
+iola quality duplicate-inn
+iola sync status
+iola diff
+iola diff schools
 ```
 
 ## Переменные окружения

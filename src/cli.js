@@ -97,8 +97,11 @@ const COMMANDS = new Map([
   ["mcp", handleMcp],
   ["cache", handleCache],
   ["sync", handleSync],
+  ["diff", handleDiff],
   ["views", handleViews],
   ["view", handleView],
+  ["card", handleCard],
+  ["quality", handleQuality],
   ["report", handleReport],
   ["privacy", handlePrivacy],
   ["backup", handleBackup],
@@ -163,6 +166,11 @@ Usage:
   iola mcp list|status|install|remove
   iola cache status|warm|clear
   iola sync [--dataset schools|kindergartens]
+  iola sync status
+  iola diff [schools|kindergartens]
+  iola card schools 1215067180
+  iola card "школа 29"
+  iola quality [schools|kindergartens|missing-phones|invalid-emails|duplicate-inn]
   iola views
   iola view NAME [--format table|json|csv] [--output FILE]
   iola report schools-summary|education-contacts|missing-phones|licenses
@@ -175,7 +183,7 @@ Usage:
   iola config set api.mcpBaseUrl URL
   iola config reset
   iola update
-  iola ask TEXT [--profile NAME] [--model MODEL] [--output FILE] [--schema json|table] [--events] [--no-history]
+  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
@@ -324,7 +332,7 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
-  if (command === "views" || command === "view" || command === "report" || command === "privacy" || command === "backup" || command === "alias" || command === "run") {
+  if (command === "diff" || command === "card" || command === "quality" || command === "views" || command === "view" || command === "report" || command === "privacy" || command === "backup" || command === "alias" || command === "run") {
     await COMMANDS.get(command)(args);
     return false;
   }
@@ -416,6 +424,7 @@ async function handleAgentLine(line, state) {
     mcp: ["mcp", args],
     cache: ["cache", args],
     sync: ["sync", args],
+    diff: ["diff", args],
     config: ["config", args],
     layers: ["layers", args],
     data: ["data", args],
@@ -449,6 +458,9 @@ function printAgentHelp() {
   /mcp status
   /cache status
   /sync
+  /diff
+  /card школа 29
+  /quality
   /views
   /config get
   /config set api.baseUrl URL
@@ -1109,6 +1121,16 @@ async function handleCache(args) {
 }
 
 async function handleSync(args) {
+  const [action] = args;
+  if (action === "status") {
+    printTable(getSyncStatus(), [
+      ["dataset", "Слой"],
+      ["records", "Записей"],
+      ["last_sync", "Последний sync"],
+      ["status", "Статус"],
+    ]);
+    return;
+  }
   const options = parseOptions(args);
   const datasets = options.dataset ? [options.dataset] : Object.keys(DATASETS);
   const rows = [];
@@ -1120,6 +1142,44 @@ async function handleSync(args) {
     ["records", "Записей"],
     ["status", "Статус"],
     ["message", "Сообщение"],
+  ]);
+}
+
+async function handleDiff(args) {
+  const [dataset] = args;
+  const rows = listSyncChanges(dataset);
+  printTable(rows, [
+    ["created_at", "Дата"],
+    ["dataset", "Слой"],
+    ["change_type", "Тип"],
+    ["record_key", "Ключ"],
+    ["summary", "Сводка"],
+  ]);
+}
+
+async function handleCard(args) {
+  await ensureLocalData();
+  const options = parseOptions(args);
+  const query = args.join(" ").trim();
+  if (!query) throw new Error('Пример: iola card "школа 29"');
+  const item = findCard(query);
+  if (!item) throw new Error(`Объект не найден: ${query}`);
+  if (options.json) {
+    printJson(item);
+    return;
+  }
+  printKeyValue(item);
+}
+
+async function handleQuality(args) {
+  const [scope = "all"] = args;
+  await ensureLocalData();
+  const rows = runQuality(scope);
+  printTable(rows, [
+    ["check", "Проверка"],
+    ["dataset", "Слой"],
+    ["count", "Кол-во"],
+    ["sample", "Пример"],
   ]);
 }
 
@@ -1803,6 +1863,16 @@ function initDatabase() {
         message TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS sync_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dataset TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        change_type TEXT NOT NULL,
+        old_json TEXT,
+        new_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_sync_changes_dataset_created_at ON sync_changes(dataset, created_at DESC);
       CREATE TABLE IF NOT EXISTS aliases (
         name TEXT PRIMARY KEY,
         command TEXT NOT NULL,
@@ -2174,16 +2244,28 @@ function saveLocalRecords(dataset, items) {
   initDatabase();
   const db = openDatabase();
   try {
+    const oldRows = db.prepare("SELECT record_key, record_json FROM local_records WHERE dataset = ?").all(dataset);
+    const oldMap = new Map(oldRows.map((row) => [row.record_key, row.record_json]));
+    const newKeys = new Set();
     db.prepare("DELETE FROM local_records WHERE dataset = ?").run(dataset);
     db.prepare("DELETE FROM local_records_fts WHERE dataset = ?").run(dataset);
     const insert = db.prepare("INSERT INTO local_records(dataset, record_key, record_json, searchable_text, synced_at) VALUES (?, ?, ?, ?, datetime('now'))");
     const insertFts = db.prepare("INSERT INTO local_records_fts(dataset, record_key, searchable_text) VALUES (?, ?, ?)");
+    const insertChange = db.prepare("INSERT INTO sync_changes(dataset, record_key, change_type, old_json, new_json) VALUES (?, ?, ?, ?, ?)");
     for (const item of items) {
       const summary = selectPublicSummary(item);
       const key = String(summary.inn || item.id || `${dataset}-${Math.random()}`);
+      newKeys.add(key);
+      const newJson = JSON.stringify(item);
+      const oldJson = oldMap.get(key);
+      if (!oldJson) insertChange.run(dataset, key, "added", null, newJson);
+      else if (oldJson !== newJson) insertChange.run(dataset, key, "changed", oldJson, newJson);
       const text = JSON.stringify(summary).toLocaleLowerCase("ru-RU");
-      insert.run(dataset, key, JSON.stringify(item), text);
+      insert.run(dataset, key, newJson, text);
       insertFts.run(dataset, key, text);
+    }
+    for (const [key, oldJson] of oldMap.entries()) {
+      if (!newKeys.has(key)) insertChange.run(dataset, key, "removed", oldJson, null);
     }
   } finally {
     db.close();
@@ -2213,6 +2295,14 @@ function searchLocalRecords(query, options = {}) {
   const dataset = options.dataset || "all";
   const limit = Number(options.limit || 20);
   try {
+    if (options.fts && query) {
+      const ftsQuery = query.split(/\s+/).filter(Boolean).map((term) => `"${term.replace(/"/g, "")}"`).join(" ");
+      const params = dataset === "all" ? [ftsQuery, limit] : [ftsQuery, dataset, limit];
+      const sql = dataset === "all"
+        ? "SELECT r.record_json FROM local_records_fts f JOIN local_records r ON r.dataset=f.dataset AND r.record_key=f.record_key WHERE local_records_fts MATCH ? LIMIT ?"
+        : "SELECT r.record_json FROM local_records_fts f JOIN local_records r ON r.dataset=f.dataset AND r.record_key=f.record_key WHERE local_records_fts MATCH ? AND f.dataset = ? LIMIT ?";
+      return db.prepare(sql).all(...params).map((row) => selectPublicSummary(JSON.parse(row.record_json)));
+    }
     const params = [];
     let sql = "SELECT dataset, record_json FROM local_records";
     const where = [];
@@ -2231,6 +2321,76 @@ function searchLocalRecords(query, options = {}) {
   } finally {
     db.close();
   }
+}
+
+function getSyncStatus() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return Object.keys(DATASETS).map((dataset) => {
+      const records = db.prepare("SELECT COUNT(*) AS count FROM local_records WHERE dataset = ?").get(dataset);
+      const run = db.prepare("SELECT status, created_at FROM sync_runs WHERE dataset = ? ORDER BY id DESC LIMIT 1").get(dataset);
+      return { dataset, records: records?.count || 0, last_sync: run?.created_at || "-", status: run?.status || "never" };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function listSyncChanges(dataset) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const rows = dataset
+      ? db.prepare("SELECT * FROM sync_changes WHERE dataset = ? ORDER BY id DESC LIMIT 50").all(dataset)
+      : db.prepare("SELECT * FROM sync_changes ORDER BY id DESC LIMIT 50").all();
+    return rows.map((row) => ({
+      ...row,
+      summary: summarizeChange(row),
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+function summarizeChange(row) {
+  const payload = row.new_json || row.old_json;
+  if (!payload) return "-";
+  try {
+    const item = selectPublicSummary(JSON.parse(payload));
+    return item.name || item.inn || "-";
+  } catch {
+    return "-";
+  }
+}
+
+function findCard(query) {
+  const normalized = query.toLocaleLowerCase("ru-RU");
+  const dataset = normalized.includes("сад") ? "kindergartens" : normalized.includes("школ") || normalized.includes("лицей") ? "schools" : "all";
+  const inn = normalized.match(/\b\d{10,12}\b/)?.[0];
+  const number = normalized.match(/\b\d{1,3}\b/)?.[0];
+  const rows = searchLocalRecords(inn || number || query, { dataset, limit: 20, fts: false });
+  if (inn) return rows.find((row) => String(row.inn) === inn) || null;
+  if (number) return rows.find((row) => String(row.name || "").includes(`№ ${number}`) || String(row.name || "").includes(`№${number}`)) || rows[0] || null;
+  return rows[0] || null;
+}
+
+function runQuality(scope) {
+  const datasets = ["schools", "kindergartens"];
+  const rows = [];
+  for (const dataset of datasets) {
+    if (scope !== "all" && scope !== dataset && !scope.includes("-")) continue;
+    const records = searchLocalRecords("", { dataset, limit: 1000 });
+    const missingPhones = records.filter((item) => !item.phone || item.phone === "-");
+    const invalidEmails = records.filter((item) => item.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(item.email));
+    const innCounts = new Map();
+    for (const item of records) innCounts.set(item.inn, (innCounts.get(item.inn) || 0) + 1);
+    const duplicateInn = records.filter((item) => item.inn && innCounts.get(item.inn) > 1);
+    if (scope === "all" || scope === dataset || scope === "missing-phones") rows.push({ check: "missing-phones", dataset, count: missingPhones.length, sample: missingPhones[0]?.name || "-" });
+    if (scope === "all" || scope === dataset || scope === "invalid-emails") rows.push({ check: "invalid-emails", dataset, count: invalidEmails.length, sample: invalidEmails[0]?.email || "-" });
+    if (scope === "all" || scope === dataset || scope === "duplicate-inn") rows.push({ check: "duplicate-inn", dataset, count: duplicateInn.length, sample: duplicateInn[0]?.inn || "-" });
+  }
+  return rows;
 }
 
 function saveView(name, dataset, args) {
@@ -2466,6 +2626,9 @@ async function aiAsk(args, context = {}) {
 
   const config = await loadConfig();
   const providerConfig = resolveAiProfile(config, options);
+  if (options.tools && providerConfig.provider === "ollama") {
+    return localToolAsk(question, providerConfig, options);
+  }
   applyRuntimeConfig(providerConfig, options.config);
   const dataContext = await buildDataContext(question);
   emitEvent(options, "context_loaded", { schools: dataContext.schools.length, kindergartens: dataContext.kindergartens.length });
@@ -2527,6 +2690,132 @@ function resolveAiProfile(config, options = {}) {
     baseUrl: options["base-url"] || activeProfile.baseUrl || config.ai.baseUrl,
     temperature: options.temperature || activeProfile.temperature,
   };
+}
+
+async function localToolAsk(question, providerConfig, options) {
+  await ensureLocalData();
+  const plan = await buildLocalToolPlan(question, providerConfig, options);
+  const validated = validateToolPlan(plan);
+  const result = await executeToolPlan(validated);
+  const answer = formatToolResult(result, options);
+
+  if (!options["no-history"] && isFeatureEnabled("sqlite-history")) {
+    recordAskHistory({
+      question,
+      answer,
+      providerConfig,
+      dataContext: { tool_plan: validated, tool_result: result },
+      error: "",
+      sessionId: null,
+    });
+  }
+
+  emitEvent(options, "tool_plan", { plan: validated });
+  if (options.output) await writeFile(options.output, answer, "utf8");
+  if (options.format === "json" || options.schema === "json") {
+    printJson({ answer, plan: validated, result });
+  } else {
+    console.log(answer);
+  }
+  return answer;
+}
+
+async function buildLocalToolPlan(question, providerConfig, options) {
+  const mode = options.reasoning || "verify";
+  const prompt = [
+    "Ты планировщик CLI iola. Верни только JSON.",
+    "Доступные tools: search_local, get_card, export_data, run_report, save_view.",
+    "Схема: {\"steps\":[{\"tool\":\"search_local\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
+    "Для выгрузки CSV добавь export_data с format=csv и output, если пользователь назвал файл.",
+    `Вопрос: ${question}`,
+  ].join("\n");
+
+  try {
+    const raw = await callOllama(providerConfig, [{ role: "user", content: prompt }]);
+    const parsed = parseJsonObject(raw);
+    if (mode === "vote") {
+      return chooseBestPlan([parsed, inferToolPlan(question)]);
+    }
+    return parsed;
+  } catch {
+    return inferToolPlan(question);
+  }
+}
+
+function parseJsonObject(text) {
+  const match = String(text).match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("JSON-план не найден.");
+  return JSON.parse(match[0]);
+}
+
+function inferToolPlan(question) {
+  const normalized = question.toLocaleLowerCase("ru-RU");
+  const dataset = normalized.includes("сад") ? "kindergartens" : normalized.includes("школ") || normalized.includes("лицей") ? "schools" : "all";
+  const steps = [];
+  if (normalized.includes("без телефона")) {
+    steps.push({ tool: "run_report", args: { name: "missing-phones" } });
+  } else {
+    const query = normalized.match(/петрова|школ[а-яё ]*\d+|сад[а-яё ]*\d+|лицей[а-яё ]*\d+/iu)?.[0] || question;
+    steps.push({ tool: "search_local", args: { dataset, query, limit: 20 } });
+  }
+  if (normalized.includes("csv") || normalized.includes("выгруз")) {
+    steps.push({ tool: "export_data", args: { format: "csv", output: normalized.match(/([a-z0-9_-]+\.csv)/i)?.[1] || "iola-export.csv" } });
+  }
+  return { steps };
+}
+
+function chooseBestPlan(plans) {
+  return plans.find((plan) => {
+    try {
+      validateToolPlan(plan);
+      return true;
+    } catch {
+      return false;
+    }
+  }) || plans.at(-1);
+}
+
+function validateToolPlan(plan) {
+  const allowed = new Set(["search_local", "get_card", "export_data", "run_report", "save_view"]);
+  if (!plan || !Array.isArray(plan.steps)) throw new Error("Некорректный tool-plan.");
+  for (const step of plan.steps) {
+    if (!allowed.has(step.tool)) throw new Error(`Недопустимый tool: ${step.tool}`);
+  }
+  return plan;
+}
+
+async function executeToolPlan(plan) {
+  let current = [];
+  const outputs = [];
+  for (const step of plan.steps) {
+    if (step.tool === "search_local") {
+      current = searchLocalRecords(step.args?.query || "", { dataset: step.args?.dataset || "all", limit: step.args?.limit || 20, fts: true });
+      outputs.push({ tool: step.tool, rows: current.length });
+    } else if (step.tool === "get_card") {
+      const card = findCard(step.args?.query || "");
+      current = card ? [card] : [];
+      outputs.push({ tool: step.tool, rows: current.length });
+    } else if (step.tool === "run_report") {
+      current = runQuality(step.args?.name || "all");
+      outputs.push({ tool: step.tool, rows: current.length });
+    } else if (step.tool === "save_view") {
+      saveView(step.args?.name, step.args?.dataset || "all", step.args?.args || []);
+      outputs.push({ tool: step.tool, saved: step.args?.name });
+    } else if (step.tool === "export_data") {
+      const text = step.args?.format === "json" ? JSON.stringify(current, null, 2) : toCsv(current);
+      await writeFile(step.args?.output || "iola-export.csv", text, "utf8");
+      outputs.push({ tool: step.tool, output: step.args?.output || "iola-export.csv", rows: current.length });
+    }
+  }
+  return { rows: current, outputs };
+}
+
+function formatToolResult(result, options) {
+  if (options.schema === "json") return JSON.stringify(result, null, 2);
+  const exported = result.outputs.find((item) => item.output);
+  if (exported) return `Готово. Файл сохранен: ${exported.output}. Записей: ${exported.rows}`;
+  if (!result.rows.length) return "Данных не найдено.";
+  return result.rows.slice(0, 10).map((row) => `${row.name || row.check}: ${row.address || row.count || ""}`).join("\n");
 }
 
 function applyRuntimeConfig(target, value) {
@@ -2912,7 +3201,7 @@ async function listDataset(dataset, args) {
   params.set("offset", options.offset || "0");
 
   const data = options.local
-    ? searchLocalRecords(options.search || "", { dataset, limit: Number(options.limit || 20) })
+      ? searchLocalRecords(options.search || options._.join(" ") || "", { dataset, limit: Number(options.limit || 20), fts: options.fts })
     : normalizeItems(await fetchJsonMaybeCached(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?${params}`, options));
   const items = data;
   const filtered = applyDatasetFilters(items, options);
@@ -2968,8 +3257,8 @@ async function searchAll(args) {
   const limit = Number(options.limit || 5);
   const [schools, kindergartens] = options.local
     ? [
-        searchLocalRecords(query, { dataset: "schools", limit }),
-        searchLocalRecords(query, { dataset: "kindergartens", limit }),
+        searchLocalRecords(query, { dataset: "schools", limit, fts: options.fts }),
+        searchLocalRecords(query, { dataset: "kindergartens", limit, fts: options.fts }),
       ]
     : await Promise.all([
         fetchJsonMaybeCached(`${await getApiBaseUrl()}/schools?limit=100&offset=0`, options),
@@ -3018,12 +3307,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--fts") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
