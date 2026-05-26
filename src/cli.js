@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -17,7 +17,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 4;
+const DB_SCHEMA_VERSION = 5;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
@@ -242,6 +242,13 @@ const COMMANDS = new Map([
   ["skills", handleSkills],
   ["tools", handleTools],
   ["files", handleFiles],
+  ["workspace", handleWorkspace],
+  ["tasks", handleTasks],
+  ["artifacts", handleArtifacts],
+  ["snapshot", handleSnapshot],
+  ["trace", handleTrace],
+  ["policy", handlePolicy],
+  ["export", handleExport],
   ["cron", handleCron],
   ["daemon", handleDaemon],
   ["rpc", handleRpc],
@@ -345,6 +352,13 @@ Usage:
   iola skills list|show|paths|enable|disable
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
+  iola workspace init|status|use|list
+  iola tasks list|add|done|run
+  iola artifacts list|show|open
+  iola snapshot create|list|restore
+  iola trace last|show
+  iola policy use safe|analyst|developer|full
+  iola export REPORT --format docx|xlsx --output FILE
   iola cron list|add|delete|run|tick
   iola daemon start|status
   iola rpc call METHOD [ARGS] [--json]
@@ -374,7 +388,7 @@ Usage:
   iola config set api.mcpBaseUrl URL
   iola config reset
   iola update
-  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
+  iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
@@ -590,6 +604,36 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "workspace") {
+    await handleWorkspace(args);
+    return false;
+  }
+
+  if (command === "tasks" || command === "todos") {
+    await handleTasks(args);
+    return false;
+  }
+
+  if (command === "artifacts") {
+    await handleArtifacts(args);
+    return false;
+  }
+
+  if (command === "snapshot") {
+    await handleSnapshot(args);
+    return false;
+  }
+
+  if (command === "trace") {
+    await handleTrace(args);
+    return false;
+  }
+
+  if (command === "policy") {
+    await handlePolicy(args);
+    return false;
+  }
+
   if (command === "cron") {
     await handleCron(args);
     return false;
@@ -713,6 +757,13 @@ async function handleAgentLine(line, state) {
     context: ["context", args],
     skills: ["skills", args],
     files: ["files", args],
+    workspace: ["workspace", args],
+    tasks: ["tasks", args],
+    todos: ["tasks", args],
+    artifacts: ["artifacts", args],
+    snapshot: ["snapshot", args],
+    trace: ["trace", args],
+    policy: ["policy", args],
     cron: ["cron", args],
     daemon: ["daemon", args],
     rpc: ["rpc", args],
@@ -761,6 +812,11 @@ function printAgentHelp() {
   /permissions
   /tools
   /files status
+  /workspace status
+  /tasks list
+  /artifacts list
+  /trace last
+  /policy use safe
   /cron list
   /daemon status
   /rpc call status
@@ -1491,6 +1547,7 @@ async function handleWiki(args) {
     ["Локальный инструментальный агент", `${base}/Локальный-инструментальный-агент`],
     ["Skills и toolsets", `${base}/Skills-и-toolsets`],
     ["Локальные файлы", `${base}/Локальные-файлы`],
+    ["Рабочая среда агента", `${base}/Рабочая-среда-агента`],
     ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
     ["Контекст и память", `${base}/Контекст-и-память`],
     ["Команды", `${base}/Команды`],
@@ -1731,6 +1788,164 @@ async function handleFiles(args) {
   }
 
   throw new Error("Команды files: status, mode MODE, approvals POLICY, tree [PATH], read FILE, search TEXT, write FILE --text TEXT, patch FILE --search OLD --replace NEW.");
+}
+
+async function handleWorkspace(args) {
+  const [action = "status", nameOrPath] = args;
+  const config = await loadConfig();
+  if (action === "status") {
+    printKeyValue({ root: resolveWorkspaceRoot(config), fileMode: config.files?.mode, approvals: config.files?.approvals });
+    return;
+  }
+  if (action === "init") {
+    await handleContext(["init"]);
+    await mkdir(path.join(process.cwd(), ".iola", "skills"), { recursive: true });
+    console.log(`Workspace готов: ${process.cwd()}`);
+    return;
+  }
+  if (action === "list") {
+    const rows = Object.entries(config.workspaces || {}).map(([name, value]) => ({ name, path: value.path }));
+    printTable(rows, [["name", "Workspace"], ["path", "Путь"]]);
+    return;
+  }
+  if (action === "use") {
+    if (!nameOrPath) throw new Error("Пример: iola workspace use D:\\project");
+    const root = path.resolve(nameOrPath);
+    const name = path.basename(root);
+    await saveConfig({ workspaces: { ...(config.workspaces || {}), [name]: { path: root } }, files: { ...(config.files || {}), workspaceRoot: root } });
+    console.log(`Workspace выбран: ${root}`);
+    return;
+  }
+  throw new Error("Команды workspace: init, status, list, use PATH.");
+}
+
+async function handleTasks(args) {
+  const [action = "list", idOrText, ...rest] = args;
+  if (action === "list" || action === "ls") {
+    printTable(listTasks(), [["id", "ID"], ["status", "Статус"], ["title", "Задача"], ["command", "Команда"]]);
+    return;
+  }
+  if (action === "add") {
+    const title = [idOrText, ...rest].filter(Boolean).join(" ");
+    if (!title) throw new Error('Пример: iola tasks add "проверить школы"');
+    const id = addTask(title);
+    console.log(`Задача добавлена: ${id}`);
+    return;
+  }
+  if (action === "done") {
+    updateTaskStatus(Number(idOrText), "done");
+    console.log(`Задача выполнена: ${idOrText}`);
+    return;
+  }
+  if (action === "run") {
+    const task = getTask(Number(idOrText));
+    if (!task.command) throw new Error("У задачи нет команды. Добавьте command через SQLite пока не реализовано редактирование.");
+    await main(splitCommandLine(task.command));
+    updateTaskStatus(task.id, "done");
+    return;
+  }
+  throw new Error("Команды tasks: list, add TEXT, done ID, run ID.");
+}
+
+async function handleArtifacts(args) {
+  const [action = "list", id] = args;
+  if (action === "list" || action === "ls") {
+    printTable(listArtifacts(), [["id", "ID"], ["kind", "Тип"], ["title", "Название"], ["file", "Файл"], ["created_at", "Дата"]]);
+    return;
+  }
+  if (action === "show") {
+    const artifact = getArtifact(Number(id));
+    if (artifact.file && existsSync(artifact.file)) console.log(await readFile(artifact.file, "utf8"));
+    else printJson(artifact);
+    return;
+  }
+  if (action === "open") {
+    const artifact = getArtifact(Number(id));
+    if (!artifact.file) throw new Error("У artifact нет файла.");
+    await openUrl(artifact.file);
+    return;
+  }
+  throw new Error("Команды artifacts: list, show ID, open ID.");
+}
+
+async function handleSnapshot(args) {
+  const [action = "list", id] = args;
+  if (action === "create") {
+    const result = await createSnapshot();
+    printKeyValue(result);
+    return;
+  }
+  if (action === "list" || action === "ls") {
+    printTable(listSnapshots(), [["id", "ID"], ["workspace", "Workspace"], ["path", "Папка"], ["created_at", "Дата"]]);
+    return;
+  }
+  if (action === "restore") {
+    await restoreSnapshot(Number(id));
+    console.log(`Snapshot восстановлен: ${id}`);
+    return;
+  }
+  throw new Error("Команды snapshot: create, list, restore ID.");
+}
+
+async function handleTrace(args) {
+  const [action = "last", id] = args;
+  if (action === "last") {
+    printTable(listTrace(Number(id || 20)), [["id", "ID"], ["run_id", "Run"], ["tool", "Tool"], ["status", "Статус"], ["summary", "Сводка"]]);
+    return;
+  }
+  if (action === "show") {
+    printJson(getTraceRun(id));
+    return;
+  }
+  throw new Error("Команды trace: last [LIMIT], show RUN_ID.");
+}
+
+async function handlePolicy(args) {
+  const [action = "list", name] = args;
+  const policies = {
+    safe: { fileMode: "read-only", approvals: "always", toolProfile: "safe" },
+    analyst: { fileMode: "read-only", approvals: "on-danger", toolsets: ["data-read", "reports", "sync", "ai", "local-files-read"] },
+    developer: { fileMode: "workspace-write", approvals: "on-write", toolsets: ["data-read", "reports", "sync", "ai", "local-files-read", "local-files-write"] },
+    full: { fileMode: "full-access", approvals: "on-danger", toolProfile: "full" },
+  };
+  if (action === "list") {
+    printTable(Object.entries(policies).map(([policy, value]) => ({ policy, ...value, toolsets: value.toolsets?.join(", ") || value.toolProfile })), [["policy", "Policy"], ["fileMode", "Files"], ["approvals", "Approvals"], ["toolsets", "Toolsets"]]);
+    return;
+  }
+  if (action === "use") {
+    const policy = policies[name];
+    if (!policy) throw new Error(`Policy неизвестна: ${Object.keys(policies).join(", ")}`);
+    const config = await loadConfig();
+    if (policy.toolProfile) {
+      await handleTools(["profile", policy.toolProfile]);
+    } else {
+      await saveConfig({ toolsets: { ...(config.toolsets || {}), enabled: policy.toolsets } });
+    }
+    const next = await loadConfig();
+    await saveConfig({ files: { ...(next.files || {}), mode: policy.fileMode, approvals: policy.approvals } });
+    await setFilesMode(policy.fileMode, await loadConfig());
+    console.log(`Policy применена: ${name}`);
+    return;
+  }
+  throw new Error("Команды policy: list, use NAME.");
+}
+
+async function handleExport(args) {
+  const [name] = args;
+  const options = parseOptions(args.slice(1));
+  const format = options.format || "xlsx";
+  const output = options.output || `${name || "iola-export"}.${format}`;
+  await ensureLocalData();
+  const rows = buildReportRows(name || "education-contacts");
+  if (format === "xlsx") {
+    await writeFile(output, toSpreadsheetXml(rows), "utf8");
+  } else if (format === "docx" || format === "doc") {
+    await writeFile(output, toWordHtml(name || "Отчет", rows), "utf8");
+  } else {
+    await outputData(rows, { output }, format);
+  }
+  saveArtifact("export", name || "export", output, { format, rows: rows.length });
+  console.log(`Экспорт создан: ${output}`);
 }
 
 async function handleCron(args) {
@@ -2209,6 +2424,11 @@ async function handleView(args) {
 async function handleReport(args) {
   const [name] = args;
   await ensureLocalData();
+  const options = parseOptions(args.slice(1));
+  if (options.format === "docx" || options.format === "xlsx") {
+    await handleExport([name || "education-contacts", "--format", options.format, "--output", options.output || `${name || "report"}.${options.format}`]);
+    return;
+  }
   if (name === "schools-summary") {
     printTable(getLocalSummaryRows("schools"), [["metric", "Показатель"], ["value", "Значение"]]);
     return;
@@ -2226,6 +2446,43 @@ async function handleReport(args) {
     return;
   }
   throw new Error("Отчеты: schools-summary, education-contacts, missing-phones, licenses.");
+}
+
+function buildReportRows(name) {
+  const reportName = name || "education-contacts";
+  if (reportName === "schools-summary") return getLocalSummaryRows("schools");
+  if (reportName === "missing-phones") return searchLocalRecords("", { dataset: "all", limit: 500 }).filter((item) => !item.phone || item.phone === "-");
+  if (reportName === "licenses") return searchLocalRecords("", { dataset: "all", limit: 500 }).map((item) => ({ name: item.name, license_number: item.license_number, license_status: item.license_status }));
+  return searchLocalRecords("", { dataset: "all", limit: 500 });
+}
+
+function toSpreadsheetXml(rows) {
+  const columns = Object.keys(rows[0] || { empty: "" });
+  const cell = (value) => `<Cell><Data ss:Type="String">${escapeXml(value ?? "")}</Data></Cell>`;
+  return `<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Worksheet ss:Name="IOLA"><Table>
+<Row>${columns.map(cell).join("")}</Row>
+${rows.map((row) => `<Row>${columns.map((column) => cell(row[column])).join("")}</Row>`).join("\n")}
+</Table></Worksheet></Workbook>`;
+}
+
+function toWordHtml(title, rows) {
+  const columns = Object.keys(rows[0] || { empty: "" });
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head><body>
+<h1>${escapeHtml(title)}</h1>
+<table border="1" cellspacing="0" cellpadding="4">
+<thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
+<tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column] ?? "")}</td>`).join("")}</tr>`).join("\n")}</tbody>
+</table></body></html>`;
+}
+
+function escapeXml(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function escapeHtml(value) {
+  return escapeXml(value);
 }
 
 async function handlePrivacy() {
@@ -2906,6 +3163,38 @@ function initDatabase() {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, last_run_at);
+      CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        command TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        file TEXT,
+        meta_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS tool_traces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        summary TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_traces_run_id ON tool_traces(run_id, id);
+      CREATE TABLE IF NOT EXISTS snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace TEXT NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
     rebuildFtsIfEmpty(db);
     db.prepare(`
@@ -2958,6 +3247,8 @@ function getDbStatus() {
       const memory = db.prepare("SELECT COUNT(*) AS count FROM memory").get();
       const memorySuggestions = db.prepare("SELECT COUNT(*) AS count FROM memory_suggestions WHERE status = 'pending'").get();
       const cron = db.prepare("SELECT COUNT(*) AS count FROM cron_jobs").get();
+      const tasks = db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status != 'done'").get();
+      const artifacts = db.prepare("SELECT COUNT(*) AS count FROM artifacts").get();
       return {
         status: "ok",
         file: DB_FILE,
@@ -2969,6 +3260,8 @@ function getDbStatus() {
         memory: memory?.count ?? 0,
         memory_suggestions: memorySuggestions?.count ?? 0,
         cron_jobs: cron?.count ?? 0,
+        open_tasks: tasks?.count ?? 0,
+        artifacts: artifacts?.count ?? 0,
       };
     } finally {
       db.close();
@@ -4035,7 +4328,16 @@ async function localToolAsk(question, providerConfig, options) {
   await ensureLocalData();
   const plan = await buildLocalToolPlan(question, providerConfig, options);
   const validated = validateToolPlan(plan, options);
-  const result = await executeToolPlan(validated);
+  if (options.plan) {
+    printToolPlan(validated);
+    const shouldRun = await confirm("Выполнить план? [y/N] ");
+    if (!shouldRun) {
+      saveArtifact("plan", question.slice(0, 80), "", { plan: validated });
+      return "План построен, выполнение отменено.";
+    }
+  }
+  const runId = `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const result = await executeToolPlan(validated, { ...options, runId });
   const answer = formatToolResult(result, options);
 
   if (!options["no-history"] && isFeatureEnabled("sqlite-history")) {
@@ -4049,7 +4351,8 @@ async function localToolAsk(question, providerConfig, options) {
     });
   }
 
-  emitEvent(options, "tool_plan", { plan: validated });
+  emitEvent(options, "tool_plan", { plan: validated, runId });
+  saveArtifact("tool-result", question.slice(0, 80), "", { runId, plan: validated, outputs: result.outputs });
   if (options.output) {
     await assertPermission("writeFiles");
     await writeFile(options.output, answer, "utf8");
@@ -4060,6 +4363,13 @@ async function localToolAsk(question, providerConfig, options) {
     if (!options.quiet) console.log(answer);
   }
   return answer;
+}
+
+function printToolPlan(plan) {
+  console.log("План выполнения:");
+  plan.steps.forEach((step, index) => {
+    console.log(`${index + 1}. ${step.tool} ${JSON.stringify(step.args || {})}`);
+  });
 }
 
 async function buildLocalToolPlan(question, providerConfig, options) {
@@ -4138,50 +4448,62 @@ function availableToolNames(options = {}) {
   return options.files ? ALL_LOCAL_TOOLS : LOCAL_TOOLS;
 }
 
-async function executeToolPlan(plan) {
+async function executeToolPlan(plan, options = {}) {
   let current = [];
   const outputs = [];
   for (const step of plan.steps) {
+    let status = "ok";
+    let summary = "";
     await assertPermission(step.tool);
     await runHooks("BeforeTool", { tool: step.tool, args: step.args || {} });
-    if (step.tool === "search_local") {
-      current = searchLocalRecords(step.args?.query || "", { dataset: step.args?.dataset || "all", limit: step.args?.limit || 20, fts: true });
-      outputs.push({ tool: step.tool, rows: current.length });
-    } else if (step.tool === "get_card") {
-      const card = findCard(step.args?.query || "");
-      current = card ? [card] : [];
-      outputs.push({ tool: step.tool, rows: current.length });
-    } else if (step.tool === "run_report") {
-      current = runQuality(step.args?.name || "all");
-      outputs.push({ tool: step.tool, rows: current.length });
-    } else if (step.tool === "save_view") {
-      saveView(step.args?.name, step.args?.dataset || "all", step.args?.args || []);
-      outputs.push({ tool: step.tool, saved: step.args?.name });
-    } else if (step.tool === "export_data") {
-      await assertPermission("writeFiles");
-      await runHooks("BeforeExport", { output: step.args?.output || "iola-export.csv", format: step.args?.format || "csv", rows: current.length });
-      const text = step.args?.format === "json" ? JSON.stringify(current, null, 2) : toCsv(current);
-      await writeFile(step.args?.output || "iola-export.csv", text, "utf8");
-      outputs.push({ tool: step.tool, output: step.args?.output || "iola-export.csv", rows: current.length });
-    } else if (step.tool === "files_tree") {
-      current = await filesTree(step.args?.path || ".", step.args || {});
-      outputs.push({ tool: step.tool, rows: current.length });
-    } else if (step.tool === "files_read") {
-      const text = await filesRead(step.args?.path || step.args?.file || ".", step.args || {});
-      current = [{ path: step.args?.path || step.args?.file || ".", text }];
-      outputs.push({ tool: step.tool, bytes: text.length });
-    } else if (step.tool === "files_search") {
-      current = await filesSearch(step.args?.query || "", { path: step.args?.path || ".", limit: step.args?.limit || 50 });
-      outputs.push({ tool: step.tool, rows: current.length });
-    } else if (step.tool === "files_write") {
-      await filesWrite(step.args?.path || step.args?.file, step.args?.text || "", { append: Boolean(step.args?.append) });
-      current = [{ path: step.args?.path || step.args?.file, status: "written" }];
-      outputs.push({ tool: step.tool, output: step.args?.path || step.args?.file, rows: 1 });
-    } else if (step.tool === "files_patch") {
-      const result = await filesPatch(step.args?.path || step.args?.file, step.args?.search || "", step.args?.replace || "");
-      current = [result];
-      outputs.push({ tool: step.tool, output: result.path, replacements: result.replacements });
+    try {
+      if (step.tool === "search_local") {
+        current = searchLocalRecords(step.args?.query || "", { dataset: step.args?.dataset || "all", limit: step.args?.limit || 20, fts: true });
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "get_card") {
+        const card = findCard(step.args?.query || "");
+        current = card ? [card] : [];
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "run_report") {
+        current = runQuality(step.args?.name || "all");
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "save_view") {
+        saveView(step.args?.name, step.args?.dataset || "all", step.args?.args || []);
+        outputs.push({ tool: step.tool, saved: step.args?.name });
+      } else if (step.tool === "export_data") {
+        await assertPermission("writeFiles");
+        await runHooks("BeforeExport", { output: step.args?.output || "iola-export.csv", format: step.args?.format || "csv", rows: current.length });
+        const text = step.args?.format === "json" ? JSON.stringify(current, null, 2) : toCsv(current);
+        await writeFile(step.args?.output || "iola-export.csv", text, "utf8");
+        saveArtifact("export", step.args?.output || "iola-export.csv", step.args?.output || "iola-export.csv", { rows: current.length });
+        outputs.push({ tool: step.tool, output: step.args?.output || "iola-export.csv", rows: current.length });
+      } else if (step.tool === "files_tree") {
+        current = await filesTree(step.args?.path || ".", step.args || {});
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "files_read") {
+        const text = await filesRead(step.args?.path || step.args?.file || ".", step.args || {});
+        current = [{ path: step.args?.path || step.args?.file || ".", text }];
+        outputs.push({ tool: step.tool, bytes: text.length });
+      } else if (step.tool === "files_search") {
+        current = await filesSearch(step.args?.query || "", { path: step.args?.path || ".", limit: step.args?.limit || 50 });
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "files_write") {
+        await filesWrite(step.args?.path || step.args?.file, step.args?.text || "", { append: Boolean(step.args?.append) });
+        current = [{ path: step.args?.path || step.args?.file, status: "written" }];
+        outputs.push({ tool: step.tool, output: step.args?.path || step.args?.file, rows: 1 });
+      } else if (step.tool === "files_patch") {
+        const result = await filesPatch(step.args?.path || step.args?.file, step.args?.search || "", step.args?.replace || "");
+        current = [result];
+        outputs.push({ tool: step.tool, output: result.path, replacements: result.replacements });
+      }
+      summary = `rows=${current.length}`;
+    } catch (error) {
+      status = "error";
+      summary = error instanceof Error ? error.message : String(error);
+      recordToolTrace(options.runId || "manual", step.tool, step.args || {}, status, summary);
+      throw error;
     }
+    recordToolTrace(options.runId || "manual", step.tool, step.args || {}, status, summary);
     await runHooks("AfterTool", { tool: step.tool, rows: current.length });
   }
   return { rows: current, outputs };
@@ -4738,7 +5060,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
@@ -5311,6 +5633,155 @@ async function maybeConfirmFileOperation(operation, target, preview) {
   if (preview) console.log(String(preview).slice(0, 2000));
   const ok = await confirm("Продолжить? [y/N] ");
   if (!ok) throw new Error("Файловая операция отменена.");
+}
+
+function listTasks() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, title, COALESCE(command, '-') AS command, status FROM tasks ORDER BY status, id DESC LIMIT 100").all();
+  } finally {
+    db.close();
+  }
+}
+
+function addTask(title, command = "") {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO tasks(title, command) VALUES (?, ?)").run(title, command);
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function getTask(id) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+    if (!row) throw new Error(`Задача не найдена: ${id}`);
+    return row;
+  } finally {
+    db.close();
+  }
+}
+
+function updateTaskStatus(id, status) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id);
+  } finally {
+    db.close();
+  }
+}
+
+function saveArtifact(kind, title, file = "", meta = {}) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO artifacts(kind, title, file, meta_json) VALUES (?, ?, ?, ?)").run(kind, title || kind, file || "", JSON.stringify(meta));
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function listArtifacts() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, kind, title, file, created_at FROM artifacts ORDER BY id DESC LIMIT 100").all();
+  } finally {
+    db.close();
+  }
+}
+
+function getArtifact(id) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM artifacts WHERE id = ?").get(id);
+    if (!row) throw new Error(`Artifact не найден: ${id}`);
+    return row;
+  } finally {
+    db.close();
+  }
+}
+
+function recordToolTrace(runId, tool, args, status, summary) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("INSERT INTO tool_traces(run_id, tool, args_json, status, summary) VALUES (?, ?, ?, ?, ?)").run(runId, tool, JSON.stringify(args), status, summary || "");
+  } finally {
+    db.close();
+  }
+}
+
+function listTrace(limit = 20) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, run_id, tool, status, summary, created_at FROM tool_traces ORDER BY id DESC LIMIT ?").all(limit);
+  } finally {
+    db.close();
+  }
+}
+
+function getTraceRun(runId) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT * FROM tool_traces WHERE run_id = ? ORDER BY id ASC").all(runId);
+  } finally {
+    db.close();
+  }
+}
+
+async function createSnapshot() {
+  const config = await loadConfig();
+  const workspace = resolveWorkspaceRoot(config);
+  const snapshotsDir = path.join(CONFIG_DIR, "snapshots");
+  await mkdir(snapshotsDir, { recursive: true });
+  const target = path.join(snapshotsDir, `snapshot-${Date.now()}`);
+  await cp(workspace, target, {
+    recursive: true,
+    filter: (source) => !isBlockedPathForConfig(source, config) && !source.includes(`${path.sep}node_modules${path.sep}`),
+  });
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO snapshots(workspace, path) VALUES (?, ?)").run(workspace, target);
+    return { id: Number(result.lastInsertRowid), workspace, path: target };
+  } finally {
+    db.close();
+  }
+}
+
+function listSnapshots() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, workspace, path, created_at FROM snapshots ORDER BY id DESC LIMIT 50").all();
+  } finally {
+    db.close();
+  }
+}
+
+async function restoreSnapshot(id) {
+  initDatabase();
+  const db = openDatabase();
+  let row;
+  try {
+    row = db.prepare("SELECT * FROM snapshots WHERE id = ?").get(id);
+  } finally {
+    db.close();
+  }
+  if (!row) throw new Error(`Snapshot не найден: ${id}`);
+  await cp(row.path, row.workspace, { recursive: true, force: true });
 }
 
 function unifiedPreview(before, after) {
