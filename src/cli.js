@@ -644,6 +644,14 @@ async function ensureAgentAiReady() {
   const readiness = await getAiReadiness();
   if (readiness.ready) return readiness;
 
+  if (readiness.anyReady) {
+    const fallback = getFallbackAiProfile(readiness);
+    if (fallback) {
+      console.log(`Активный AI-профиль ${readiness.activeProfile} (${readiness.activeProvider}) недоступен. Для текстовых запросов будет использован доступный профиль ${fallback.name} (${fallback.provider}).`);
+      return readiness;
+    }
+  }
+
   if (!input.isTTY || !output.isTTY) {
     console.log("AI-провайдер не настроен. Для настройки запустите: iola wizard");
     return readiness;
@@ -696,11 +704,22 @@ async function getAiReadiness() {
     activeProvider: activeProfile.provider || "-",
     activeModel: activeProfile.model || "-",
     anyReady: Boolean(ollama || openai || openrouter || codex),
+    profiles: config.ai.profiles || {},
     ollama,
     openai,
     openrouter,
     codex,
   };
+}
+
+function getFallbackAiProfile(readiness) {
+  const priority = ["openai", "openrouter", "codex", "ollama"];
+  for (const provider of priority) {
+    if (!readiness[provider]) continue;
+    const entry = Object.entries(readiness.profiles || {}).find(([, profile]) => profile.provider === provider);
+    if (entry) return { name: entry[0], ...entry[1] };
+  }
+  return null;
 }
 
 async function hasUsableOllamaModel() {
@@ -5866,7 +5885,7 @@ async function aiAsk(args, context = {}) {
   }
 
   const config = await loadConfig();
-  const providerConfig = resolveAiProfile(config, options);
+  const providerConfig = await resolveUsableAiProfile(config, options);
   if (providerConfig.provider === "codex") await assertPermission("codex");
   if (providerConfig.provider !== "ollama") await assertPermission("externalAi");
   if (options["stream-json"]) options.events = true;
@@ -5926,6 +5945,33 @@ async function aiAsk(args, context = {}) {
 
   if (!options.quiet) console.log(answer);
   return answer;
+}
+
+async function resolveUsableAiProfile(config, options = {}) {
+  const explicit = Boolean(options.profile || options.provider);
+  const providerConfig = resolveAiProfile(config, options);
+  if (explicit) return providerConfig;
+
+  const readiness = await getAiReadiness();
+  if (isProviderReady(providerConfig.provider, readiness)) return providerConfig;
+
+  const fallback = getFallbackAiProfile(readiness);
+  if (!fallback) return providerConfig;
+
+  if (!options.quiet) {
+    console.log(`Активный AI-профиль ${providerConfig.name} (${providerConfig.provider}) недоступен. Использую ${fallback.name} (${fallback.provider}).`);
+  }
+
+  return {
+    name: fallback.name,
+    ...fallback,
+    model: fallback.model || providerConfig.model,
+    baseUrl: fallback.baseUrl || providerConfig.baseUrl,
+  };
+}
+
+function isProviderReady(provider, readiness) {
+  return Boolean(readiness?.[provider]);
 }
 
 function resolveAiProfile(config, options = {}) {
