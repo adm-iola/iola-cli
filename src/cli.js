@@ -793,7 +793,7 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false, renderedInputLines: 0 };
+  const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false, renderedInputLines: 0, rawMode: true, pendingOutput: "" };
   emitKeypressEvents(input);
   const wasRaw = input.isRaw;
   input.setRawMode(true);
@@ -847,10 +847,11 @@ async function startAgentRawInput() {
           continue;
         }
         output.write(`> ${line}\n`);
-        const stopActivity = startActivityIndicator("работаю");
+        const stopActivity = line.startsWith("/") ? () => {} : startActivityIndicator("работаю");
         try {
           const shouldExit = await handleAgentLine(line, state);
           stopActivity();
+          flushPendingAgentOutput(state);
           if (shouldExit) break;
         } catch (error) {
           stopActivity();
@@ -873,9 +874,10 @@ async function startAgentRawInput() {
 
 async function handleAgentLine(line, state) {
   if (!line.startsWith("/")) {
-    const answer = await aiAsk([line], { history: state.history });
+    const answer = await aiAsk(state.rawMode ? [line, "--quiet"] : [line], { history: state.history });
     state.history.push({ role: "user", content: line });
     state.history.push({ role: "assistant", content: answer });
+    if (state.rawMode) state.pendingOutput = answer;
     return false;
   }
 
@@ -925,8 +927,9 @@ async function handleAgentLine(line, state) {
       console.log("Нет предыдущего вопроса для повтора.");
       return false;
     }
-    const answer = await aiAsk([lastUser.content], { history: state.history.slice(0, -2) });
+    const answer = await aiAsk(state.rawMode ? [lastUser.content, "--quiet"] : [lastUser.content], { history: state.history.slice(0, -2) });
     state.history.push({ role: "assistant", content: answer });
+    if (state.rawMode) state.pendingOutput = answer;
     return false;
   }
 
@@ -1358,6 +1361,13 @@ function startActivityIndicator(label = "работаю") {
     clearInterval(timer);
     output.write("\r\x1b[2K");
   };
+}
+
+function flushPendingAgentOutput(state) {
+  const text = state.pendingOutput;
+  state.pendingOutput = "";
+  if (!text) return;
+  console.log(text);
 }
 
 function colorSlashSelection(row) {
