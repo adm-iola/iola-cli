@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -9,6 +9,13 @@ const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/a
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+const DEFAULT_AI_CONFIG = {
+  ai: {
+    provider: "ollama",
+    model: "llama3.2:1b",
+    baseUrl: "http://127.0.0.1:11434",
+  },
+};
 const BANNER = `\x1b[38;5;45m┌────────────────────────────────────────────────────────────────────────────┐
 │\x1b[38;5;51m   ____ _     ___      ____  ____   ___  _____ _  _______                  \x1b[38;5;45m│
 │\x1b[38;5;51m  / ___| |   |_ _|    |  _ \\|  _ \\ / _ \\| ____| |/ /_   _|                 \x1b[38;5;45m│
@@ -56,6 +63,7 @@ async function showHelp() {
 Usage:
   iola banner
   iola agent
+  iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
@@ -81,6 +89,9 @@ async function startAgent() {
   console.log("Интерактивный режим. Введите /help для списка команд, /exit для выхода.");
 
   const rl = readline.createInterface({ input, output, prompt: "iola> " });
+  const state = {
+    history: [],
+  };
   let closed = false;
   rl.on("close", () => {
     closed = true;
@@ -96,7 +107,7 @@ async function startAgent() {
     }
 
     try {
-      const shouldExit = await handleAgentLine(line);
+      const shouldExit = await handleAgentLine(line, state);
       if (shouldExit) {
         break;
       }
@@ -112,9 +123,11 @@ async function startAgent() {
   }
 }
 
-async function handleAgentLine(line) {
+async function handleAgentLine(line, state) {
   if (!line.startsWith("/")) {
-    console.log("AI-ответы будут добавлены следующим этапом. Сейчас используйте slash-команды, например /search лицей.");
+    const answer = await aiAsk([line], { history: state.history });
+    state.history.push({ role: "user", content: line });
+    state.history.push({ role: "assistant", content: answer });
     return false;
   }
 
@@ -126,6 +139,32 @@ async function handleAgentLine(line) {
 
   if (command === "help") {
     printAgentHelp();
+    return false;
+  }
+
+  if (command === "clear") {
+    state.history = [];
+    console.log("История agent-сессии очищена.");
+    return false;
+  }
+
+  if (command === "history") {
+    printAgentHistory(state.history);
+    return false;
+  }
+
+  if (command === "config") {
+    await printAiConfig();
+    return false;
+  }
+
+  if (command === "provider") {
+    await printAiConfigField("provider");
+    return false;
+  }
+
+  if (command === "model") {
+    await printAiConfigField("model");
     return false;
   }
 
@@ -173,8 +212,26 @@ function printAgentHelp() {
   /mcp-info
   /ai doctor
   /ai setup ollama
+  /config
+  /provider
+  /model
+  /history
+  /clear
   /banner
-  /exit`);
+  /exit
+
+Обычный текст без slash-команды отправляется в настроенный AI-провайдер.`);
+}
+
+function printAgentHistory(history) {
+  if (history.length === 0) {
+    console.log("История пуста.");
+    return;
+  }
+
+  for (const item of history.slice(-10)) {
+    console.log(`${item.role}: ${item.content}`);
+  }
 }
 
 function safePrompt(rl, closed = false) {
@@ -227,11 +284,19 @@ async function handleAi(args) {
   if (subcommand === "help") {
     showBanner();
     console.log(`AI-команды:
+  iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup ollama [--yes] [--model MODEL]
+  iola ai setup openai [--model MODEL]
+  iola ai setup openrouter [--model MODEL]
 
 Локальная настройка сохраняется в ${CONFIG_FILE}`);
+    return;
+  }
+
+  if (subcommand === "ask") {
+    await aiAsk(rest);
     return;
   }
 
@@ -277,8 +342,17 @@ async function aiSetup(args) {
   }
 
   if (provider === "openai" || provider === "openrouter") {
-    console.log(`Для ${provider} используйте переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
-    console.log("AI-запросы через API будут добавлены отдельной командой iola ai ask.");
+    const options = parseOptions(args.slice(1));
+    const model = options.model || (provider === "openai" ? "gpt-4.1-mini" : "openai/gpt-4.1-mini");
+    await saveConfig({
+      ai: {
+        provider,
+        model,
+        baseUrl: provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1",
+      },
+    });
+    console.log(`AI-профиль ${provider} сохранен в ${CONFIG_FILE}`);
+    console.log(`Ключ задайте через переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
     return;
   }
 
@@ -349,6 +423,167 @@ async function setupOllama(args) {
 
   console.log("");
   console.log(`Готово. Локальный AI-профиль сохранен в ${CONFIG_FILE}`);
+}
+
+async function aiAsk(args, context = {}) {
+  const options = parseOptions(args);
+  const question = options._.join(" ").trim();
+
+  if (!question) {
+    throw new Error('Текст вопроса обязателен. Пример: iola ai ask "Какие школы есть на улице Петрова?"');
+  }
+
+  const config = await loadConfig();
+  const provider = options.provider || config.ai.provider;
+  const model = options.model || config.ai.model;
+  const providerConfig = {
+    ...config.ai,
+    provider,
+    model,
+  };
+  const dataContext = await buildDataContext(question);
+  const messages = buildAiMessages(question, dataContext, context.history || []);
+  const answer = await callAiProvider(providerConfig, messages);
+
+  console.log(answer);
+  return answer;
+}
+
+async function buildDataContext(question) {
+  const [layers, schools, kindergartens] = await Promise.all([
+    fetchJson(`${MCP_BASE_URL}/mcp-version`),
+    fetchJson(`${API_BASE_URL}/schools?limit=100&offset=0`),
+    fetchJson(`${API_BASE_URL}/kindergartens?limit=100&offset=0`),
+  ]);
+  const queryTerms = extractSearchTerms(question);
+  const schoolItems = findRelevantItems(normalizeItems(schools), queryTerms).slice(0, 8);
+  const kindergartenItems = findRelevantItems(normalizeItems(kindergartens), queryTerms).slice(0, 8);
+
+  return {
+    layers: layers.data_layers || [],
+    schools: schoolItems.map(selectPublicSummary),
+    kindergartens: kindergartenItems.map(selectPublicSummary),
+  };
+}
+
+function extractSearchTerms(question) {
+  const normalized = question
+    .toLocaleLowerCase("ru-RU")
+    .replace(/[^\p{L}\p{N}\s.-]/gu, " ")
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .filter((term) => !["какие", "какая", "какой", "есть", "найди", "покажи", "контакты", "адрес", "телефон", "школы", "школа", "сад", "детский", "детские", "сады", "улица", "ул"].includes(term));
+
+  return normalized.length > 0 ? normalized : [question];
+}
+
+function findRelevantItems(items, terms) {
+  return items
+    .map((item) => ({
+      item,
+      score: scoreItem(item, terms),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.item);
+}
+
+function scoreItem(item, terms) {
+  const text = JSON.stringify(selectPublicSummary(item)).toLocaleLowerCase("ru-RU");
+  return terms.reduce((score, term) => score + (text.includes(term.toLocaleLowerCase("ru-RU")) ? 1 : 0), 0);
+}
+
+function buildAiMessages(question, dataContext, history) {
+  const system = [
+    "Ты терминальный AI-ассистент CLI-проекта Йошкар-Олы.",
+    "Отвечай на русском языке.",
+    "Используй только данные из переданного контекста.",
+    "Если в контексте нет нужных сведений, прямо напиши, что данных недостаточно.",
+    "Не выдумывай адреса, телефоны, лицензии и руководителей.",
+    "Отвечай кратко и по делу.",
+  ].join(" ");
+  const contextText = JSON.stringify(dataContext, null, 2);
+  const recentHistory = history.slice(-6);
+
+  return [
+    { role: "system", content: system },
+    ...recentHistory,
+    {
+      role: "user",
+      content: `Контекст открытых данных городского округа "Город Йошкар-Ола":\n${contextText}\n\nВопрос пользователя: ${question}`,
+    },
+  ];
+}
+
+async function callAiProvider(config, messages) {
+  if (config.provider === "ollama") {
+    return callOllama(config, messages);
+  }
+
+  if (config.provider === "openai") {
+    return callOpenAiCompatible(config, messages, process.env.OPENAI_API_KEY, "OpenAI");
+  }
+
+  if (config.provider === "openrouter") {
+    return callOpenAiCompatible(config, messages, process.env.OPENROUTER_API_KEY, "OpenRouter");
+  }
+
+  throw new Error(`Неизвестный AI-провайдер: ${config.provider}`);
+}
+
+async function callOllama(config, messages) {
+  let response;
+
+  try {
+    response = await fetch(`${config.baseUrl || "http://127.0.0.1:11434"}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: config.model || "llama3.2:1b",
+        messages,
+        stream: false,
+      }),
+    });
+  } catch {
+    throw new Error("Ollama недоступен. Запустите Ollama и проверьте: ollama --version");
+  }
+
+  if (!response.ok) {
+    throw new Error(`Ollama request failed: ${response.status} ${response.statusText}. Проверьте "ollama serve" и модель.`);
+  }
+
+  const payload = await response.json();
+  return payload.message?.content || "";
+}
+
+async function callOpenAiCompatible(config, messages, apiKey, providerName) {
+  if (!apiKey) {
+    throw new Error(`${providerName} API key не найден. Задайте ${providerName === "OpenAI" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
+  }
+
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+      "http-referer": "https://github.com/adm-iola/iola-cli",
+      "x-title": "iola-cli",
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      temperature: 0.2,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${providerName} request failed: ${response.status} ${response.statusText}\n${text}`);
+  }
+
+  const payload = await response.json();
+  return payload.choices?.[0]?.message?.content || "";
 }
 
 async function listLayers(args) {
@@ -490,7 +725,7 @@ function parseOptions(args) {
     const arg = args[index];
     if (arg === "--json" || arg === "--yes") {
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--inn") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--inn" || arg === "--model" || arg === "--provider") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -715,6 +950,39 @@ async function confirm(question) {
 async function saveConfig(value) {
   await mkdir(CONFIG_DIR, { recursive: true });
   await writeFile(CONFIG_FILE, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function loadConfig() {
+  try {
+    const text = await readFile(CONFIG_FILE, "utf8");
+    return mergeConfig(DEFAULT_AI_CONFIG, JSON.parse(text));
+  } catch {
+    return DEFAULT_AI_CONFIG;
+  }
+}
+
+function mergeConfig(base, override) {
+  return {
+    ...base,
+    ...override,
+    ai: {
+      ...base.ai,
+      ...(override.ai || {}),
+    },
+  };
+}
+
+async function printAiConfig() {
+  const config = await loadConfig();
+  printJson({
+    file: CONFIG_FILE,
+    ai: config.ai,
+  });
+}
+
+async function printAiConfigField(field) {
+  const config = await loadConfig();
+  console.log(config.ai[field] || "-");
 }
 
 function runCommand(command, args, options = {}) {

@@ -78,6 +78,9 @@ iola banner
 iola agent
 iola ai doctor
 iola ai setup ollama
+iola ai ask "Какие школы есть на улице Петрова?"
+iola ai setup openai --model gpt-4.1-mini
+iola ai setup openrouter --model openai/gpt-4.1-mini
 iola health
 iola layers
 iola schools --limit 10
@@ -110,8 +113,43 @@ iola agent
 /search лицей --limit 3
 /mcp-info
 /ai doctor
+/model
+/provider
+/config
+/history
+/clear
 /exit
 ```
+
+Обычный текст без `/` в `iola agent` отправляется в настроенный AI-провайдер.
+
+## AI-запросы
+
+Локальная модель через Ollama:
+
+```bash
+iola ai setup ollama
+iola ai ask "Какие школы есть на улице Петрова?"
+```
+
+OpenAI:
+
+```bash
+set OPENAI_API_KEY=...
+iola ai setup openai --model gpt-4.1-mini
+iola ai ask "Найди школу 29"
+```
+
+OpenRouter:
+
+```bash
+set OPENROUTER_API_KEY=...
+iola ai setup openrouter --model openai/gpt-4.1-mini
+iola ai ask "Покажи контакты лицея"
+```
+
+AI-ответ строится по контексту из публичного API. Если данных в контексте
+недостаточно, ассистент должен сообщить об этом, а не выдумывать сведения.
 
 ## Назначение
 
