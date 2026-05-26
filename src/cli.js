@@ -1285,9 +1285,13 @@ function printSlashMenu(filter = "", options = {}) {
 
 function getSlashCommandMatches(filter = "") {
   const normalized = String(filter || "").replace(/^\//, "").toLocaleLowerCase("ru-RU");
-  return SLASH_COMMANDS.filter((item) => !normalized
-    || item.command.toLocaleLowerCase("ru-RU").includes(normalized)
-    || item.description.toLocaleLowerCase("ru-RU").includes(normalized));
+  if (!normalized) return SLASH_COMMANDS;
+  const commandPrefix = SLASH_COMMANDS.filter((item) => item.command.toLocaleLowerCase("ru-RU").startsWith(`/${normalized}`));
+  if (commandPrefix.length > 0) return commandPrefix;
+  const commandWordPrefix = SLASH_COMMANDS.filter((item) =>
+    item.command.toLocaleLowerCase("ru-RU").split(/\s+/).some((part) => part.replace(/^\//, "").startsWith(normalized)));
+  if (commandWordPrefix.length > 0) return commandWordPrefix;
+  return SLASH_COMMANDS.filter((item) => item.description.toLocaleLowerCase("ru-RU").startsWith(normalized));
 }
 
 function updateSlashState(state) {
