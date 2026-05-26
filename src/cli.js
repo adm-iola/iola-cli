@@ -817,8 +817,7 @@ async function startAgentRawInput() {
     }
   } finally {
     if (!wasRaw) input.setRawMode(false);
-    clearAgentInputArea(state);
-    output.write("\n");
+    input.pause();
   }
 }
 
