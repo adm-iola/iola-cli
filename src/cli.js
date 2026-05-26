@@ -1,22 +1,64 @@
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { createServer } from "node:http";
+import { appendFile, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
 const MIN_NODE_VERSION = "22.5.0";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
-const DB_SCHEMA_VERSION = 3;
+const DB_SCHEMA_VERSION = 4;
 const LOCAL_TOOLS = ["search_local", "get_card", "export_data", "run_report", "save_view"];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "AfterSync", "BeforeExport", "SessionEnd"];
+const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BUILTIN_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
+const USER_SKILLS_DIR = path.join(CONFIG_DIR, "skills");
+const PROJECT_CONTEXT_FILE = path.join(process.cwd(), "IOLA.md");
+const PROJECT_CONTEXT_DIR_FILE = path.join(process.cwd(), ".iola", "context.md");
+const TOOLSETS = {
+  "data-read": {
+    description: "Чтение открытых данных и локальный поиск.",
+    permissions: { externalApi: true, localTools: { search_local: true, get_card: true, run_report: true } },
+  },
+  reports: {
+    description: "Отчеты, выгрузки и сохранение view.",
+    permissions: { writeFiles: true, localTools: { export_data: true, save_view: true, run_report: true } },
+  },
+  sync: {
+    description: "Обновление локальной копии данных из публичного API.",
+    permissions: { sync: true, externalApi: true },
+  },
+  ai: {
+    description: "Внешние AI-провайдеры и Codex CLI.",
+    permissions: { externalAi: true, codex: true },
+  },
+  safe: {
+    description: "Безопасный режим: чтение данных без записи файлов и без sync.",
+    permissions: { writeFiles: false, sync: false, externalApi: true, externalAi: true, codex: false },
+  },
+  full: {
+    description: "Полный локальный режим для доверенного пользователя.",
+    permissions: {
+      writeFiles: true,
+      sync: true,
+      externalApi: true,
+      externalAi: true,
+      codex: true,
+      localTools: Object.fromEntries(LOCAL_TOOLS.map((tool) => [tool, true])),
+    },
+  },
+};
 const FEATURES = {
   "sqlite-history": { stage: "stable", defaultEnabled: true, description: "Запись истории AI-запросов в SQLite." },
   sessions: { stage: "stable", defaultEnabled: true, description: "Сессии, resume и fork для AI-диалогов." },
@@ -74,7 +116,21 @@ const DEFAULT_AI_CONFIG = {
     externalAi: true,
     codex: true,
   },
+  toolsets: {
+    enabled: ["data-read", "reports", "sync", "ai"],
+  },
   memory: {
+    enabled: true,
+    suggestions: true,
+  },
+  skills: {
+    enabled: ["open-data", "reports", "local-model"],
+  },
+  daemon: {
+    host: "127.0.0.1",
+    port: DAEMON_PORT,
+  },
+  cron: {
     enabled: true,
   },
   hooks: {},
@@ -154,6 +210,12 @@ const COMMANDS = new Map([
   ["fork", forkSession],
   ["features", handleFeatures],
   ["wiki", handleWiki],
+  ["context", handleContext],
+  ["skills", handleSkills],
+  ["tools", handleTools],
+  ["cron", handleCron],
+  ["daemon", handleDaemon],
+  ["rpc", handleRpc],
   ["permissions", handlePermissions],
   ["memory", handleMemory],
   ["hooks", handleHooks],
@@ -250,6 +312,12 @@ Usage:
   iola fork SESSION_ID [TEXT]
   iola features list|enable|disable
   iola wiki [open|links]
+  iola context list|show|init
+  iola skills list|show|paths|enable|disable
+  iola tools list|toolsets|enable|disable|profile
+  iola cron list|add|delete|run|tick
+  iola daemon start|status
+  iola rpc call METHOD [ARGS] [--json]
   iola permissions list|allow|deny
   iola memory show|add|set|clear|export
   iola hooks list|add|delete|run
@@ -270,6 +338,8 @@ Usage:
   iola alias add NAME COMMAND
   iola run "выгрузи школы на Петрова в csv"
   iola config get
+  iola config validate
+  iola config schema
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
   iola config reset
@@ -360,6 +430,7 @@ async function handleAgentLine(line, state) {
   }
 
   const [command, ...args] = splitCommandLine(line.slice(1));
+  state.lastCommand = { command, args };
 
   if (command === "exit" || command === "quit") {
     return true;
@@ -373,6 +444,40 @@ async function handleAgentLine(line, state) {
   if (command === "clear") {
     state.history = [];
     console.log("История agent-сессии очищена.");
+    return false;
+  }
+
+  if (command === "new" || command === "reset") {
+    state.history = [];
+    console.log("Начата новая agent-сессия.");
+    return false;
+  }
+
+  if (command === "undo") {
+    state.history.splice(Math.max(0, state.history.length - 2), 2);
+    console.log("Последний обмен удален из agent-истории.");
+    return false;
+  }
+
+  if (command === "retry") {
+    const lastUser = [...state.history].reverse().find((item) => item.role === "user");
+    if (!lastUser) {
+      console.log("Нет предыдущего вопроса для повтора.");
+      return false;
+    }
+    const answer = await aiAsk([lastUser.content], { history: state.history.slice(0, -2) });
+    state.history.push({ role: "assistant", content: answer });
+    return false;
+  }
+
+  if (command === "compact") {
+    state.history = compactAgentHistory(state.history);
+    console.log(`Контекст сжат. Сообщений в agent-истории: ${state.history.length}`);
+    return false;
+  }
+
+  if (command === "usage") {
+    printAgentUsage(state.history);
     return false;
   }
 
@@ -415,6 +520,16 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "context") {
+    await handleContext(args.length > 0 ? args : ["list"]);
+    return false;
+  }
+
+  if (command === "skills") {
+    await handleSkills(args);
+    return false;
+  }
+
   if (command === "permissions") {
     await handlePermissions(args);
     return false;
@@ -436,7 +551,22 @@ async function handleAgentLine(line, state) {
   }
 
   if (command === "tools") {
-    await handlePermissions(["tools"]);
+    await handleTools(args.length > 0 ? args : ["list"]);
+    return false;
+  }
+
+  if (command === "cron") {
+    await handleCron(args);
+    return false;
+  }
+
+  if (command === "daemon") {
+    await handleDaemon(args);
+    return false;
+  }
+
+  if (command === "rpc") {
+    await handleRpc(args);
     return false;
   }
 
@@ -545,11 +675,16 @@ async function handleAgentLine(line, state) {
     fork: ["fork", args],
     features: ["features", args],
     wiki: ["wiki", args],
+    context: ["context", args],
+    skills: ["skills", args],
+    cron: ["cron", args],
+    daemon: ["daemon", args],
+    rpc: ["rpc", args],
     permissions: ["permissions", args],
     memory: ["memory", args],
     hooks: ["hooks", args],
     agents: ["agents", args],
-    tools: ["permissions", ["tools", ...args]],
+    tools: ["tools", args],
     mcp: ["mcp", args],
     cache: ["cache", args],
     sync: ["sync", args],
@@ -585,8 +720,13 @@ function printAgentHelp() {
   /resume SESSION_ID
   /features list
   /wiki
+  /context list
+  /skills list
   /permissions
   /tools
+  /cron list
+  /daemon status
+  /rpc call status
   /memory show
   /hooks list
   /agents list
@@ -622,6 +762,12 @@ function printAgentHelp() {
   /model
   /history
   /history --limit 20
+  /new
+  /reset
+  /retry
+  /undo
+  /compact
+  /usage
   /clear
   /banner
   /update
@@ -640,6 +786,27 @@ function printAgentHistory(history) {
   for (const item of history.slice(-10)) {
     console.log(`${item.role}: ${item.content}`);
   }
+}
+
+function compactAgentHistory(history) {
+  if (history.length <= 8) return history;
+  const summary = history.slice(0, -6)
+    .map((item) => `${item.role}: ${item.content}`)
+    .join("\n")
+    .slice(0, 3000);
+  return [
+    { role: "system", content: `Сжатая история предыдущего диалога:\n${summary}` },
+    ...history.slice(-6),
+  ];
+}
+
+function printAgentUsage(history) {
+  const chars = history.reduce((sum, item) => sum + String(item.content || "").length, 0);
+  printKeyValue({
+    messages: history.length,
+    characters: chars,
+    approximate_tokens: Math.ceil(chars / 4),
+  });
 }
 
 function safePrompt(rl, closed = false) {
@@ -740,6 +907,12 @@ async function doctor(args = []) {
       nodeStatus: getNodeRequirementStatus().ok ? "ok" : "upgrade-required",
     },
     db: getDbStatus(),
+    config: {
+      file: CONFIG_FILE,
+      valid: validateConfig(config).length === 0 ? "yes" : "no",
+      errors: validateConfig(config),
+      lastGood: existsSync(LAST_GOOD_CONFIG_FILE) ? LAST_GOOD_CONFIG_FILE : "-",
+    },
     api: {
       baseUrl: apiBaseUrl,
       mcpBaseUrl,
@@ -754,8 +927,30 @@ async function doctor(args = []) {
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
     },
+    skills: {
+      enabled: config.skills?.enabled?.join(", ") || "-",
+      found: listSkills(config).length,
+    },
+    toolsets: {
+      enabled: config.toolsets?.enabled?.join(", ") || "-",
+    },
+    daemon: {
+      endpoint: `http://${config.daemon?.host || "127.0.0.1"}:${config.daemon?.port || DAEMON_PORT}`,
+      status: await probeEndpoint(`http://${config.daemon?.host || "127.0.0.1"}:${config.daemon?.port || DAEMON_PORT}/health`),
+    },
     system: diagnostics,
   };
+
+  if (options.fix) {
+    initDatabase();
+    const errors = validateConfig(config);
+    if (errors.length > 0) {
+      await writeConfig(mergeConfig(DEFAULT_AI_CONFIG, config));
+    }
+    await mkdir(USER_SKILLS_DIR, { recursive: true });
+    console.log("Автоисправление выполнено: БД и пользовательская папка skills проверены.");
+    return;
+  }
 
   if (options.json) {
     printJson(report);
@@ -766,6 +961,7 @@ async function doctor(args = []) {
     printTable([
       { group: "cli", status: report.cli.nodeStatus === "ok" && report.cli.update !== "available" ? "ok" : "check" },
       { group: "sqlite", status: report.db.status },
+      { group: "config", status: report.config.valid === "yes" ? "ok" : "error" },
       { group: "api", status: report.api.health },
       { group: "ai", status: report.ai.provider },
       { group: "ollama", status: report.ai.ollama },
@@ -782,11 +978,17 @@ async function doctor(args = []) {
   console.log("SQLite");
   printKeyValue(report.db);
   console.log("");
+  console.log("Config");
+  printKeyValue(report.config);
+  console.log("");
   console.log("API/MCP");
   printKeyValue(report.api);
   console.log("");
   console.log("AI");
   printKeyValue(report.ai);
+  console.log("");
+  console.log("Skills/Toolsets/Daemon");
+  printKeyValue({ ...report.skills, toolsets: report.toolsets.enabled, daemon: report.daemon.status });
   console.log("");
   printDiagnostics(diagnostics, recommendOllamaModel(diagnostics));
   if (options.all) {
@@ -1046,13 +1248,29 @@ async function handleConfig(args) {
     return;
   }
 
+  if (action === "validate") {
+    const config = await loadConfig();
+    const errors = validateConfig(config);
+    if (errors.length > 0) {
+      printTable(errors.map((error) => ({ error })), [["error", "Ошибка"]]);
+      throw new Error("Конфигурация содержит ошибки.");
+    }
+    console.log("Конфигурация корректна.");
+    return;
+  }
+
+  if (action === "schema") {
+    printJson(configSchema());
+    return;
+  }
+
   if (action === "reset") {
     await writeConfig(DEFAULT_AI_CONFIG);
     console.log(`Конфигурация сброшена: ${CONFIG_FILE}`);
     return;
   }
 
-  throw new Error("Команды config: get, set, reset.");
+  throw new Error("Команды config: get, set, validate, schema, reset.");
 }
 
 async function handleDb(args) {
@@ -1091,6 +1309,15 @@ async function handleHistory(args) {
   const [action] = args;
   const options = parseOptions(args);
 
+  if (action === "search") {
+    const query = options._.slice(1).join(" ").trim() || options.query || options.search;
+    if (!query) throw new Error('Пример: iola history search "Петрова"');
+    const rows = searchHistory(query, Number(options.limit || 20));
+    if (options.json) printJson(rows);
+    else printTable(rows, [["id", "ID"], ["created_at", "Дата"], ["profile", "Профиль"], ["question", "Вопрос"], ["answer", "Ответ"]]);
+    return;
+  }
+
   if (action === "clear") {
     clearHistory();
     console.log("История очищена.");
@@ -1123,6 +1350,24 @@ async function handleSessions(args) {
   }
 
   const options = parseOptions(args);
+
+  if (action === "search") {
+    const query = options._.slice(1).join(" ").trim() || options.query || options.search;
+    if (!query) throw new Error('Пример: iola sessions search "Петрова"');
+    const rows = searchSessions(query, Number(options.limit || 20));
+    if (options.json) printJson(rows);
+    else printTable(rows, [["session_id", "Сессия"], ["message_id", "Сообщ."], ["role", "Роль"], ["content", "Текст"]]);
+    return;
+  }
+
+  if (action === "compact") {
+    const sessionId = Number(args[1]);
+    if (!sessionId) throw new Error("Пример: iola sessions compact 1");
+    const result = compactSessionInDb(sessionId);
+    printKeyValue(result);
+    return;
+  }
+
   const rows = listSessions(Number(options.limit || 20));
 
   if (options.json) {
@@ -1207,6 +1452,9 @@ async function handleWiki(args) {
     ["Первый запуск", `${base}/Первый-запуск`],
     ["AI-профили", `${base}/AI-профили`],
     ["Локальный инструментальный агент", `${base}/Локальный-инструментальный-агент`],
+    ["Skills и toolsets", `${base}/Skills-и-toolsets`],
+    ["Daemon, RPC и cron", `${base}/Daemon-RPC-и-cron`],
+    ["Контекст и память", `${base}/Контекст-и-память`],
     ["Команды", `${base}/Команды`],
     ["Решение проблем", `${base}/Решение-проблем`],
   ].map(([title, url]) => ({ title, url }));
@@ -1225,6 +1473,229 @@ async function handleWiki(args) {
   }
 
   throw new Error("Команды wiki: links, open.");
+}
+
+async function handleContext(args) {
+  const [action = "list"] = args;
+  const files = await listContextFiles();
+
+  if (action === "list" || action === "ls") {
+    printTable(files, [
+      ["scope", "Область"],
+      ["file", "Файл"],
+      ["exists", "Есть"],
+      ["size", "Размер"],
+    ]);
+    return;
+  }
+
+  if (action === "show") {
+    const text = await buildProjectContextText();
+    console.log(text || "Контекстные файлы не найдены.");
+    return;
+  }
+
+  if (action === "init") {
+    await mkdir(path.dirname(PROJECT_CONTEXT_DIR_FILE), { recursive: true });
+    if (!existsSync(PROJECT_CONTEXT_FILE)) {
+      await writeFile(PROJECT_CONTEXT_FILE, [
+        "# Контекст iola",
+        "",
+        "Проект работает с открытыми данными городского округа \"Город Йошкар-Ола\".",
+        "Ответы должны опираться на публичный API, локальную SQLite-БД и подключенные skills.",
+        "",
+      ].join("\n"), "utf8");
+    }
+    if (!existsSync(PROJECT_CONTEXT_DIR_FILE)) {
+      await writeFile(PROJECT_CONTEXT_DIR_FILE, [
+        "# Рабочий контекст",
+        "",
+        "- Основные слои первого релиза: школы и детские сады.",
+        "- Не выдумывать сведения, которых нет в источниках данных.",
+        "",
+      ].join("\n"), "utf8");
+    }
+    console.log(`Контекст создан: ${PROJECT_CONTEXT_FILE}`);
+    console.log(`Контекст создан: ${PROJECT_CONTEXT_DIR_FILE}`);
+    return;
+  }
+
+  throw new Error("Команды context: list, show, init.");
+}
+
+async function handleSkills(args) {
+  const [action = "list", name] = args;
+  const config = await loadConfig();
+
+  if (action === "list" || action === "ls") {
+    const rows = listSkills(config).map((skill) => ({
+      enabled: isSkillEnabled(config, skill.name) ? "yes" : "no",
+      name: skill.name,
+      source: skill.source,
+      description: skill.description,
+      file: skill.file,
+    }));
+    printTable(rows, [
+      ["enabled", "Вкл"],
+      ["name", "Skill"],
+      ["source", "Источник"],
+      ["description", "Описание"],
+      ["file", "Файл"],
+    ]);
+    return;
+  }
+
+  if (action === "paths") {
+    printTable(skillRoots().map((root) => ({ root, exists: existsSync(root) ? "yes" : "no" })), [
+      ["root", "Папка"],
+      ["exists", "Есть"],
+    ]);
+    return;
+  }
+
+  if (action === "show") {
+    const skill = findSkill(name, config);
+    if (!skill) throw new Error(`Skill не найден: ${name}`);
+    console.log(await readFile(skill.file, "utf8"));
+    return;
+  }
+
+  if (action === "enable" || action === "disable") {
+    if (!name) throw new Error("Имя skill обязательно.");
+    const enabled = new Set(config.skills?.enabled || []);
+    if (action === "enable") enabled.add(name);
+    else enabled.delete(name);
+    await saveConfig({ skills: { ...(config.skills || {}), enabled: [...enabled] } });
+    console.log(`${name}: ${action === "enable" ? "enabled" : "disabled"}`);
+    return;
+  }
+
+  throw new Error("Команды skills: list, paths, show NAME, enable NAME, disable NAME.");
+}
+
+async function handleTools(args) {
+  const [action = "list", name] = args;
+  const config = await loadConfig();
+
+  if (action === "list" || action === "ls") {
+    await handlePermissions(["tools"]);
+    return;
+  }
+
+  if (action === "toolsets") {
+    const enabled = new Set(config.toolsets?.enabled || []);
+    printTable(Object.entries(TOOLSETS).map(([toolset, meta]) => ({
+      enabled: enabled.has(toolset) ? "yes" : "no",
+      toolset,
+      description: meta.description,
+    })), [
+      ["enabled", "Вкл"],
+      ["toolset", "Toolset"],
+      ["description", "Описание"],
+    ]);
+    return;
+  }
+
+  if (action === "enable" || action === "disable") {
+    if (!TOOLSETS[name]) throw new Error(`Toolset неизвестен. Доступно: ${Object.keys(TOOLSETS).join(", ")}`);
+    const enabled = new Set(config.toolsets?.enabled || []);
+    if (action === "enable") enabled.add(name);
+    else enabled.delete(name);
+    await saveConfig({ toolsets: { ...(config.toolsets || {}), enabled: [...enabled] } });
+    console.log(`${name}: ${action === "enable" ? "enabled" : "disabled"}`);
+    return;
+  }
+
+  if (action === "profile") {
+    if (!TOOLSETS[name]) throw new Error(`Профиль неизвестен. Доступно: ${Object.keys(TOOLSETS).join(", ")}`);
+    const permissions = applyToolsetPermissions(DEFAULT_AI_CONFIG.permissions, [name]);
+    await saveConfig({ toolsets: { enabled: [name] }, permissions });
+    console.log(`Toolset-профиль применен: ${name}`);
+    return;
+  }
+
+  throw new Error("Команды tools: list, toolsets, enable NAME, disable NAME, profile NAME.");
+}
+
+async function handleCron(args) {
+  const [action = "list", ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "list" || action === "ls") {
+    const rows = listCronJobs();
+    if (options.json) printJson(rows);
+    else printTable(rows, [["id", "ID"], ["enabled", "Вкл"], ["schedule_text", "Расписание"], ["command", "Команда"], ["last_run_at", "Последний запуск"]]);
+    return;
+  }
+
+  if (action === "add") {
+    const text = rest.join(" ").trim();
+    const separator = text.includes(" -- ") ? " -- " : " :: ";
+    const [scheduleText, command] = text.split(separator).map((part) => part?.trim());
+    if (!scheduleText || !command) {
+      throw new Error('Пример: iola cron add "каждый день 09:00 -- quality"');
+    }
+    const id = addCronJob(scheduleText, command);
+    console.log(`Cron-задача добавлена: ${id}`);
+    return;
+  }
+
+  if (action === "delete" || action === "remove" || action === "rm") {
+    const id = Number(rest[0]);
+    if (!id) throw new Error("Пример: iola cron delete 1");
+    deleteCronJob(id);
+    console.log(`Cron-задача удалена: ${id}`);
+    return;
+  }
+
+  if (action === "run") {
+    const id = Number(rest[0]);
+    if (!id) throw new Error("Пример: iola cron run 1");
+    await runCronJob(id);
+    return;
+  }
+
+  if (action === "tick") {
+    const rows = dueCronJobs();
+    for (const row of rows) await runCronJob(row.id);
+    console.log(`Выполнено cron-задач: ${rows.length}`);
+    return;
+  }
+
+  throw new Error('Команды cron: list, add "каждый день 09:00 -- quality", delete ID, run ID, tick.');
+}
+
+async function handleDaemon(args) {
+  const [action = "status"] = args;
+  const config = await loadConfig();
+  const host = config.daemon?.host || "127.0.0.1";
+  const port = Number(config.daemon?.port || DAEMON_PORT);
+
+  if (action === "status") {
+    try {
+      const payload = await fetchJson(`http://${host}:${port}/health`);
+      printKeyValue(payload);
+    } catch {
+      printKeyValue({ status: "stopped", endpoint: `http://${host}:${port}` });
+    }
+    return;
+  }
+
+  if (action === "start" || action === "run") {
+    await startDaemon(host, port);
+    return;
+  }
+
+  throw new Error("Команды daemon: status, start.");
+}
+
+async function handleRpc(args) {
+  const [action = "call", method, ...rest] = args;
+  if (action !== "call" || !method) {
+    throw new Error("Пример: iola rpc call search --query Петрова --dataset schools");
+  }
+  const result = await executeRpc(method, parseOptions(rest));
+  printJson(result);
 }
 
 async function openUrl(url) {
@@ -1316,6 +1787,29 @@ async function handleMemory(args) {
     return;
   }
 
+  if (action === "suggest" || action === "suggestions") {
+    const rows = listMemorySuggestions(rest[0] || "pending");
+    if (options.json) printJson(rows);
+    else printTable(rows, [["id", "ID"], ["status", "Статус"], ["content", "Предложение"], ["reason", "Причина"], ["created_at", "Дата"]]);
+    return;
+  }
+
+  if (action === "approve") {
+    const id = Number(rest[0]);
+    if (!id) throw new Error("Пример: iola memory approve 1");
+    const memoryId = approveMemorySuggestion(id);
+    console.log(`Предложение принято. Память сохранена: ${memoryId}`);
+    return;
+  }
+
+  if (action === "reject") {
+    const id = Number(rest[0]);
+    if (!id) throw new Error("Пример: iola memory reject 1");
+    resolveMemorySuggestion(id, "rejected");
+    console.log(`Предложение отклонено: ${id}`);
+    return;
+  }
+
   if (action === "delete" || action === "remove" || action === "rm") {
     const id = rest[0];
     if (!id) throw new Error("Пример: iola memory delete 1");
@@ -1338,7 +1832,7 @@ async function handleMemory(args) {
     return;
   }
 
-  throw new Error("Команды memory: show, add TEXT, delete ID, clear, export [FILE].");
+  throw new Error("Команды memory: show, add TEXT, suggest, approve ID, reject ID, delete ID, clear, export [FILE].");
 }
 
 async function handleHooks(args) {
@@ -2185,6 +2679,8 @@ function initDatabase() {
         error TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_ask_history_created_at ON ask_history(created_at DESC);
+      DROP TABLE IF EXISTS ask_history_fts;
+      CREATE VIRTUAL TABLE IF NOT EXISTS ask_history_fts USING fts5(question, answer);
       CREATE TABLE IF NOT EXISTS sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         parent_id INTEGER,
@@ -2206,6 +2702,8 @@ function initDatabase() {
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id, id);
+      DROP TABLE IF EXISTS session_messages_fts;
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_messages_fts USING fts5(session_id UNINDEXED, role, content);
       CREATE TABLE IF NOT EXISTS feature_flags (
         name TEXT PRIMARY KEY,
         enabled INTEGER NOT NULL,
@@ -2265,7 +2763,27 @@ function initDatabase() {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_memory_created_at ON memory(created_at DESC);
+      CREATE TABLE IF NOT EXISTS memory_suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL DEFAULT 'user',
+        content TEXT NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        resolved_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_suggestions_status ON memory_suggestions(status, created_at DESC);
+      CREATE TABLE IF NOT EXISTS cron_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_text TEXT NOT NULL,
+        command TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_run_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled, last_run_at);
     `);
+    rebuildFtsIfEmpty(db);
     db.prepare(`
       INSERT INTO meta(key, value) VALUES ('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -2283,6 +2801,26 @@ function mkdirSyncSafe(directory) {
   }
 }
 
+function rebuildFtsIfEmpty(db) {
+  try {
+    const askCount = db.prepare("SELECT COUNT(*) AS count FROM ask_history_fts").get()?.count || 0;
+    if (askCount === 0) {
+      const rows = db.prepare("SELECT id, question, answer FROM ask_history ORDER BY id ASC").all();
+      const insert = db.prepare("INSERT INTO ask_history_fts(rowid, question, answer) VALUES (?, ?, ?)");
+      for (const row of rows) insert.run(row.id, row.question || "", row.answer || "");
+    }
+    const sessionCount = db.prepare("SELECT COUNT(*) AS count FROM session_messages_fts").get()?.count || 0;
+    if (sessionCount === 0) {
+      const rows = db.prepare("SELECT id, session_id, role, content FROM session_messages ORDER BY id ASC").all();
+      const insert = db.prepare("INSERT INTO session_messages_fts(rowid, session_id, role, content) VALUES (?, ?, ?, ?)");
+      for (const row of rows) insert.run(row.id, row.session_id, row.role || "", row.content || "");
+    }
+  } catch {
+    // FTS rebuild is best-effort and must not block startup.
+  }
+}
+
+
 function getDbStatus() {
   try {
     initDatabase();
@@ -2294,6 +2832,8 @@ function getDbStatus() {
       const local = db.prepare("SELECT COUNT(*) AS count FROM local_records").get();
       const cache = db.prepare("SELECT COUNT(*) AS count FROM api_cache").get();
       const memory = db.prepare("SELECT COUNT(*) AS count FROM memory").get();
+      const memorySuggestions = db.prepare("SELECT COUNT(*) AS count FROM memory_suggestions WHERE status = 'pending'").get();
+      const cron = db.prepare("SELECT COUNT(*) AS count FROM cron_jobs").get();
       return {
         status: "ok",
         file: DB_FILE,
@@ -2303,6 +2843,8 @@ function getDbStatus() {
         local_records: local?.count ?? 0,
         cache: cache?.count ?? 0,
         memory: memory?.count ?? 0,
+        memory_suggestions: memorySuggestions?.count ?? 0,
+        cron_jobs: cron?.count ?? 0,
       };
     } finally {
       db.close();
@@ -2323,7 +2865,7 @@ function recordAskHistory({ question, answer, providerConfig, dataContext, error
     initDatabase();
     const db = openDatabase();
     try {
-      db.prepare(`
+      const result = db.prepare(`
         INSERT INTO ask_history(profile, provider, model, question, answer, context_json, error)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -2335,6 +2877,7 @@ function recordAskHistory({ question, answer, providerConfig, dataContext, error
         JSON.stringify(dataContext),
         error || "",
       );
+      db.prepare("INSERT INTO ask_history_fts(rowid, question, answer) VALUES (?, ?, ?)").run(Number(result.lastInsertRowid), question, answer || error || "");
     } finally {
       db.close();
     }
@@ -2362,7 +2905,7 @@ function clearHistory() {
   initDatabase();
   const db = openDatabase();
   try {
-    db.exec("DELETE FROM ask_history");
+    db.exec("DELETE FROM ask_history; DELETE FROM ask_history_fts;");
   } finally {
     db.close();
   }
@@ -2372,7 +2915,7 @@ function clearSessions() {
   initDatabase();
   const db = openDatabase();
   try {
-    db.exec("DELETE FROM session_messages; DELETE FROM sessions;");
+    db.exec("DELETE FROM session_messages; DELETE FROM session_messages_fts; DELETE FROM sessions;");
   } finally {
     db.close();
   }
@@ -2405,10 +2948,15 @@ function appendSessionExchange(sessionId, question, answer, dataContext, error) 
   }
   const db = openDatabase();
   try {
-    db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, 'user', ?, ?)")
+    const userResult = db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, 'user', ?, ?)")
       .run(sessionId, question, JSON.stringify(dataContext));
-    db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, 'assistant', ?, ?)")
-      .run(sessionId, error || answer || "", JSON.stringify({ error: error || "" }));
+    const assistantContent = error || answer || "";
+    const assistantResult = db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, 'assistant', ?, ?)")
+      .run(sessionId, assistantContent, JSON.stringify({ error: error || "" }));
+    db.prepare("INSERT INTO session_messages_fts(rowid, session_id, role, content) VALUES (?, ?, ?, ?)")
+      .run(Number(userResult.lastInsertRowid), sessionId, "user", question);
+    db.prepare("INSERT INTO session_messages_fts(rowid, session_id, role, content) VALUES (?, ?, ?, ?)")
+      .run(Number(assistantResult.lastInsertRowid), sessionId, "assistant", assistantContent);
     db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(sessionId);
   } finally {
     db.close();
@@ -2489,6 +3037,78 @@ function forkSessionInDb(sessionId) {
   } finally {
     db.close();
   }
+}
+
+function searchHistory(query, limit = 20) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const ftsQuery = toFtsQuery(query);
+    return db.prepare(`
+      SELECT h.id, h.created_at, h.profile, h.provider, h.model, h.question, h.answer
+      FROM ask_history_fts f
+      JOIN ask_history h ON h.id = f.rowid
+      WHERE ask_history_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, limit);
+  } finally {
+    db.close();
+  }
+}
+
+function searchSessions(query, limit = 20) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const ftsQuery = toFtsQuery(query);
+    return db.prepare(`
+      SELECT f.session_id, f.rowid AS message_id, f.role, f.content
+      FROM session_messages_fts f
+      WHERE session_messages_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, limit);
+  } finally {
+    db.close();
+  }
+}
+
+function compactSessionInDb(sessionId) {
+  const messages = getSessionAiHistory(sessionId);
+  if (messages.length <= 8) {
+    return { session_id: sessionId, before: messages.length, after: messages.length, status: "skip" };
+  }
+  const keep = messages.slice(-6);
+  const summary = messages.slice(0, -6)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n")
+    .slice(0, 4000);
+  const compacted = [
+    { role: "system", content: `Сжатая история предыдущей части сессии:\n${summary}` },
+    ...keep,
+  ];
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM session_messages WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM session_messages_fts WHERE session_id = ?").run(sessionId);
+    const insert = db.prepare("INSERT INTO session_messages(session_id, role, content, context_json) VALUES (?, ?, ?, ?)");
+    const insertFts = db.prepare("INSERT INTO session_messages_fts(rowid, session_id, role, content) VALUES (?, ?, ?, ?)");
+    for (const message of compacted) {
+      const result = insert.run(sessionId, message.role, message.content, "{}");
+      insertFts.run(Number(result.lastInsertRowid), sessionId, message.role, message.content);
+    }
+    db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(sessionId);
+    return { session_id: sessionId, before: messages.length, after: compacted.length, status: "ok" };
+  } finally {
+    db.close();
+  }
+}
+
+function toFtsQuery(query) {
+  const terms = String(query).split(/\s+/).map((term) => term.replace(/["*]/g, "").trim()).filter(Boolean);
+  return terms.length > 0 ? terms.map((term) => `"${term}"`).join(" OR ") : '""';
 }
 
 function listFeatures() {
@@ -2895,9 +3515,158 @@ function clearMemory() {
   }
 }
 
+function listCronJobs() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT id, schedule_text, command, enabled, COALESCE(last_run_at, '-') AS last_run_at, created_at FROM cron_jobs ORDER BY id DESC").all()
+      .map((row) => ({ ...row, enabled: row.enabled ? "yes" : "no" }));
+  } finally {
+    db.close();
+  }
+}
+
+function addCronJob(scheduleText, command) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const result = db.prepare("INSERT INTO cron_jobs(schedule_text, command) VALUES (?, ?)").run(scheduleText, command);
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function deleteCronJob(id) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM cron_jobs WHERE id = ?").run(id);
+  } finally {
+    db.close();
+  }
+}
+
+function dueCronJobs() {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    return db.prepare("SELECT * FROM cron_jobs WHERE enabled = 1 ORDER BY id ASC").all()
+      .filter((job) => isCronDue(job));
+  } finally {
+    db.close();
+  }
+}
+
+function isCronDue(job) {
+  const normalized = job.schedule_text.toLocaleLowerCase("ru-RU");
+  const lastRun = job.last_run_at ? new Date(`${job.last_run_at}Z`) : null;
+  const now = new Date();
+  if (lastRun && now.getTime() - lastRun.getTime() < 60_000) return false;
+  if (normalized.includes("каждый час") || normalized.includes("hourly")) {
+    return !lastRun || now.getTime() - lastRun.getTime() >= 60 * 60 * 1000;
+  }
+  if (normalized.includes("каждый день") || normalized.includes("daily")) {
+    return !lastRun || now.toISOString().slice(0, 10) !== lastRun.toISOString().slice(0, 10);
+  }
+  if (normalized.includes("каждую неделю") || normalized.includes("weekly")) {
+    return !lastRun || now.getTime() - lastRun.getTime() >= 7 * 24 * 60 * 60 * 1000;
+  }
+  return !lastRun;
+}
+
+async function runCronJob(id) {
+  initDatabase();
+  const db = openDatabase();
+  let job;
+  try {
+    job = db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(id);
+  } finally {
+    db.close();
+  }
+  if (!job) throw new Error(`Cron-задача не найдена: ${id}`);
+  console.log(`> iola ${job.command}`);
+  await main(splitCommandLine(job.command));
+  const updateDb = openDatabase();
+  try {
+    updateDb.prepare("UPDATE cron_jobs SET last_run_at = datetime('now') WHERE id = ?").run(id);
+  } finally {
+    updateDb.close();
+  }
+}
+
 function buildMemoryText(limit = 20) {
   const rows = listMemory(limit).reverse();
   return rows.map((row) => `- ${row.content}`).join("\n");
+}
+
+function addMemorySuggestion(content, reason, scope = "user") {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const existing = db.prepare("SELECT id FROM memory_suggestions WHERE status = 'pending' AND content = ?").get(content);
+    if (existing) return Number(existing.id);
+    const result = db.prepare("INSERT INTO memory_suggestions(scope, content, reason) VALUES (?, ?, ?)").run(scope, content, reason || "");
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function listMemorySuggestions(status = "pending") {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    if (status === "all") {
+      return db.prepare("SELECT id, scope, content, reason, status, created_at FROM memory_suggestions ORDER BY id DESC LIMIT 100").all();
+    }
+    return db.prepare("SELECT id, scope, content, reason, status, created_at FROM memory_suggestions WHERE status = ? ORDER BY id DESC LIMIT 100").all(status);
+  } finally {
+    db.close();
+  }
+}
+
+function approveMemorySuggestion(id) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM memory_suggestions WHERE id = ?").get(id);
+    if (!row) throw new Error(`Предложение памяти не найдено: ${id}`);
+    const result = db.prepare("INSERT INTO memory(scope, content) VALUES (?, ?)").run(row.scope || "user", row.content);
+    db.prepare("UPDATE memory_suggestions SET status = 'approved', resolved_at = datetime('now') WHERE id = ?").run(id);
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+function resolveMemorySuggestion(id, status) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("UPDATE memory_suggestions SET status = ?, resolved_at = datetime('now') WHERE id = ?").run(status, id);
+  } finally {
+    db.close();
+  }
+}
+
+async function maybeSuggestMemory(question, answer, providerConfig) {
+  const config = await loadConfig();
+  if (config.memory?.suggestions === false) return;
+  const normalized = `${question}\n${answer}`.toLocaleLowerCase("ru-RU");
+  const suggestions = [];
+  if (normalized.includes("кратко") || normalized.includes("коротко")) {
+    suggestions.push(["Пользователь предпочитает краткие ответы.", "В запросе или ответе упоминался краткий формат."]);
+  }
+  if (normalized.includes("word") || normalized.includes("docx")) {
+    suggestions.push(["Пользователь часто работает с документами Word/DOCX.", "В сессии упоминался формат Word/DOCX."]);
+  }
+  if (providerConfig?.name) {
+    suggestions.push([`Последний активный AI-профиль: ${providerConfig.name}.`, "Зафиксирован используемый профиль AI."]);
+  }
+  for (const [content, reason] of suggestions.slice(0, 2)) {
+    addMemorySuggestion(content, reason);
+  }
 }
 
 function listAliases() {
@@ -3075,7 +3844,7 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
-  const messages = buildAiMessages(question, dataContext, history, options);
+  const messages = await buildAiMessages(question, dataContext, history, options, config);
   let answer = "";
   let errorMessage = "";
 
@@ -3095,6 +3864,7 @@ async function aiAsk(args, context = {}) {
     recordAskHistory({ question, answer, providerConfig, dataContext, error: "", sessionId });
     appendSessionExchange(sessionId, question, answer, dataContext, "");
   }
+  await maybeSuggestMemory(question, answer, providerConfig);
 
   emitEvent(options, "answer", { length: answer.length, sessionId });
 
@@ -3300,7 +4070,7 @@ async function runHooks(event, payload = {}) {
 
 async function assertPermission(name) {
   const config = await loadConfig();
-  const permissions = config.permissions || DEFAULT_AI_CONFIG.permissions;
+  const permissions = applyToolsetPermissions(config.permissions || DEFAULT_AI_CONFIG.permissions, config.toolsets?.enabled || []);
   if (LOCAL_TOOLS.includes(name)) {
     if (permissions.localTools?.[name] === false) {
       throw new Error(`Tool запрещен политикой permissions: ${name}`);
@@ -3310,6 +4080,23 @@ async function assertPermission(name) {
   if (permissions[name] === false) {
     throw new Error(`Действие запрещено политикой permissions: ${name}`);
   }
+}
+
+function applyToolsetPermissions(basePermissions, enabledToolsets) {
+  const next = {
+    ...basePermissions,
+    localTools: { ...(basePermissions.localTools || {}) },
+  };
+  for (const name of enabledToolsets || []) {
+    const toolset = TOOLSETS[name];
+    if (!toolset) continue;
+    Object.assign(next, toolset.permissions || {});
+    next.localTools = {
+      ...(next.localTools || {}),
+      ...(toolset.permissions?.localTools || {}),
+    };
+  }
+  return next;
 }
 
 function emitEvent(options, type, data) {
@@ -3442,9 +4229,11 @@ function scoreItem(item, terms, patterns, layer) {
   return score;
 }
 
-function buildAiMessages(question, dataContext, history, options = {}) {
+async function buildAiMessages(question, dataContext, history, options = {}, config = DEFAULT_AI_CONFIG) {
   const sourceLines = buildSourceLines(dataContext);
   const memoryText = options.bare ? "" : buildMemoryText();
+  const projectContext = options.bare ? "" : await buildProjectContextText();
+  const skillsText = options.bare ? "" : await buildSkillsText(config);
   const system = [
     "Ты терминальный AI-ассистент CLI-проекта Йошкар-Олы.",
     "Отвечай на русском языке.",
@@ -3455,6 +4244,8 @@ function buildAiMessages(question, dataContext, history, options = {}) {
     options.schema === "json" ? "Верни валидный JSON без markdown-обертки." : "",
     options.schema === "table" ? "Если уместно, верни ответ в виде markdown-таблицы." : "",
     memoryText ? `Учитывай пользовательскую память:\n${memoryText}` : "",
+    projectContext ? `Учитывай локальный контекст проекта:\n${projectContext}` : "",
+    skillsText ? `Подключенные skills:\n${skillsText}` : "",
     "Отвечай кратко и по делу.",
   ].filter(Boolean).join(" ");
   const contextText = JSON.stringify(dataContext, null, 2);
@@ -3793,12 +4584,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -3949,6 +4740,101 @@ async function getLocalDiagnostics() {
   };
 }
 
+async function listContextFiles() {
+  const files = [
+    { scope: "project", file: PROJECT_CONTEXT_FILE },
+    { scope: "project-dir", file: PROJECT_CONTEXT_DIR_FILE },
+  ];
+  const rows = [];
+  for (const item of files) {
+    try {
+      const info = await stat(item.file);
+      rows.push({ ...item, exists: "yes", size: info.size });
+    } catch {
+      rows.push({ ...item, exists: "no", size: "-" });
+    }
+  }
+  return rows;
+}
+
+async function buildProjectContextText() {
+  const chunks = [];
+  for (const item of await listContextFiles()) {
+    if (item.exists !== "yes") continue;
+    const text = await readFile(item.file, "utf8");
+    chunks.push(`# ${item.scope}: ${item.file}\n${text.trim()}`);
+  }
+  return chunks.join("\n\n");
+}
+
+function skillRoots() {
+  return [BUILTIN_SKILLS_DIR, USER_SKILLS_DIR, path.join(process.cwd(), ".iola", "skills")];
+}
+
+function listSkills(config = DEFAULT_AI_CONFIG) {
+  const rows = [];
+  for (const root of skillRoots()) {
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const file = entry.isDirectory() ? path.join(root, entry.name, "SKILL.md") : entry.name.endsWith(".md") ? path.join(root, entry.name) : null;
+      if (!file || !existsSync(file)) continue;
+      const meta = readSkillMeta(file);
+      rows.push({
+        name: meta.name || path.basename(entry.name, ".md"),
+        description: meta.description || "-",
+        source: root === BUILTIN_SKILLS_DIR ? "builtin" : root === USER_SKILLS_DIR ? "user" : "project",
+        file,
+        enabled: isSkillEnabled(config, meta.name || path.basename(entry.name, ".md")),
+      });
+    }
+  }
+  return rows.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function findSkill(name, config) {
+  if (!name) return null;
+  return listSkills(config).find((skill) => skill.name === name);
+}
+
+function readSkillMeta(file) {
+  try {
+    const text = readFileSyncUtf8(file);
+    const frontmatter = text.match(/^---\n([\s\S]*?)\n---/);
+    const meta = {};
+    if (frontmatter) {
+      for (const line of frontmatter[1].split(/\r?\n/)) {
+        const [key, ...parts] = line.split(":");
+        if (key && parts.length > 0) meta[key.trim()] = parts.join(":").trim().replace(/^["']|["']$/g, "");
+      }
+    }
+    return meta;
+  } catch {
+    return {};
+  }
+}
+
+function readFileSyncUtf8(file) {
+  return readFileSync(file, "utf8");
+}
+
+function isSkillEnabled(config, name) {
+  return (config.skills?.enabled || []).includes(name);
+}
+
+async function buildSkillsText(config) {
+  const chunks = [];
+  for (const skill of listSkills(config)) {
+    if (!skill.enabled) continue;
+    const text = await readFile(skill.file, "utf8");
+    chunks.push(`## Skill: ${skill.name}\n${stripFrontmatter(text).trim()}`);
+  }
+  return chunks.join("\n\n").slice(0, 12000);
+}
+
+function stripFrontmatter(text) {
+  return String(text).replace(/^---\n[\s\S]*?\n---\n?/, "");
+}
+
 async function getNvidiaGpu() {
   try {
     const { stdout } = await runCommand("nvidia-smi", [
@@ -4027,6 +4913,90 @@ async function probeEndpoint(url) {
   } catch {
     return "недоступен";
   }
+}
+
+async function startDaemon(host, port) {
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || "/", `http://${host}:${port}`);
+      res.setHeader("content-type", "application/json; charset=utf-8");
+
+      if (req.method === "GET" && url.pathname === "/health") {
+        res.end(JSON.stringify({ status: "running", endpoint: `http://${host}:${port}`, db: getDbStatus().status }));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/status") {
+        res.end(JSON.stringify({ status: "running", db: getDbStatus(), sync: getSyncStatus() }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/rpc") {
+        const body = await readRequestBody(req);
+        const payload = body ? JSON.parse(body) : {};
+        const result = await executeRpc(payload.method, { ...(payload.params || {}), _: [] });
+        res.end(JSON.stringify({ ok: true, result }));
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, resolve);
+  });
+  console.log(`iola daemon запущен: http://${host}:${port}`);
+  console.log("Остановить: Ctrl+C");
+  await new Promise(() => {});
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        reject(new Error("request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
+async function executeRpc(method, options = {}) {
+  if (method === "status") {
+    return { db: getDbStatus(), sync: getSyncStatus(), activeProfile: getActiveProfileName(await loadConfig()) };
+  }
+  if (method === "search") {
+    await ensureLocalData();
+    return searchLocalRecords(options.query || options.search || options._?.join(" ") || "", {
+      dataset: options.dataset || "all",
+      limit: Number(options.limit || 20),
+      fts: options.fts !== false,
+    });
+  }
+  if (method === "card") {
+    await ensureLocalData();
+    return findCard(options.query || options.search || options._?.join(" ") || "");
+  }
+  if (method === "quality") {
+    await ensureLocalData();
+    return runQuality(options.scope || "all");
+  }
+  if (method === "sync") {
+    await assertPermission("sync");
+    return syncDataset(options.dataset || "schools");
+  }
+  throw new Error(`RPC method неизвестен: ${method}. Доступно: status, search, card, quality, sync.`);
 }
 
 async function getLatestNpmVersion(packageName) {
@@ -4141,7 +5111,14 @@ async function saveConfig(value) {
 }
 
 async function writeConfig(value) {
+  const errors = validateConfig(value);
+  if (errors.length > 0) {
+    throw new Error(`Конфигурация не сохранена: ${errors.join("; ")}`);
+  }
   await mkdir(CONFIG_DIR, { recursive: true });
+  if (existsSync(CONFIG_FILE)) {
+    await copyFile(CONFIG_FILE, LAST_GOOD_CONFIG_FILE).catch(() => {});
+  }
   await writeFile(CONFIG_FILE, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
@@ -4169,6 +5146,69 @@ function mergeConfig(base, override) {
         ...(base.ai.profiles || {}),
         ...(override.ai?.profiles || {}),
       },
+    },
+    permissions: {
+      ...base.permissions,
+      ...(override.permissions || {}),
+      localTools: {
+        ...(base.permissions?.localTools || {}),
+        ...(override.permissions?.localTools || {}),
+      },
+    },
+    memory: {
+      ...base.memory,
+      ...(override.memory || {}),
+    },
+    skills: {
+      ...base.skills,
+      ...(override.skills || {}),
+    },
+    toolsets: {
+      ...base.toolsets,
+      ...(override.toolsets || {}),
+    },
+    daemon: {
+      ...base.daemon,
+      ...(override.daemon || {}),
+    },
+    cron: {
+      ...base.cron,
+      ...(override.cron || {}),
+    },
+  };
+}
+
+function validateConfig(config) {
+  const errors = [];
+  if (!config || typeof config !== "object") errors.push("config must be object");
+  if (!config.api?.baseUrl) errors.push("api.baseUrl обязателен");
+  if (!config.api?.mcpBaseUrl) errors.push("api.mcpBaseUrl обязателен");
+  if (!config.ai?.profiles || typeof config.ai.profiles !== "object") errors.push("ai.profiles обязателен");
+  if (config.ai?.activeProfile && !config.ai.profiles?.[config.ai.activeProfile]) errors.push(`ai.activeProfile не найден в profiles: ${config.ai.activeProfile}`);
+  for (const [name, profile] of Object.entries(config.ai?.profiles || {})) {
+    if (!["ollama", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
+    if (profile.provider !== "codex" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
+  }
+  for (const tool of Object.keys(config.permissions?.localTools || {})) {
+    if (!LOCAL_TOOLS.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
+  }
+  for (const toolset of config.toolsets?.enabled || []) {
+    if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
+  }
+  return errors;
+}
+
+function configSchema() {
+  return {
+    type: "object",
+    required: ["api", "ai"],
+    properties: {
+      api: { required: ["baseUrl", "mcpBaseUrl"] },
+      ai: { required: ["activeProfile", "profiles"], providers: ["ollama", "openai", "openrouter", "codex"] },
+      permissions: { localTools: LOCAL_TOOLS, runtime: ["writeFiles", "sync", "externalApi", "externalAi", "codex"] },
+      toolsets: { available: Object.keys(TOOLSETS) },
+      skills: { enabled: "array of skill names" },
+      daemon: { host: "127.0.0.1", port: DAEMON_PORT },
     },
   };
 }

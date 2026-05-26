@@ -47,6 +47,17 @@ iola quality
 iola agent
 ```
 
+Рабочий агент:
+
+```bash
+iola skills list
+iola tools toolsets
+iola context init
+iola cron list
+iola daemon status
+iola rpc call status
+```
+
 Локальная модель через Ollama:
 
 ```bash
@@ -67,6 +78,9 @@ iola version --check
 - [Первый запуск](https://github.com/adm-iola/iola-cli/wiki/Первый-запуск)
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
+- [Skills и toolsets](https://github.com/adm-iola/iola-cli/wiki/Skills-и-toolsets)
+- [Daemon, RPC и cron](https://github.com/adm-iola/iola-cli/wiki/Daemon-RPC-и-cron)
+- [Контекст и память](https://github.com/adm-iola/iola-cli/wiki/Контекст-и-память)
 - [Команды](https://github.com/adm-iola/iola-cli/wiki/Команды)
 - [Решение проблем](https://github.com/adm-iola/iola-cli/wiki/Решение-проблем)
 
@@ -76,5 +90,7 @@ iola version --check
 - локальная SQLite-БД, история, сессии и FTS-поиск;
 - AI-профили для Ollama, OpenAI, OpenRouter и Codex CLI;
 - локальный tool-agent для слабых моделей;
-- permissions, memory, hooks и готовые agents;
+- skills, toolsets, permissions, memory, hooks и готовые agents;
+- cron-задачи, локальный daemon и RPC для автоматизаций;
+- контекстные файлы `IOLA.md` и `.iola/context.md`;
 - интеграция с публичным MCP-сервером Йошкар-Олы.
