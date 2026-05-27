@@ -157,11 +157,9 @@ iola version --check
 - локальный tool-agent для слабых моделей с минимальными tools `search_data`, `get_card`, `export_report`, `file_read`, `browser_open`;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
-- полноценный локальный MCP server по stdio/http: tools, resources и prompts;
-- MCP-мост для локальной модели: встроенный `iola-local` доступен как `mcp:iola-local:TOOL`;
-- вопросы по открытым данным сначала идут в публичный remote MCP `https://apiiola.yasg.ru/mcp`
-  через `layer_suggest`, `layer_query`, `layer_get` и `layer_answer_context`, а локальная БД/API
-  остаются fallback;
+- локальный MCP-сервер по stdio/http для подключения iola-cli к другим AI-клиентам;
+- ответы по открытым данным берутся из публичного MCP `https://apiiola.yasg.ru/mcp`;
+- локальная БД и прямой API используются как резерв, если публичный MCP временно недоступен;
 - дополнительные stdio MCP-серверы можно добавить в `~/.iola/config.json` в раздел `mcp.servers`;
 - браузерный runtime через Playwright: чтение страниц, скриншоты, PDF, клики, ввод и eval;
 - управляемые локальные файловые операции с режимами `locked`, `read-only`, `workspace-write`, `full-access`;
