@@ -1296,8 +1296,9 @@ function renderAgentInput(state) {
   clearAgentInputArea(state);
   const prompt = "> ";
   const lines = state.buffer.split("\n");
-  const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1).map((line) => `      ${line}`)];
-  const cwdLine = colorMuted(`  ${buildAgentStatusLine(state)}`);
+  const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1)];
+  const statusLine = truncateTerminalLine(`  ${buildAgentStatusLine(state)}`);
+  const cwdLine = colorMuted(statusLine);
   const menuLines = [];
   if (state.slashOpen) {
     const matches = currentSlashMatches(state);
@@ -1311,11 +1312,11 @@ function renderAgentInput(state) {
         const absoluteIndex = offset + index;
         const selected = absoluteIndex === state.selected;
         const marker = selected ? ">" : " ";
-        const row = `${marker} ${visibleMatches[index].command.padEnd(24)} ${visibleMatches[index].description}`;
+        const row = truncateTerminalLine(`${marker} ${visibleMatches[index].command.padEnd(24)} ${visibleMatches[index].description}`);
         menuLines.push(selected ? colorSlashSelection(row) : `  ${row.slice(2)}`);
       }
       const shownTo = Math.min(offset + visibleLimit, matches.length);
-      menuLines.push(`  ↑/↓ выбрать • Enter выполнить • Esc закрыть • ${offset + 1}-${shownTo} из ${matches.length}`);
+      menuLines.push(truncateTerminalLine(`  ↑/↓ выбрать • Enter выполнить • Esc закрыть • ${offset + 1}-${shownTo} из ${matches.length}`));
     }
   }
 
@@ -1456,6 +1457,13 @@ function buildAgentStatusLine(state) {
   }[ai.provider] || ai.provider;
   const model = ai.model && ai.model !== "-" ? ` • ${ai.model}` : "";
   return `${cwd}  |  AI: ${kind}${model} (${ai.name})`;
+}
+
+function truncateTerminalLine(value) {
+  const columns = Math.max(20, Number(output.columns || 100));
+  const text = String(value).replace(/\r?\n/g, " ");
+  if (visibleLength(text) <= columns) return text;
+  return `${text.slice(0, Math.max(0, columns - 1))}…`;
 }
 
 function compactAgentHistory(history) {
