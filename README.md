@@ -1,6 +1,36 @@
-![CLI-проект Йошкар-Олы](https://cdn.jsdelivr.net/npm/@iola_adm/iola-cli@latest/docs/assets/readme-header.png)
-
 # iola-cli
+
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/npm/@iola_adm/iola-cli@latest/docs/assets/readme-header.png" alt="CLI-проект Йошкар-Олы" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/adm-iola/iola-cli/wiki">Документация</a>
+  ·
+  <a href="https://github.com/adm-iola/iola-cli/wiki/Установка">Установка</a>
+  ·
+  <a href="https://github.com/adm-iola/iola-cli/wiki/Первый-запуск">Первый запуск</a>
+  ·
+  <a href="https://github.com/adm-iola/iola-cli/wiki/AI-профили">AI-профили</a>
+  ·
+  <a href="https://github.com/adm-iola/iola-cli/wiki/Команды">Команды</a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@iola_adm/iola-cli">
+    <img alt="npm version" src="https://img.shields.io/npm/v/@iola_adm/iola-cli?label=npm">
+  </a>
+  <a href="https://github.com/adm-iola/iola-cli/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/adm-iola/iola-cli/actions/workflows/ci.yml/badge.svg">
+  </a>
+  <a href="https://github.com/adm-iola/iola-cli/actions/workflows/npm-publish.yml">
+    <img alt="npm publish" src="https://github.com/adm-iola/iola-cli/actions/workflows/npm-publish.yml/badge.svg">
+  </a>
+  <a href="https://github.com/adm-iola/iola-cli/blob/main/LICENSE">
+    <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
+  </a>
+  <img alt="Node.js 22.5+" src="https://img.shields.io/badge/node-22.5%2B-339933">
+</p>
 
 CLI и AI-агент городского округа "Город Йошкар-Ола".
 
