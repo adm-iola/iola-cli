@@ -1,0 +1,313 @@
+{
+  "runId": "2026-05-27T11-57-35-269Z",
+  "createdAt": "2026-05-27T11:57:35.271Z",
+  "apiBaseUrl": "https://apiiola.yasg.ru",
+  "concepts": {
+    "conditional-memory:simple-facts": {
+      "concept": "conditional-memory",
+      "block": "model-architecture",
+      "dataset": "simple-facts",
+      "file": "results/latest/conditional-memory-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.03
+    },
+    "sparse-escalation:simple-facts": {
+      "concept": "sparse-escalation",
+      "block": "model-architecture",
+      "dataset": "simple-facts",
+      "file": "results/latest/sparse-escalation-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "early-exit:simple-facts": {
+      "concept": "early-exit",
+      "block": "model-architecture",
+      "dataset": "simple-facts",
+      "file": "results/latest/early-exit-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.01
+    },
+    "strict-skill:simple-facts": {
+      "concept": "strict-skill",
+      "block": "agent-consensus",
+      "dataset": "simple-facts",
+      "file": "results/latest/strict-skill-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "verify:simple-facts": {
+      "concept": "verify",
+      "block": "agent-consensus",
+      "dataset": "simple-facts",
+      "file": "results/latest/verify-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.03
+    },
+    "council:simple-facts": {
+      "concept": "council",
+      "block": "agent-consensus",
+      "dataset": "simple-facts",
+      "file": "results/latest/council-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "skill-router:simple-facts": {
+      "concept": "skill-router",
+      "block": "hybrid",
+      "dataset": "simple-facts",
+      "file": "results/latest/skill-router-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "memory-verified:simple-facts": {
+      "concept": "memory-verified",
+      "block": "hybrid",
+      "dataset": "simple-facts",
+      "file": "results/latest/memory-verified-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.04
+    },
+    "escalation-ladder:simple-facts": {
+      "concept": "escalation-ladder",
+      "block": "hybrid",
+      "dataset": "simple-facts",
+      "file": "results/latest/escalation-ladder-simple-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.04
+    },
+    "conditional-memory:adversarial-facts": {
+      "concept": "conditional-memory",
+      "block": "model-architecture",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/conditional-memory-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 0,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 0,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "sparse-escalation:adversarial-facts": {
+      "concept": "sparse-escalation",
+      "block": "model-architecture",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/sparse-escalation-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "early-exit:adversarial-facts": {
+      "concept": "early-exit",
+      "block": "model-architecture",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/early-exit-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 0,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 0,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "strict-skill:adversarial-facts": {
+      "concept": "strict-skill",
+      "block": "agent-consensus",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/strict-skill-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "verify:adversarial-facts": {
+      "concept": "verify",
+      "block": "agent-consensus",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/verify-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.07
+    },
+    "council:adversarial-facts": {
+      "concept": "council",
+      "block": "agent-consensus",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/council-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.02
+    },
+    "skill-router:adversarial-facts": {
+      "concept": "skill-router",
+      "block": "hybrid",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/skill-router-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.04
+    },
+    "memory-verified:adversarial-facts": {
+      "concept": "memory-verified",
+      "block": "hybrid",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/memory-verified-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.09
+    },
+    "escalation-ladder:adversarial-facts": {
+      "concept": "escalation-ladder",
+      "block": "hybrid",
+      "dataset": "adversarial-facts",
+      "file": "results/latest/escalation-ladder-adversarial-facts.jsonl",
+      "total": 100,
+      "correct": 100,
+      "answered": 100,
+      "escalated": 0,
+      "needsClarification": 0,
+      "accuracy": 1,
+      "answerRate": 1,
+      "statuses": {
+        "answered": 100
+      },
+      "avgLatencyMs": 0.09
+    }
+  }
+}
