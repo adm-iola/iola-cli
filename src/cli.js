@@ -774,9 +774,10 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, rawMode: true, pendingOutput: "", aiStatus: null };
+  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, rawMode: true, pendingOutput: "", aiStatus: null, statusBar: false, statusRows: 0 };
   const wasRaw = input.isRaw;
   activateRawInput(input);
+  setupAgentStatusBar(state);
 
   await refreshAgentAiStatus(state);
   const render = () => renderAgentInput(state);
@@ -857,6 +858,8 @@ async function startAgentRawInput() {
       }
     }
   } finally {
+    clearAgentInputArea(state);
+    clearAgentStatusBar(state);
     if (!wasRaw) input.setRawMode(false);
     input.pause();
   }
@@ -1305,8 +1308,6 @@ function renderAgentInput(state) {
   const prompt = "> ";
   const lines = state.buffer.split("\n");
   const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1)];
-  const statusLine = truncateTerminalLine(`  ${buildAgentStatusLine(state)}`);
-  const cwdLine = colorMuted(statusLine);
   const menuLines = [];
   if (state.slashOpen) {
     const matches = currentSlashMatches(state);
@@ -1328,7 +1329,8 @@ function renderAgentInput(state) {
     }
   }
 
-  const renderedLines = [cwdLine, ...menuLines, ...inputLines];
+  renderAgentStatusBar(state);
+  const renderedLines = [...menuLines, ...inputLines];
   output.write(renderedLines.join("\n"));
   if (output.isTTY) {
     const cursorColumn = visibleLength(inputLines[inputLines.length - 1]);
@@ -1347,6 +1349,37 @@ function clearAgentInputArea(state = null) {
     state.renderedInputLines = 0;
     state.renderedLines = 0;
   }
+}
+
+function setupAgentStatusBar(state) {
+  if (!output.isTTY) return;
+  const rows = Number(output.rows || 0);
+  if (rows < 4) return;
+  state.statusBar = true;
+  state.statusRows = rows;
+  output.write(`\x1b[1;${rows - 1}r`);
+  output.write(`\x1b[${rows - 1};1H`);
+}
+
+function renderAgentStatusBar(state) {
+  if (!output.isTTY || !state.statusBar) return;
+  const rows = Number(output.rows || state.statusRows || 0);
+  if (rows < 4) return;
+  if (rows !== state.statusRows) {
+    state.statusRows = rows;
+    output.write(`\x1b[1;${rows - 1}r`);
+  }
+  const statusLine = colorMuted(truncateTerminalLine(` ${buildAgentStatusLine(state)} `));
+  output.write(`\x1b7\x1b[${rows};1H\x1b[2K${statusLine}\x1b8`);
+}
+
+function clearAgentStatusBar(state) {
+  if (!output.isTTY || !state?.statusBar) return;
+  const rows = Number(output.rows || state.statusRows || 0);
+  output.write("\x1b[r");
+  if (rows >= 1) output.write(`\x1b7\x1b[${rows};1H\x1b[2K\x1b8`);
+  state.statusBar = false;
+  state.statusRows = 0;
 }
 
 function startActivityIndicator(label = "работаю") {
