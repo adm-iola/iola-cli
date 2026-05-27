@@ -1343,25 +1343,33 @@ function clearAgentInputArea(state = null) {
 function startActivityIndicator(label = "работаю") {
   const doneLabel = "готово";
   if (!output.isTTY || process.env.NO_COLOR === "1") {
-    output.write(`${label}...\n`);
+    output.write(`${formatActivityLine(label)}\n`);
     const started = Date.now();
     return () => {
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
-      output.write(`- ${doneLabel} ${seconds}s\n`);
+      output.write(`${formatActivityLine(doneLabel, seconds)}\n`);
     };
   }
   const started = Date.now();
   const render = () => {
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
-    output.write(`\r\x1b[2K${colorMuted(`─ ${label} ${seconds}s`)}`);
+    output.write(`\r\x1b[2K${colorMuted(formatActivityLine(label, seconds))}`);
   };
   render();
   const timer = setInterval(render, 120);
   return () => {
     clearInterval(timer);
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
-    output.write(`\r\x1b[2K${colorMuted(`─ ${doneLabel} ${seconds}s`)}\n`);
+    output.write(`\r\x1b[2K${colorMuted(formatActivityLine(doneLabel, seconds))}\n`);
   };
+}
+
+function formatActivityLine(label, seconds = null) {
+  const columns = Math.max(60, Number(output.columns || 100));
+  const middle = ` ${label}${seconds == null ? "" : ` ${seconds}s`} `;
+  const leftWidth = Math.max(1, Math.floor((columns - visibleLength(middle)) / 3));
+  const rightWidth = Math.max(1, columns - leftWidth - visibleLength(middle));
+  return `${"─".repeat(leftWidth)}${middle}${"─".repeat(rightWidth)}`;
 }
 
 function suspendRawInputForCommand(stream) {
@@ -4085,12 +4093,15 @@ async function listAiModels(provider) {
       }
 
       const payload = await response.json();
-      const models = (payload.models || []).map((model) => ({
+      const installed = (payload.models || []).map((model) => ({
         id: model.name,
         provider: "ollama",
         note: model.modified_at ? `updated ${model.modified_at}` : "local",
       }));
-      return models.length > 0 ? models : getRecommendedOllamaModels("not installed");
+      const installedIds = new Set(installed.map((model) => model.id));
+      const recommended = getRecommendedOllamaModels("not installed")
+        .filter((model) => !installedIds.has(model.id));
+      return [...installed, ...recommended];
     } catch {
       return getRecommendedOllamaModels("recommended");
     }
@@ -4145,10 +4156,12 @@ async function listAiModels(provider) {
 
 function getRecommendedOllamaModels(notePrefix = "recommended") {
   return [
-    { id: "llama3.2:1b", provider: "ollama", note: `${notePrefix} low RAM` },
-    { id: "llama3.2:3b", provider: "ollama", note: `${notePrefix} standard` },
-    { id: "qwen3:4b", provider: "ollama", note: `${notePrefix} balanced` },
-    { id: "qwen3:8b", provider: "ollama", note: `${notePrefix} good GPU` },
+    { id: "qwen3:1.7b", provider: "ollama", note: `${notePrefix} recommended low RAM` },
+    { id: "qwen3:4b", provider: "ollama", note: `${notePrefix} recommended balanced` },
+    { id: "gemma3:1b", provider: "ollama", note: `${notePrefix} Gemma low RAM` },
+    { id: "gemma3:4b", provider: "ollama", note: `${notePrefix} Gemma balanced` },
+    { id: "llama3.2:3b", provider: "ollama", note: `${notePrefix} legacy fallback` },
+    { id: "llama3.2:1b", provider: "ollama", note: `${notePrefix} minimal fallback only` },
   ];
 }
 
@@ -6567,7 +6580,10 @@ async function buildAiMessages(question, dataContext, history, options = {}, con
   const system = [
     "Ты терминальный AI-агент городского округа Йошкар-Ола.",
     "Отвечай на русском языке естественно и по смыслу запроса пользователя.",
+    "Не смешивай языки. Не выдумывай факты, географию и числа.",
+    "Если пользователь просто здоровается, ответь коротким приветствием и спроси, чем помочь.",
     hasDataContext ? "Используй только данные из переданного контекста открытых данных." : "Для обычного диалога отвечай как полноценный AI-ассистент, не перечисляй слои и возможности без запроса пользователя.",
+    hasDataContext ? "" : "Не рассказывай сведения о Йошкар-Оле, школах или детских садах без прямого запроса и контекста данных.",
     hasDataContext ? "Если в контексте нет нужных сведений, прямо напиши, что данных недостаточно." : "",
     hasDataContext ? "Не выдумывай адреса, телефоны, лицензии и руководителей." : "",
     hasDataContext ? "Если отвечаешь по конкретным организациям, укажи источник в конце: слой, название и ИНН." : "",
@@ -6673,6 +6689,9 @@ async function callOllama(config, messages) {
         model: config.model || "llama3.2:1b",
         messages,
         stream: false,
+        options: {
+          temperature: Number(config.temperature ?? 0.1),
+        },
       }),
     });
   } catch {
