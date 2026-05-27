@@ -766,7 +766,7 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, rawMode: true, pendingOutput: "", aiStatus: null };
+  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, rawMode: true, pendingOutput: "", aiStatus: null };
   const wasRaw = input.isRaw;
   activateRawInput(input);
 
@@ -1330,14 +1330,18 @@ function renderAgentInput(state) {
     output.write(`\x1b[${cursorColumn + 1}G`);
   }
   state.renderedInputLines = inputLines.length;
+  state.renderedLines = renderedLines.length;
 }
 
 function clearAgentInputArea(state = null) {
   if (!output.isTTY) return;
-  const inputLines = Math.max(1, Number(state?.renderedInputLines || 1));
-  if (inputLines > 1) output.write(`\x1b[${inputLines - 1}A`);
+  const renderedLines = Math.max(1, Number(state?.renderedLines || state?.renderedInputLines || 1));
+  if (renderedLines > 1) output.write(`\x1b[${renderedLines - 1}A`);
   output.write("\r\x1b[0J");
-  if (state) state.renderedInputLines = 0;
+  if (state) {
+    state.renderedInputLines = 0;
+    state.renderedLines = 0;
+  }
 }
 
 function startActivityIndicator(label = "работаю") {
