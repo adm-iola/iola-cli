@@ -774,7 +774,7 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, rawMode: true, pendingOutput: "", aiStatus: null };
+  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, cursorRowsBelow: 0, rawMode: true, pendingOutput: "", aiStatus: null };
   const wasRaw = input.isRaw;
   activateRawInput(input);
 
@@ -1331,7 +1331,8 @@ function renderAgentInput(state) {
   const renderedLines = [...inputLines, "", ...menuLines, cwdLine];
   output.write(renderedLines.join("\n"));
   if (output.isTTY) {
-    output.write(`\x1b[${2 + menuLines.length}A`);
+    state.cursorRowsBelow = 2 + menuLines.length;
+    output.write(`\x1b[${state.cursorRowsBelow}A`);
   }
   if (output.isTTY) {
     const cursorColumn = visibleLength(inputLines[inputLines.length - 1]);
@@ -1339,16 +1340,20 @@ function renderAgentInput(state) {
   }
   state.renderedInputLines = inputLines.length;
   state.renderedLines = renderedLines.length;
+  if (!output.isTTY) state.cursorRowsBelow = 0;
 }
 
 function clearAgentInputArea(state = null) {
   if (!output.isTTY) return;
   const renderedLines = Math.max(1, Number(state?.renderedLines || state?.renderedInputLines || 1));
+  const cursorRowsBelow = Math.max(0, Number(state?.cursorRowsBelow || 0));
+  if (cursorRowsBelow > 0) output.write(`\x1b[${cursorRowsBelow}B`);
   if (renderedLines > 1) output.write(`\x1b[${renderedLines - 1}A`);
   output.write("\r\x1b[0J");
   if (state) {
     state.renderedInputLines = 0;
     state.renderedLines = 0;
+    state.cursorRowsBelow = 0;
   }
 }
 
