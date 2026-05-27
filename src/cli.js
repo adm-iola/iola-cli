@@ -6042,24 +6042,103 @@ async function aiAsk(args, context = {}) {
 
 function buildDirectDataAnswer(question, dataContext) {
   const normalized = question.toLocaleLowerCase("ru-RU");
-  if (!/(директор|руководител)/iu.test(normalized)) return "";
-  const terms = extractSearchTerms(question).filter((term) => !/^\d+$/.test(term));
-  if (terms.length < 2) return "";
+  const requestedFields = detectDirectDataFields(normalized);
+  if (requestedFields.length === 0) return "";
   const rows = [
     ...dataContext.schools.map((item) => ({ layer: "schools", layerName: "школы", ...item })),
     ...dataContext.kindergartens.map((item) => ({ layer: "kindergartens", layerName: "детские сады", ...item })),
   ];
-  const matches = rows.filter((item) => {
-    const head = String(item.head || "").toLocaleLowerCase("ru-RU");
-    return terms.every((term) => head.includes(term));
-  });
-  if (matches.length !== 1) return "";
-  const item = matches[0];
+  const item = pickDirectDataItem(question, dataContext, rows);
+  if (!item) return "";
+  const lines = requestedFields
+    .map((field) => formatDirectDataField(field, item))
+    .filter(Boolean);
+  if (lines.length === 0) return "";
+  const name = getDirectDataItemName(item);
   return [
-    `${item.head} — руководитель ${item.name}.`,
-    item.address ? `Адрес: ${item.address}.` : "",
-    `Источник: слой ${item.layer}, ИНН ${item.inn || "-"}.`,
-  ].filter(Boolean).join("\n");
+    ...lines,
+    `Источник: слой ${item.layer}, ${name}, ИНН ${item.inn || "-"}.`,
+  ].join("\n");
+}
+
+function detectDirectDataFields(normalizedQuestion) {
+  const fields = [];
+  if (/(директор|руководител|заведующ|кто возглавляет)/iu.test(normalizedQuestion)) fields.push("head");
+  if (/(сайт|website|url|ссылка)/iu.test(normalizedQuestion)) fields.push("website");
+  if (/(телефон|номер телефона|позвонить)/iu.test(normalizedQuestion)) fields.push("phone");
+  if (/(почт|email|e-mail|имейл|электронн)/iu.test(normalizedQuestion)) fields.push("email");
+  if (/(адрес|где находится|расположен)/iu.test(normalizedQuestion)) fields.push("address");
+  if (/(инн)/iu.test(normalizedQuestion)) fields.push("inn");
+  if (/(лиценз)/iu.test(normalizedQuestion)) fields.push("license");
+  return [...new Set(fields)];
+}
+
+function pickDirectDataItem(question, dataContext, rows) {
+  const patterns = dataContext.query?.patterns || extractStructuredPatterns(question);
+  const targetLayers = patterns.targetLayers || [];
+  const scopedRows = targetLayers.length > 0 ? rows.filter((item) => targetLayers.includes(item.layer)) : rows;
+
+  for (const inn of patterns.inns || []) {
+    const match = scopedRows.find((item) => String(item.inn || "") === inn);
+    if (match) return match;
+  }
+
+  for (const number of patterns.numbers || []) {
+    const exact = scopedRows.find((item) => itemNameHasNumber(item, number));
+    if (exact) return exact;
+  }
+
+  const terms = extractSearchTerms(question).filter((term) => !/^\d+$/.test(term));
+  if (terms.length > 0) {
+    const personMatches = scopedRows.filter((item) => {
+      const head = String(item.head || item.fns_head_name || "").toLocaleLowerCase("ru-RU");
+      return terms.every((term) => head.includes(term.toLocaleLowerCase("ru-RU")));
+    });
+    if (personMatches.length === 1) return personMatches[0];
+  }
+
+  const confidentRows = scopedRows.filter((item) => {
+    const confidence = Number(item._match?.confidence ?? item.match?.confidence ?? 0);
+    const score = Number(item._match?.score ?? item.match?.score ?? 0);
+    return confidence >= 0.8 || score >= 30;
+  });
+  if (confidentRows.length === 1) return confidentRows[0];
+
+  return null;
+}
+
+function itemNameHasNumber(item, number) {
+  const name = String(item.name || item.title || item.fns_full_name || item.fns_short_name || "").toLocaleLowerCase("ru-RU");
+  const escaped = String(number).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:№\\s*${escaped}|\\b(?:школа|сош|лицей|гимназия|сад|детский сад)\\s*№?\\s*${escaped}\\b)`, "iu").test(name);
+}
+
+function formatDirectDataField(field, item) {
+  const name = getDirectDataItemName(item);
+  if (field === "head") {
+    const head = item.head || item.fns_head_name;
+    if (!head) return "";
+    const position = item.fns_head_position || (item.layer === "kindergartens" ? "заведующий" : "директор");
+    return `${position}: ${head} (${name}).`;
+  }
+  if (field === "website") return item.website ? `Сайт: ${item.website}` : `Сайт для ${name} в открытых данных не указан.`;
+  if (field === "phone") return item.phone ? `Телефон: ${item.phone}` : `Телефон для ${name} в открытых данных не указан.`;
+  if (field === "email") return item.email ? `Email: ${item.email}` : `Email для ${name} в открытых данных не указан.`;
+  if (field === "address") return item.address || item.legal_address ? `Адрес: ${item.address || item.legal_address}` : `Адрес для ${name} в открытых данных не указан.`;
+  if (field === "inn") return item.inn ? `ИНН: ${item.inn}` : `ИНН для ${name} в открытых данных не указан.`;
+  if (field === "license") {
+    const parts = [
+      item.license_number ? `номер ${item.license_number}` : "",
+      item.license_status ? `статус: ${item.license_status}` : "",
+      item.license_date ? `дата: ${item.license_date}` : "",
+    ].filter(Boolean);
+    return parts.length > 0 ? `Лицензия: ${parts.join(", ")}.` : `Лицензия для ${name} в открытых данных не указана.`;
+  }
+  return "";
+}
+
+function getDirectDataItemName(item) {
+  return item.name || item.title || item.fns_short_name || item.fns_full_name || "организация";
 }
 
 async function resolveUsableAiProfile(config, options = {}) {
