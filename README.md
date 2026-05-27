@@ -151,6 +151,7 @@ iola version --check
 
 ## Возможности
 
+- интеграция с публичным MCP-сервером Йошкар-Олы;
 - поиск и выгрузка открытых данных;
 - локальная SQLite-БД, история, сессии и FTS-поиск;
 - AI-профили для Ollama, OpenAI, OpenRouter и Codex CLI;
@@ -171,4 +172,3 @@ iola version --check
 - расширенный `iola onboard` с установкой 7-Zip, браузерного runtime, Ollama, Codex CLI и настройкой выбранных компонентов;
 - cron-задачи, локальный daemon, web dashboard и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
-- интеграция с публичным MCP-сервером Йошкар-Олы.
