@@ -6140,7 +6140,7 @@ function pickDirectDataItem(question, dataContext, rows) {
 function itemNameHasNumber(item, number) {
   const name = String(item.name || item.title || item.fns_full_name || item.fns_short_name || "").toLocaleLowerCase("ru-RU");
   const escaped = String(number).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:№\\s*${escaped}|\\b(?:школа|сош|лицей|гимназия|сад|детский сад)\\s*№?\\s*${escaped}\\b)`, "iu").test(name);
+  return new RegExp(`(?:№\\s*${escaped}(?!\\d)|\\b(?:школа|сош|лицей|гимназия|сад|детский сад)\\s*№?\\s*${escaped}\\b)`, "iu").test(name);
 }
 
 function formatDirectDataField(field, item) {
@@ -6148,7 +6148,7 @@ function formatDirectDataField(field, item) {
   if (field === "head") {
     const head = item.head || item.fns_head_name;
     if (!head) return "";
-    const position = item.fns_head_position || (item.layer === "kindergartens" ? "заведующий" : "директор");
+    const position = capitalizeFirst(item.fns_head_position || (item.layer === "kindergartens" ? "заведующий" : "директор"));
     return `${position}: ${head} (${name}).`;
   }
   if (field === "website") return item.website ? `Сайт: ${item.website}` : `Сайт для ${name} в открытых данных не указан.`;
@@ -6169,6 +6169,11 @@ function formatDirectDataField(field, item) {
 
 function getDirectDataItemName(item) {
   return item.name || item.title || item.fns_short_name || item.fns_full_name || "организация";
+}
+
+function capitalizeFirst(value) {
+  const text = String(value || "");
+  return text ? `${text[0].toLocaleUpperCase("ru-RU")}${text.slice(1)}` : text;
 }
 
 async function resolveUsableAiProfile(config, options = {}) {
@@ -6589,6 +6594,7 @@ async function buildDataContext(question) {
   try {
     const context = await callPublicMcpTool("layer_answer_context", { question, limit: 8 });
     const layerMap = Object.fromEntries((context.results || []).map((result) => [result.layer?.id || result.layer, result.items || []]));
+    await enrichLayerMapWithExactMatches(layerMap, question, queryTerms, patterns);
     return {
       source: "remote-mcp",
       contract_version: context.contract_version,
@@ -6624,6 +6630,31 @@ async function buildDataContext(question) {
       kindergartens: layerMap.kindergartens || [],
     };
   }
+}
+
+async function enrichLayerMapWithExactMatches(layerMap, question, queryTerms, patterns) {
+  if (!patterns.numbers?.length) return;
+  const targetLayerIds = resolveTargetLayerIds(patterns);
+  await Promise.all(targetLayerIds.map(async (layer) => {
+    try {
+      const result = await queryLayer(layer, { query: question, terms: queryTerms, patterns, limit: 8 });
+      const existing = layerMap[layer] || [];
+      const existingKeys = new Set(existing.map((item) => item.inn || item.name || item.fns_short_name).filter(Boolean));
+      const exact = (result.items || []).filter((item) =>
+        patterns.numbers.some((number) => itemNameHasNumber(item, number)));
+      layerMap[layer] = [
+        ...exact.filter((item) => {
+          const key = item.inn || item.name || item.fns_short_name;
+          if (!key || existingKeys.has(key)) return false;
+          existingKeys.add(key);
+          return true;
+        }),
+        ...existing,
+      ];
+    } catch {
+      // Remote MCP remains the primary source; exact local/API enrichment is best effort.
+    }
+  }));
 }
 
 function resolveTargetLayerIds(patterns = {}) {
@@ -6723,13 +6754,16 @@ function extractSearchTerms(question) {
 
 function extractStructuredPatterns(question) {
   const normalized = question.toLocaleLowerCase("ru-RU");
-  const numbers = [...new Set([...normalized.matchAll(/\b\d{1,3}\b/g)].map((match) => match[0]))];
+  const numbers = [...new Set([
+    ...[...normalized.matchAll(/\b\d{1,3}\b/g)].map((match) => match[0]),
+    ...extractOrdinalNumbers(normalized),
+  ])];
   const inns = [...new Set([...normalized.matchAll(/\b\d{10,12}\b/g)].map((match) => match[0]))];
   const targetLayers = [];
-  if (/(^|[^а-яёa-z])(школа|школы|лицей|лицея|гимназия|гимназии)(?=$|[^а-яёa-z])/iu.test(normalized)) {
+  if (/(школ|сош|лице|гимнази)/iu.test(normalized)) {
     targetLayers.push("schools");
   }
-  if (/(^|[^а-яёa-z])(сад|сады|детсад|детский|детские|доу|мбдоу)(?=$|[^а-яёa-z])/iu.test(normalized)) {
+  if (/(детсад|детск|сад|сады|доу|мбдоу)/iu.test(normalized)) {
     targetLayers.push("kindergartens");
   }
   const streetMatches = [
@@ -6739,6 +6773,24 @@ function extractStructuredPatterns(question) {
   const streets = [...new Set(streetMatches.map((match) => cleanupPattern(match[1])).filter(Boolean))];
 
   return { numbers, inns, streets, targetLayers: [...new Set(targetLayers)] };
+}
+
+function extractOrdinalNumbers(normalizedQuestion) {
+  const ordinals = [
+    ["1", "(?:перв(?:ая|ой|ую|ое|ого|ом|ым|ых)?|первую)"],
+    ["2", "(?:втор(?:ая|ой|ую|ое|ого|ом|ым|ых)?|вторую)"],
+    ["3", "(?:трет(?:ья|ий|ью|ье|ьего|ьем|ьим|ьих)?|третью)"],
+    ["4", "четверт(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+    ["5", "пят(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+    ["6", "шест(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+    ["7", "седьм(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+    ["8", "восьм(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+    ["9", "девят(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+    ["10", "десят(?:ая|ой|ую|ое|ого|ом|ым|ых)?"],
+  ];
+  return ordinals
+    .filter(([, pattern]) => new RegExp(`(^|[^а-яёa-z])${pattern}(?=$|[^а-яёa-z])`, "iu").test(normalizedQuestion))
+    .map(([number]) => number);
 }
 
 function cleanupPattern(value) {
