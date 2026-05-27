@@ -180,7 +180,7 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["open-data", "reports", "local-model", "local-files", "browser-agent"],
+    enabled: ["education", "open-data", "reports", "local-model", "local-files", "browser-agent"],
   },
   daemon: {
     host: "127.0.0.1",
@@ -236,11 +236,19 @@ const AGENTS = {
 const DATASETS = {
   schools: {
     title: "Школы",
+    category: "Образование",
     endpoint: "schools",
+    aliases: ["школ", "лицей", "гимнази"],
+    searchFields: ["name", "address", "head", "inn"],
+    personFields: ["head"],
   },
   kindergartens: {
     title: "Детские сады",
+    category: "Образование",
     endpoint: "kindergartens",
+    aliases: ["сад", "детсад", "детский сад", "доу", "мбдоу"],
+    searchFields: ["name", "address", "head", "inn"],
+    personFields: ["head"],
   },
 };
 const SLASH_COMMANDS = [
@@ -6467,34 +6475,30 @@ function emitEvent(options, type, data) {
 
 async function buildDataContext(question) {
   await assertPermission("externalApi");
-  const apiBaseUrl = await getApiBaseUrl();
-  const mcpBaseUrl = await getMcpBaseUrl();
-  const [layers, schools, kindergartens] = await Promise.all([
-    fetchJson(`${mcpBaseUrl}/mcp-version`),
-    fetchAllApiItems(`${apiBaseUrl}/schools`),
-    fetchAllApiItems(`${apiBaseUrl}/kindergartens`),
-  ]);
   const queryTerms = extractSearchTerms(question);
   const patterns = extractStructuredPatterns(question);
-  const includeSchools = patterns.targetLayers.length === 0 || patterns.targetLayers.includes("schools");
-  const includeKindergartens = patterns.targetLayers.length === 0 || patterns.targetLayers.includes("kindergartens");
-  const schoolItems = includeSchools
-    ? findRelevantItems(normalizeItems(schools), queryTerms, patterns, "schools").slice(0, 8)
-    : [];
-  const kindergartenItems = includeKindergartens
-    ? findRelevantItems(normalizeItems(kindergartens), queryTerms, patterns, "kindergartens").slice(0, 8)
-    : [];
+  const layers = await callMcpTool("layer.list", { category: "Образование" });
+  const targetLayerIds = resolveTargetLayerIds(patterns);
+  const layerResults = await Promise.all(targetLayerIds.map((layer) =>
+    callMcpTool("layer.query", { layer, query: question, terms: queryTerms, patterns, limit: 8 })));
+  const layerMap = Object.fromEntries(layerResults.map((result) => [result.layer, result.items || []]));
 
   return {
-    layers: layers.data_layers || [],
+    layers,
     query: {
       text: question,
       terms: queryTerms,
       patterns,
     },
-    schools: schoolItems.map(selectPublicSummary),
-    kindergartens: kindergartenItems.map(selectPublicSummary),
+    schools: layerMap.schools || [],
+    kindergartens: layerMap.kindergartens || [],
   };
+}
+
+function resolveTargetLayerIds(patterns = {}) {
+  const knownLayers = Object.keys(DATASETS);
+  if (patterns.targetLayers?.length) return patterns.targetLayers.filter((layer) => DATASETS[layer]);
+  return knownLayers;
 }
 
 async function fetchAllApiItems(endpoint, limit = 500, maxItems = 5000) {
@@ -6507,6 +6511,36 @@ async function fetchAllApiItems(endpoint, limit = 500, maxItems = 5000) {
     if (items.length < limit) break;
   }
   return all;
+}
+
+async function queryLayer(layer, args = {}) {
+  const meta = DATASETS[layer];
+  if (!meta) throw new Error(`Неизвестный слой: ${layer}`);
+  const endpoint = `${await getApiBaseUrl()}/${meta.endpoint}`;
+  const items = await fetchAllApiItems(endpoint);
+  const terms = args.terms || extractSearchTerms(args.query || "");
+  const patterns = args.patterns || extractStructuredPatterns(args.query || "");
+  const limit = Number(args.limit || 20);
+  return {
+    layer,
+    schema: layerSchema(layer),
+    items: findRelevantItems(normalizeItems(items), terms, patterns, layer).slice(0, limit).map(selectPublicSummary),
+  };
+}
+
+function layerSchema(layer) {
+  const meta = DATASETS[layer];
+  if (!meta) throw new Error(`Неизвестный слой: ${layer}`);
+  return {
+    id: layer,
+    title: meta.title,
+    category: meta.category,
+    endpoint: meta.endpoint,
+    aliases: meta.aliases || [],
+    searchFields: meta.searchFields || [],
+    personFields: meta.personFields || [],
+    sourceFields: ["layer", "name", "inn"],
+  };
 }
 
 function emptyDataContext(question) {
@@ -7843,6 +7877,10 @@ function mcpTools() {
   const schema = (properties = {}) => ({ type: "object", properties, additionalProperties: false });
   return [
     { name: "status", description: "Статус локальной БД, sync и активного AI-профиля.", inputSchema: schema() },
+    { name: "layer.list", description: "Список слоев данных и их схем.", inputSchema: schema({ category: { type: "string" } }) },
+    { name: "layer.schema", description: "Схема слоя данных.", inputSchema: schema({ layer: { type: "string" } }) },
+    { name: "layer.query", description: "Поиск по слою данных через общий retrieval.", inputSchema: schema({ layer: { type: "string" }, query: { type: "string" }, terms: { type: "array" }, patterns: { type: "object" }, limit: { type: "number" } }) },
+    { name: "layer.get", description: "Получить запись слоя по ИНН или названию.", inputSchema: schema({ layer: { type: "string" }, query: { type: "string" }, inn: { type: "string" } }) },
     { name: "search", description: "Поиск по локальным открытым данным Йошкар-Олы.", inputSchema: schema({ query: { type: "string" }, dataset: { type: "string" }, limit: { type: "number" } }) },
     { name: "card", description: "Карточка объекта по названию или ИНН.", inputSchema: schema({ query: { type: "string" } }) },
     { name: "quality", description: "Проверки качества данных.", inputSchema: schema({ scope: { type: "string" } }) },
@@ -7860,6 +7898,7 @@ function mcpTools() {
 function mcpResources() {
   return [
     { uri: "iola://status", name: "Статус CLI", mimeType: "application/json" },
+    { uri: "iola://layers", name: "Слои данных", mimeType: "application/json" },
     { uri: "iola://sync", name: "Статус синхронизации", mimeType: "application/json" },
     { uri: "iola://settings", name: "Эффективные настройки", mimeType: "application/json" },
     { uri: "iola://skills", name: "Skills", mimeType: "application/json" },
@@ -7877,6 +7916,17 @@ function mcpPrompts() {
 }
 
 async function callMcpTool(name, args = {}) {
+  if (name === "layer.list") {
+    return Object.entries(DATASETS)
+      .map(([id, meta]) => layerSchema(id))
+      .filter((layer) => !args.category || layer.category === args.category);
+  }
+  if (name === "layer.schema") return layerSchema(args.layer);
+  if (name === "layer.query") return queryLayer(args.layer, args);
+  if (name === "layer.get") {
+    const result = await queryLayer(args.layer, { query: args.inn || args.query || "", terms: [args.inn || args.query || ""], limit: 1 });
+    return result.items[0] || null;
+  }
   if (name === "index.search") return searchDocs(args.query || "", Number(args.limit || 20));
   if (name === "report") {
     const output = args.output || `${args.name || "education-contacts"}.${args.format || "xlsx"}`;
@@ -7896,6 +7946,7 @@ async function callMcpTool(name, args = {}) {
 
 async function readMcpResource(uri) {
   if (uri === "iola://status") return JSON.stringify({ db: getDbStatus(), sync: getSyncStatus() }, null, 2);
+  if (uri === "iola://layers") return JSON.stringify(Object.fromEntries(Object.keys(DATASETS).map((id) => [id, layerSchema(id)])), null, 2);
   if (uri === "iola://sync") return JSON.stringify(getSyncStatus(), null, 2);
   if (uri === "iola://settings") return JSON.stringify(await loadConfig(), null, 2);
   if (uri === "iola://skills") return JSON.stringify(listSkills(await loadConfig()), null, 2);
@@ -9043,6 +9094,9 @@ function sanitizeConfig(config) {
         delete next.permissions.localTools[tool];
       }
     }
+  }
+  if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("open-data") && !next.skills.enabled.includes("education")) {
+    next.skills.enabled = ["education", ...next.skills.enabled];
   }
   return next;
 }
