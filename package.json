@@ -1,6 +1,6 @@
 {
   "name": "@iola_adm/iola-cli",
-  "version": "0.1.65",
+  "version": "0.1.66",
   "description": "CLI и AI-агент городского округа Йошкар-Ола.",
   "license": "MIT",
   "homepage": "https://github.com/adm-iola/iola-cli#readme",
@@ -18,11 +18,12 @@
   "scripts": {
     "postinstall": "node --no-warnings bin/iola.js db init --silent && node --no-warnings bin/iola.js browser install",
     "start": "node --no-warnings bin/iola.js",
-    "test": "node --no-warnings --check bin/iola.js && node --no-warnings --check src/cli.js"
+    "test": "node --no-warnings --check bin/iola.js && node --no-warnings --check src/cli.js && node --no-warnings test/smoke-test.js"
   },
   "files": [
     "bin",
     "src",
+    "test",
     "skills",
     "wiki",
     "docs/assets/readme-header.png",

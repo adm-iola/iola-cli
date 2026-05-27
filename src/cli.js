@@ -289,9 +289,14 @@ const SLASH_COMMANDS = [
   { command: "/search лицей --limit 3", description: "поиск" },
   { command: "/mcp-info", description: "публичный MCP" },
   { command: "/profiles", description: "AI-профили" },
+  { command: "/model", description: "переключить AI: local/API/Codex" },
+  { command: "/model codex", description: "выбрать модель Codex" },
+  { command: "/model api", description: "выбрать API-модель" },
   { command: "/models openrouter --search qwen", description: "модели" },
   { command: "/ai doctor", description: "AI diagnostics" },
   { command: "/ai setup ollama", description: "настройка Ollama" },
+  { command: "/use codex", description: "выбрать Codex CLI" },
+  { command: "/use local", description: "выбрать локальный профиль" },
   { command: "/use openai", description: "выбрать OpenAI" },
   { command: "/use ollama", description: "выбрать Ollama" },
   { command: "/key status", description: "API-ключи" },
@@ -761,10 +766,11 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOpen: false, running: false, renderedInputLines: 0, rawMode: true, pendingOutput: "" };
+  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, rawMode: true, pendingOutput: "", aiStatus: null };
   const wasRaw = input.isRaw;
   activateRawInput(input);
 
+  await refreshAgentAiStatus(state);
   const render = () => renderAgentInput(state);
   render();
 
@@ -785,13 +791,19 @@ async function startAgentRawInput() {
       }
       if (key?.name === "up" && state.slashOpen) {
         const matches = currentSlashMatches(state);
-        state.selected = Math.max(0, Math.min(matches.length - 1, state.selected - 1));
+        const nextSelected = Math.max(0, state.selected - 1);
+        state.selected = nextSelected;
+        if (state.selected < state.slashOffset) state.slashOffset = state.selected;
         render();
         continue;
       }
       if (key?.name === "down" && state.slashOpen) {
         const matches = currentSlashMatches(state);
-        state.selected = Math.max(0, Math.min(matches.length - 1, state.selected + 1));
+        const visibleLimit = getSlashVisibleLimit();
+        const nextSelected = Math.min(matches.length - 1, state.selected + 1);
+        state.selected = Math.max(0, nextSelected);
+        if (state.selected >= state.slashOffset + visibleLimit) state.slashOffset = state.selected - visibleLimit + 1;
+        state.slashOffset = Math.max(0, Math.min(state.slashOffset, Math.max(0, matches.length - visibleLimit)));
         render();
         continue;
       }
@@ -819,6 +831,7 @@ async function startAgentRawInput() {
           const shouldExit = await handleAgentLine(line, state);
           stopActivity();
           flushPendingAgentOutput(state);
+          await refreshAgentAiStatus(state);
           if (!shouldExit) restoreRawInput();
           if (shouldExit) break;
         } catch (error) {
@@ -1118,6 +1131,11 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "model") {
+    await slashModelMenu(args);
+    return false;
+  }
+
   if (command === "use") {
     await useAiProvider(args);
     return false;
@@ -1232,8 +1250,9 @@ function printAgentHelp() {
 
 function printSlashMenu(filter = "", options = {}) {
   const normalized = String(filter || "").replace(/^\//, "");
+  const limit = options.limit === undefined ? Infinity : Number(options.limit);
   const rows = getSlashCommandMatches(normalized)
-    .slice(0, Number(options.limit || 30))
+    .slice(0, limit)
     .map((item) => ({ command: item.command, description: item.description }));
   if (rows.length === 0) {
     console.log(`Нет slash-команд по фильтру: ${filter}`);
@@ -1261,11 +1280,16 @@ function getSlashCommandMatches(filter = "") {
 function updateSlashState(state) {
   state.slashOpen = state.buffer.startsWith("/");
   state.selected = 0;
+  state.slashOffset = 0;
 }
 
 function currentSlashMatches(state) {
   if (!state.buffer.startsWith("/")) return [];
-  return getSlashCommandMatches(state.buffer.slice(1)).slice(0, 10);
+  return getSlashCommandMatches(state.buffer.slice(1));
+}
+
+function getSlashVisibleLimit() {
+  return 10;
 }
 
 function renderAgentInput(state) {
@@ -1273,20 +1297,25 @@ function renderAgentInput(state) {
   const prompt = "> ";
   const lines = state.buffer.split("\n");
   const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1).map((line) => `      ${line}`)];
-  const cwdLine = colorMuted(`  ${process.cwd()}`);
+  const cwdLine = colorMuted(`  ${buildAgentStatusLine(state)}`);
   const menuLines = [];
   if (state.slashOpen) {
     const matches = currentSlashMatches(state);
     if (matches.length === 0) {
       menuLines.push("  нет команд");
     } else {
-      for (let index = 0; index < matches.length; index += 1) {
-        const selected = index === state.selected;
+      const visibleLimit = getSlashVisibleLimit();
+      const offset = Math.max(0, Math.min(state.slashOffset || 0, Math.max(0, matches.length - visibleLimit)));
+      const visibleMatches = matches.slice(offset, offset + visibleLimit);
+      for (let index = 0; index < visibleMatches.length; index += 1) {
+        const absoluteIndex = offset + index;
+        const selected = absoluteIndex === state.selected;
         const marker = selected ? ">" : " ";
-        const row = `${marker} ${matches[index].command.padEnd(24)} ${matches[index].description}`;
+        const row = `${marker} ${visibleMatches[index].command.padEnd(24)} ${visibleMatches[index].description}`;
         menuLines.push(selected ? colorSlashSelection(row) : `  ${row.slice(2)}`);
       }
-      menuLines.push("  ↑/↓ выбрать • Enter вставить/выполнить • Esc закрыть");
+      const shownTo = Math.min(offset + visibleLimit, matches.length);
+      menuLines.push(`  ↑/↓ выбрать • Enter выполнить • Esc закрыть • ${offset + 1}-${shownTo} из ${matches.length}`);
     }
   }
 
@@ -1398,6 +1427,35 @@ function printAgentHistory(history) {
   for (const item of history.slice(-10)) {
     console.log(`${item.role}: ${item.content}`);
   }
+}
+
+async function refreshAgentAiStatus(state) {
+  try {
+    const config = await loadConfig();
+    const name = getActiveProfileName(config);
+    const profile = config.ai.profiles?.[name] || {
+      provider: config.ai.provider,
+      model: config.ai.model,
+      baseUrl: config.ai.baseUrl,
+    };
+    state.aiStatus = { name, provider: profile.provider || "-", model: profile.model || "-" };
+  } catch {
+    state.aiStatus = null;
+  }
+}
+
+function buildAgentStatusLine(state) {
+  const cwd = process.cwd();
+  const ai = state.aiStatus;
+  if (!ai) return cwd;
+  const kind = {
+    ollama: "локальная",
+    openai: "API",
+    openrouter: "API",
+    codex: "Codex",
+  }[ai.provider] || ai.provider;
+  const model = ai.model && ai.model !== "-" ? ` • ${ai.model}` : "";
+  return `${cwd}  |  AI: ${kind}${model} (${ai.name})`;
 }
 
 function compactAgentHistory(history) {
@@ -4265,6 +4323,171 @@ async function useAiProvider(args) {
   });
 
   console.log(`AI-провайдер переключен: ${provider}, профиль: ${profileName}, модель: ${defaultModel}`);
+}
+
+async function slashModelMenu(args = []) {
+  const [target, maybeModel] = args;
+  const normalizedTarget = normalizeModelMenuTarget(target);
+
+  if (normalizedTarget && maybeModel) {
+    const directTarget = normalizedTarget === "api" ? await getDefaultApiProviderForModelSwitch() : normalizedTarget;
+    await switchModelTarget(directTarget, maybeModel);
+    return;
+  }
+
+  const selectedTarget = normalizedTarget || await chooseModelTarget();
+  if (!selectedTarget) return;
+
+  await openModelTargetMenu(selectedTarget);
+}
+
+function normalizeModelMenuTarget(value = "") {
+  const normalized = String(value || "").trim().toLocaleLowerCase("ru-RU");
+  if (!normalized) return "";
+  if (["local", "локальная", "локально", "ollama"].includes(normalized)) return "local";
+  if (["api", "апи"].includes(normalized)) return "api";
+  if (normalized === "openai") return "openai";
+  if (normalized === "openrouter" || normalized === "router") return "openrouter";
+  if (["codex", "кодекс"].includes(normalized)) return "codex";
+  return "";
+}
+
+async function chooseModelTarget() {
+  console.log("Выберите AI-подключение:");
+  console.log("  1. Локальная модель (Ollama)");
+  console.log("  2. API (OpenAI/OpenRouter)");
+  console.log("  3. Codex CLI");
+  console.log("  0. Отмена");
+
+  const answer = await askText("Номер: ");
+  return { 1: "local", 2: "api", 3: "codex" }[answer.trim()] || "";
+}
+
+async function openModelTargetMenu(target) {
+  if (target === "local") {
+    const model = await chooseAiModel("ollama");
+    if (model) await switchModelTarget("local", model);
+    return;
+  }
+
+  if (target === "codex") {
+    const model = await chooseAiModel("codex");
+    if (model) await switchModelTarget("codex", model);
+    return;
+  }
+
+  if (target === "openai" || target === "openrouter") {
+    const model = await chooseAiModel(target);
+    if (model) await switchModelTarget(target, model);
+    return;
+  }
+
+  const provider = await chooseApiProvider();
+  if (!provider) return;
+  const model = await chooseAiModel(provider);
+  if (model) await switchModelTarget(provider, model);
+}
+
+async function chooseApiProvider() {
+  const config = await loadConfig();
+  const apiProfiles = Object.entries(config.ai.profiles || {})
+    .filter(([, profile]) => profile.provider === "openai" || profile.provider === "openrouter")
+    .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})` }));
+  const choices = [
+    ...apiProfiles,
+    { id: "openai", label: "OpenAI API" },
+    { id: "openrouter", label: "OpenRouter API" },
+  ].filter((item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index);
+
+  console.log("Выберите API-подключение:");
+  choices.forEach((item, index) => console.log(`  ${index + 1}. ${item.label}`));
+  console.log("  0. Отмена");
+
+  const answer = Number(await askText("Номер: "));
+  return choices[answer - 1]?.id || "";
+}
+
+async function getDefaultApiProviderForModelSwitch() {
+  const config = await loadConfig();
+  const activeProfile = config.ai.profiles?.[getActiveProfileName(config)];
+  if (activeProfile?.provider === "openai" || activeProfile?.provider === "openrouter") return activeProfile.provider;
+  const apiProfile = Object.values(config.ai.profiles || {}).find((profile) => profile.provider === "openai" || profile.provider === "openrouter");
+  return apiProfile?.provider || "openai";
+}
+
+async function chooseAiModel(provider) {
+  let search = "";
+  if (provider === "openrouter" || provider === "openai") {
+    search = (await askText("Фильтр моделей (Enter - без фильтра): ")).trim();
+  }
+
+  let models;
+  try {
+    models = await listAiModels(provider);
+  } catch (error) {
+    console.log(error instanceof Error ? error.message : String(error));
+    return "";
+  }
+
+  let filtered = search
+    ? models.filter((model) => model.id.toLocaleLowerCase("ru-RU").includes(search.toLocaleLowerCase("ru-RU")))
+    : models;
+
+  if (filtered.length === 0) {
+    console.log("Модели не найдены.");
+    return "";
+  }
+
+  const limit = 25;
+  if (filtered.length > limit) {
+    filtered = filtered.slice(0, limit);
+    console.log(`Показаны первые ${limit} моделей. Для точного выбора запустите /model и задайте фильтр.`);
+  }
+
+  console.log("Выберите модель:");
+  filtered.forEach((model, index) => console.log(`  ${index + 1}. ${model.id}${model.note ? ` - ${model.note}` : ""}`));
+  console.log("  0. Отмена");
+
+  const answer = Number(await askText("Номер: "));
+  return filtered[answer - 1]?.id || "";
+}
+
+async function switchModelTarget(target, model) {
+  const config = await loadConfig();
+  const provider = target === "local" ? "ollama" : target;
+  const profileName = provider === "ollama" ? "local" : provider;
+  const currentProfile = config.ai.profiles?.[profileName] || buildProfileFromOptions(provider, { model });
+  const profile = {
+    ...currentProfile,
+    provider,
+    model,
+  };
+
+  await saveConfig({
+    ai: {
+      ...config.ai,
+      activeProfile: profileName,
+      provider,
+      model,
+      baseUrl: profile.baseUrl || config.ai.baseUrl,
+      profiles: {
+        ...(config.ai.profiles || {}),
+        [profileName]: profile,
+      },
+    },
+  });
+
+  console.log(`Активная модель: ${profileName} (${provider}, ${model})`);
+}
+
+async function askText(question) {
+  if (!process.stdin.isTTY) return "";
+  const rl = readline.createInterface({ input, output });
+  try {
+    return await rl.question(question);
+  } finally {
+    rl.close();
+  }
 }
 
 async function aiContext(args) {
