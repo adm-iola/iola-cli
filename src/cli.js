@@ -8771,7 +8771,8 @@ async function saveConfig(value) {
 }
 
 async function writeConfig(value) {
-  const errors = validateConfig(value);
+  const sanitized = sanitizeConfig(value);
+  const errors = validateConfig(sanitized);
   if (errors.length > 0) {
     throw new Error(`Конфигурация не сохранена: ${errors.join("; ")}`);
   }
@@ -8779,7 +8780,7 @@ async function writeConfig(value) {
   if (existsSync(CONFIG_FILE)) {
     await copyFile(CONFIG_FILE, LAST_GOOD_CONFIG_FILE).catch(() => {});
   }
-  await writeFile(CONFIG_FILE, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(CONFIG_FILE, `${JSON.stringify(sanitized, null, 2)}\n`, "utf8");
 }
 
 async function loadConfig() {
@@ -8788,7 +8789,7 @@ async function loadConfig() {
     const value = await readConfigLayer(layer);
     if (value) config = mergeConfig(config, value);
   }
-  return config;
+  return sanitizeConfig(config);
 }
 
 async function loadConfigLayers() {
@@ -8805,7 +8806,7 @@ async function loadConfigLayers() {
       continue;
     }
     const value = await readConfigLayer(layer.file);
-    rows.push({ ...layer, exists: Boolean(value), value, errors: value ? validateConfig(mergeConfig(DEFAULT_AI_CONFIG, value)) : [] });
+    rows.push({ ...layer, exists: Boolean(value), value, errors: value ? validateConfig(sanitizeConfig(mergeConfig(DEFAULT_AI_CONFIG, value))) : [] });
   }
   rows.push({ scope: "runtime", file: "process.env", exists: true, value: { IOLA_API_BASE_URL: process.env.IOLA_API_BASE_URL || "", IOLA_MCP_BASE_URL: process.env.IOLA_MCP_BASE_URL || "" }, errors: [] });
   return rows;
@@ -8898,6 +8899,18 @@ function mergeConfig(base, override) {
     hooksTrusted: override.hooksTrusted ?? base.hooksTrusted,
     local: override.local ?? base.local,
   };
+}
+
+function sanitizeConfig(config) {
+  const next = JSON.parse(JSON.stringify(config || {}));
+  if (next.permissions?.localTools && typeof next.permissions.localTools === "object") {
+    for (const tool of Object.keys(next.permissions.localTools)) {
+      if (!ALL_TOOL_ALIASES.includes(tool)) {
+        delete next.permissions.localTools[tool];
+      }
+    }
+  }
+  return next;
 }
 
 function validateConfig(config) {
