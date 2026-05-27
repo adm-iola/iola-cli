@@ -6477,22 +6477,44 @@ async function buildDataContext(question) {
   await assertPermission("externalApi");
   const queryTerms = extractSearchTerms(question);
   const patterns = extractStructuredPatterns(question);
-  const layers = await callMcpTool("layer.list", { category: "Образование" });
-  const targetLayerIds = resolveTargetLayerIds(patterns);
-  const layerResults = await Promise.all(targetLayerIds.map((layer) =>
-    callMcpTool("layer.query", { layer, query: question, terms: queryTerms, patterns, limit: 8 })));
-  const layerMap = Object.fromEntries(layerResults.map((result) => [result.layer, result.items || []]));
+  try {
+    const context = await callPublicMcpTool("layer_answer_context", { question, limit: 8 });
+    const layerMap = Object.fromEntries((context.results || []).map((result) => [result.layer?.id || result.layer, result.items || []]));
+    return {
+      source: "remote-mcp",
+      contract_version: context.contract_version,
+      layers: context.layers || [],
+      facts: context.facts || [],
+      sources: context.sources || [],
+      answer_guidance: context.answer_guidance || "",
+      query: {
+        text: question,
+        terms: queryTerms,
+        patterns,
+      },
+      schools: layerMap.schools || [],
+      kindergartens: layerMap.kindergartens || [],
+    };
+  } catch (error) {
+    const layers = await callMcpTool("layer.list", { category: "Образование" });
+    const targetLayerIds = resolveTargetLayerIds(patterns);
+    const layerResults = await Promise.all(targetLayerIds.map((layer) =>
+      callMcpTool("layer.query", { layer, query: question, terms: queryTerms, patterns, limit: 8 })));
+    const layerMap = Object.fromEntries(layerResults.map((result) => [result.layer, result.items || []]));
 
-  return {
-    layers,
-    query: {
-      text: question,
-      terms: queryTerms,
-      patterns,
-    },
-    schools: layerMap.schools || [],
-    kindergartens: layerMap.kindergartens || [],
-  };
+    return {
+      source: "local-fallback",
+      fallback_error: error instanceof Error ? error.message : String(error),
+      layers,
+      query: {
+        text: question,
+        terms: queryTerms,
+        patterns,
+      },
+      schools: layerMap.schools || [],
+      kindergartens: layerMap.kindergartens || [],
+    };
+  }
 }
 
 function resolveTargetLayerIds(patterns = {}) {
@@ -6878,6 +6900,7 @@ async function showMcpInfo(args) {
     server_name: info.server_name,
     server_version: info.server_version,
     skill_version: info.skill_version,
+    contract_version: info.contract_version || "-",
     npm_package: info.npm_package,
     mcp_endpoint: info.mcp_endpoint,
     layers: info.data_layers.map((layer) => layer.id).join(", "),
@@ -6928,9 +6951,9 @@ async function listDataset(dataset, args) {
 
   const data = options.local
       ? searchLocalRecords(options.search || options._.join(" ") || "", { dataset, limit: Number(options.limit || 20), fts: options.fts })
-    : normalizeItems(await fetchJsonMaybeCached(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?${params}`, options));
+    : await listDatasetViaRemoteMcp(dataset, options, params);
   const items = data;
-  const filtered = applyDatasetFilters(items, options);
+  const filtered = applyDatasetFilters(items, options.local ? options : { ...options, search: "" });
   const limited = filtered.slice(0, Number(options.limit || 20));
   const summarized = limited.map(selectPublicSummary);
   const projected = projectColumns(summarized, options.columns);
@@ -6952,13 +6975,34 @@ async function listDataset(dataset, args) {
   printDatasetTable(projected, options.columns);
 }
 
+async function listDatasetViaRemoteMcp(dataset, options, params) {
+  try {
+    const limit = Number(options.limit || 20);
+    const offset = Number(options.offset || 0);
+    const query = options.search || options._.join(" ") || "";
+    const result = await callPublicMcpTool("layer_query", {
+      layer: dataset,
+      query,
+      limit: offset + limit,
+    });
+    return normalizeItems(result.items || []).slice(offset, offset + limit);
+  } catch (error) {
+    if (options.debug) {
+      console.error(`remote MCP fallback to API: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return normalizeItems(await fetchJsonMaybeCached(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?${params}`, options));
+  }
+}
+
 async function getDatasetItem(dataset, options) {
   if (!options.inn) {
     throw new Error(`INN is required. Example: iola ${dataset} get --inn 1215067180`);
   }
 
-  const data = await fetchJson(`${await getApiBaseUrl()}/${DATASETS[dataset].endpoint}?limit=500&offset=0`);
-  const item = normalizeItems(data).find((entry) => String(entry.inn) === String(options.inn));
+  const result = options.local
+    ? { found: true, item: searchLocalRecords(options.inn, { dataset, limit: 1, fts: false })[0] }
+    : await callPublicMcpTool("layer_get", { layer: dataset, inn: options.inn });
+  const item = result?.item;
 
   if (!item) {
     throw new Error(`Record was not found in ${dataset}: inn=${options.inn}`);
@@ -6987,13 +7031,13 @@ async function searchAll(args) {
         searchLocalRecords(query, { dataset: "kindergartens", limit, fts: options.fts }),
       ]
     : await Promise.all([
-        fetchJsonMaybeCached(`${await getApiBaseUrl()}/schools?limit=100&offset=0`, options),
-        fetchJsonMaybeCached(`${await getApiBaseUrl()}/kindergartens?limit=100&offset=0`, options),
+        callPublicMcpTool("layer_query", { layer: "schools", query, limit }),
+        callPublicMcpTool("layer_query", { layer: "kindergartens", query, limit }),
       ]);
 
   const result = {
-    schools: projectColumns(filterItems(normalizeItems(schools), query).slice(0, limit).map(selectPublicSummary), options.columns),
-    kindergartens: projectColumns(filterItems(normalizeItems(kindergartens), query).slice(0, limit).map(selectPublicSummary), options.columns),
+    schools: projectColumns((options.local ? filterItems(normalizeItems(schools.items || schools), query) : normalizeItems(schools.items || schools)).slice(0, limit).map(selectPublicSummary), options.columns),
+    kindergartens: projectColumns((options.local ? filterItems(normalizeItems(kindergartens.items || kindergartens), query) : normalizeItems(kindergartens.items || kindergartens)).slice(0, limit).map(selectPublicSummary), options.columns),
   };
 
   if (options.json || options.format === "json") {
@@ -7879,8 +7923,10 @@ function mcpTools() {
     { name: "status", description: "Статус локальной БД, sync и активного AI-профиля.", inputSchema: schema() },
     { name: "layer.list", description: "Список слоев данных и их схем.", inputSchema: schema({ category: { type: "string" } }) },
     { name: "layer.schema", description: "Схема слоя данных.", inputSchema: schema({ layer: { type: "string" } }) },
+    { name: "layer.suggest", description: "Подобрать слой данных по вопросу пользователя через публичный MCP.", inputSchema: schema({ query: { type: "string" }, limit: { type: "number" } }) },
     { name: "layer.query", description: "Поиск по слою данных через общий retrieval.", inputSchema: schema({ layer: { type: "string" }, query: { type: "string" }, terms: { type: "array" }, patterns: { type: "object" }, limit: { type: "number" } }) },
     { name: "layer.get", description: "Получить запись слоя по ИНН или названию.", inputSchema: schema({ layer: { type: "string" }, query: { type: "string" }, inn: { type: "string" } }) },
+    { name: "layer.answer_context", description: "RAG-контекст с фактами и источниками через публичный MCP.", inputSchema: schema({ question: { type: "string" }, layer: { type: "string" }, limit: { type: "number" } }) },
     { name: "search", description: "Поиск по локальным открытым данным Йошкар-Олы.", inputSchema: schema({ query: { type: "string" }, dataset: { type: "string" }, limit: { type: "number" } }) },
     { name: "card", description: "Карточка объекта по названию или ИНН.", inputSchema: schema({ query: { type: "string" } }) },
     { name: "quality", description: "Проверки качества данных.", inputSchema: schema({ scope: { type: "string" } }) },
@@ -7917,16 +7963,40 @@ function mcpPrompts() {
 
 async function callMcpTool(name, args = {}) {
   if (name === "layer.list") {
-    return Object.entries(DATASETS)
-      .map(([id, meta]) => layerSchema(id))
-      .filter((layer) => !args.category || layer.category === args.category);
+    try {
+      const result = await callPublicMcpTool("layer_list", { category: args.category || undefined });
+      return result.items || result;
+    } catch {
+      return Object.entries(DATASETS)
+        .map(([id, meta]) => layerSchema(id))
+        .filter((layer) => !args.category || layer.category === args.category);
+    }
   }
-  if (name === "layer.schema") return layerSchema(args.layer);
-  if (name === "layer.query") return queryLayer(args.layer, args);
+  if (name === "layer.schema") {
+    try {
+      return await callPublicMcpTool("layer_schema", { layer: args.layer });
+    } catch {
+      return layerSchema(args.layer);
+    }
+  }
+  if (name === "layer.suggest") return callPublicMcpTool("layer_suggest", { query: args.query || "", limit: Number(args.limit || 5) });
+  if (name === "layer.query") {
+    try {
+      const result = await callPublicMcpTool("layer_query", { layer: args.layer, query: args.query || "", limit: Number(args.limit || 20) });
+      return { layer: result.layer?.id || args.layer, schema: result.layer, items: result.items || [] };
+    } catch {
+      return queryLayer(args.layer, args);
+    }
+  }
   if (name === "layer.get") {
-    const result = await queryLayer(args.layer, { query: args.inn || args.query || "", terms: [args.inn || args.query || ""], limit: 1 });
-    return result.items[0] || null;
+    try {
+      return await callPublicMcpTool("layer_get", { layer: args.layer, query: args.query || "", inn: args.inn || "" });
+    } catch {
+      const result = await queryLayer(args.layer, { query: args.inn || args.query || "", terms: [args.inn || args.query || ""], limit: 1 });
+      return result.items[0] || null;
+    }
   }
+  if (name === "layer.answer_context") return callPublicMcpTool("layer_answer_context", { question: args.question || "", layer: args.layer || "", limit: Number(args.limit || 5) });
   if (name === "index.search") return searchDocs(args.query || "", Number(args.limit || 20));
   if (name === "report") {
     const output = args.output || `${args.name || "education-contacts"}.${args.format || "xlsx"}`;
@@ -9327,6 +9397,54 @@ async function fetchJson(url) {
   }
 
   return response.json();
+}
+
+function parseJsonOrSse(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return JSON.parse(trimmed);
+  const dataLines = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) throw new Error(`Unexpected MCP response: ${trimmed.slice(0, 300)}`);
+  return JSON.parse(dataLines.join("\n"));
+}
+
+async function publicMcpRequest(method, params = undefined) {
+  const baseUrl = await getMcpBaseUrl();
+  const body = { jsonrpc: "2.0", id: 1, method };
+  if (params !== undefined) body.params = params;
+  const response = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`MCP ${method} failed: ${response.status} ${response.statusText}: ${text.slice(0, 300)}`);
+  }
+  const payload = parseJsonOrSse(text);
+  if (payload?.error) throw new Error(payload.error.message || JSON.stringify(payload.error));
+  return payload?.result;
+}
+
+async function callPublicMcpTool(name, args = {}) {
+  const result = await publicMcpRequest("tools/call", { name, arguments: args });
+  if (result?.structuredContent) return result.structuredContent;
+  if (result?.structured_content) return result.structured_content;
+  const text = result?.content?.find?.((item) => item.type === "text")?.text;
+  if (text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return result;
 }
 
 function printJson(value) {
