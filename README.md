@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@iola_adm/iola-cli">
-    <img alt="npm version" src="https://img.shields.io/npm/v/@iola_adm/iola-cli?label=npm">
+    <img alt="npm version" src="https://img.shields.io/npm/v/@iola_adm/iola-cli?label=npm&cacheSeconds=60">
   </a>
   <a href="https://github.com/adm-iola/iola-cli/actions/workflows/ci.yml">
     <img alt="CI" src="https://github.com/adm-iola/iola-cli/actions/workflows/ci.yml/badge.svg">
