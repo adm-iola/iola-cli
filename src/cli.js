@@ -5969,6 +5969,20 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
+  const directAnswer = buildDirectDataAnswer(question, dataContext);
+  if (directAnswer) {
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: directAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, directAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: directAnswer.length, sessionId, direct: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, directAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(directAnswer);
+    return directAnswer;
+  }
   const messages = await buildAiMessages(question, dataContext, history, options, config);
   let answer = "";
   let errorMessage = "";
@@ -6016,6 +6030,28 @@ async function aiAsk(args, context = {}) {
 
   if (!options.quiet) console.log(answer);
   return answer;
+}
+
+function buildDirectDataAnswer(question, dataContext) {
+  const normalized = question.toLocaleLowerCase("ru-RU");
+  if (!/(директор|руководител)/iu.test(normalized)) return "";
+  const terms = extractSearchTerms(question).filter((term) => !/^\d+$/.test(term));
+  if (terms.length < 2) return "";
+  const rows = [
+    ...dataContext.schools.map((item) => ({ layer: "schools", layerName: "школы", ...item })),
+    ...dataContext.kindergartens.map((item) => ({ layer: "kindergartens", layerName: "детские сады", ...item })),
+  ];
+  const matches = rows.filter((item) => {
+    const head = String(item.head || "").toLocaleLowerCase("ru-RU");
+    return terms.every((term) => head.includes(term));
+  });
+  if (matches.length !== 1) return "";
+  const item = matches[0];
+  return [
+    `${item.head} — руководитель ${item.name}.`,
+    item.address ? `Адрес: ${item.address}.` : "",
+    `Источник: слой ${item.layer}, ИНН ${item.inn || "-"}.`,
+  ].filter(Boolean).join("\n");
 }
 
 async function resolveUsableAiProfile(config, options = {}) {
@@ -6435,8 +6471,8 @@ async function buildDataContext(question) {
   const mcpBaseUrl = await getMcpBaseUrl();
   const [layers, schools, kindergartens] = await Promise.all([
     fetchJson(`${mcpBaseUrl}/mcp-version`),
-    fetchJson(`${apiBaseUrl}/schools?limit=100&offset=0`),
-    fetchJson(`${apiBaseUrl}/kindergartens?limit=100&offset=0`),
+    fetchAllApiItems(`${apiBaseUrl}/schools`),
+    fetchAllApiItems(`${apiBaseUrl}/kindergartens`),
   ]);
   const queryTerms = extractSearchTerms(question);
   const patterns = extractStructuredPatterns(question);
@@ -6461,6 +6497,18 @@ async function buildDataContext(question) {
   };
 }
 
+async function fetchAllApiItems(endpoint, limit = 500, maxItems = 5000) {
+  const all = [];
+  for (let offset = 0; offset < maxItems; offset += limit) {
+    const separator = endpoint.includes("?") ? "&" : "?";
+    const payload = await fetchJson(`${endpoint}${separator}limit=${limit}&offset=${offset}`);
+    const items = normalizeItems(payload);
+    all.push(...items);
+    if (items.length < limit) break;
+  }
+  return all;
+}
+
 function emptyDataContext(question) {
   return {
     enabled: false,
@@ -6481,7 +6529,13 @@ function shouldUseDataContext(question, options = {}) {
   if (/^(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер|hi|hello|hey)[!.?\s]*$/iu.test(normalized)) return false;
   if (/^(спасибо|благодарю|ок|окей|понял|поняла|ясно|хорошо|да|нет)[!.?\s]*$/iu.test(normalized)) return false;
   if (normalized.length <= 24 && /^(как дела|что нового|ты тут|ты здесь|кто ты)[?.!\s]*$/iu.test(normalized)) return false;
-  return /\b(школ|сад|детсад|детский сад|лицей|гимнази|инн|адрес|телефон|почт|email|сайт|лиценз|руководител|директор|слой|слои|данн|отчет|отчёт|выгруз|csv|json|найди|покажи|список|карточк|организац|учрежден|йошкар|ола|петрова|строител|советск|первомайск)\b/iu.test(normalized);
+  const dataKeywords = [
+    "школ", "сад", "детсад", "детский сад", "лицей", "гимнази", "инн", "адрес", "телефон",
+    "почт", "email", "сайт", "лиценз", "руководител", "директор", "слой", "слои", "данн",
+    "отчет", "отчёт", "выгруз", "csv", "json", "найди", "покажи", "список", "карточк",
+    "организац", "учрежден", "йошкар", "ола", "петрова", "строител", "советск", "первомайск",
+  ];
+  return dataKeywords.some((keyword) => normalized.includes(keyword));
 }
 
 function extractSearchTerms(question) {
@@ -6491,7 +6545,13 @@ function extractSearchTerms(question) {
     .split(/\s+/)
     .map((term) => term.trim())
     .filter(Boolean)
-    .filter((term) => !["какие", "какая", "какой", "есть", "найди", "покажи", "контакты", "адрес", "телефон", "школы", "школа", "сад", "детский", "детские", "сады", "улица", "ул"].includes(term));
+    .filter((term) => ![
+      "в", "во", "на", "по", "и", "а", "ну", "так", "слушай", "скажи", "подскажи",
+      "какие", "какая", "какой", "каком", "какой", "есть", "найди", "покажи",
+      "контакты", "адрес", "телефон", "школы", "школа", "школе", "сад", "детский",
+      "детские", "сады", "улица", "ул", "директор", "руководитель",
+    ].includes(term))
+    .filter((term) => term.length > 2 || /^\d+$/.test(term));
 
   return normalized.length > 0 ? normalized : [question];
 }
@@ -6539,8 +6599,10 @@ function scoreItem(item, terms, patterns, layer) {
   const text = JSON.stringify(summary).toLocaleLowerCase("ru-RU");
   const name = String(summary.name || "").toLocaleLowerCase("ru-RU");
   const address = String(summary.address || "").toLocaleLowerCase("ru-RU");
+  const head = String(summary.head || "").toLocaleLowerCase("ru-RU");
   const generalTerms = terms.filter((term) => !/^\d+$/.test(term));
   let score = generalTerms.reduce((value, term) => value + (text.includes(term.toLocaleLowerCase("ru-RU")) ? 1 : 0), 0);
+  score += generalTerms.reduce((value, term) => value + (head.includes(term.toLocaleLowerCase("ru-RU")) ? 5 : 0), 0);
 
   for (const inn of patterns.inns) {
     if (String(summary.inn) === inn) {
