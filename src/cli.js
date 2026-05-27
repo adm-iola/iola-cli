@@ -4077,18 +4077,14 @@ async function listAiModels(provider) {
       }
 
       const payload = await response.json();
-      return (payload.models || []).map((model) => ({
+      const models = (payload.models || []).map((model) => ({
         id: model.name,
         provider: "ollama",
         note: model.modified_at ? `updated ${model.modified_at}` : "local",
       }));
+      return models.length > 0 ? models : getRecommendedOllamaModels("not installed");
     } catch {
-      return [
-        { id: "llama3.2:1b", provider: "ollama", note: "recommended low RAM" },
-        { id: "llama3.2:3b", provider: "ollama", note: "recommended standard" },
-        { id: "qwen3:4b", provider: "ollama", note: "recommended balanced" },
-        { id: "qwen3:8b", provider: "ollama", note: "recommended good GPU" },
-      ];
+      return getRecommendedOllamaModels("recommended");
     }
   }
 
@@ -4136,6 +4132,15 @@ async function listAiModels(provider) {
     { id: "gpt-5", provider: "codex", note: version },
     { id: "gpt-5-codex", provider: "codex", note: version },
     { id: "gpt-5-mini", provider: "codex", note: version },
+  ];
+}
+
+function getRecommendedOllamaModels(notePrefix = "recommended") {
+  return [
+    { id: "llama3.2:1b", provider: "ollama", note: `${notePrefix} low RAM` },
+    { id: "llama3.2:3b", provider: "ollama", note: `${notePrefix} standard` },
+    { id: "qwen3:4b", provider: "ollama", note: `${notePrefix} balanced` },
+    { id: "qwen3:8b", provider: "ollama", note: `${notePrefix} good GPU` },
   ];
 }
 
@@ -4455,6 +4460,10 @@ async function chooseAiModel(provider) {
 async function switchModelTarget(target, model) {
   const config = await loadConfig();
   const provider = target === "local" ? "ollama" : target;
+  if (provider === "ollama") {
+    const ready = await ensureOllamaModelAvailable(model, config);
+    if (!ready) return;
+  }
   const profileName = provider === "ollama" ? "local" : provider;
   const currentProfile = config.ai.profiles?.[profileName] || buildProfileFromOptions(provider, { model });
   const profile = {
@@ -4478,6 +4487,38 @@ async function switchModelTarget(target, model) {
   });
 
   console.log(`Активная модель: ${profileName} (${provider}, ${model})`);
+}
+
+async function ensureOllamaModelAvailable(model, config = null) {
+  if (await isOllamaModelInstalled(model, config)) return true;
+
+  const command = await resolveOllamaCommand();
+  if (!command) {
+    console.log("Ollama CLI не найден в PATH, хотя локальный API может отвечать.");
+    console.log("Откройте новый PowerShell или запустите мастер: iola ai setup ollama");
+    return false;
+  }
+
+  const shouldInstall = await confirm(`Локальная модель ${model} не скачана. Скачать через "ollama pull ${model}"? [Y/n] `);
+  if (!shouldInstall) {
+    console.log("Переключение на локальную модель отменено.");
+    return false;
+  }
+
+  await runCommand(command, ["pull", model], { inherit: true });
+  return true;
+}
+
+async function isOllamaModelInstalled(model, loadedConfig = null) {
+  try {
+    const config = loadedConfig || await loadConfig();
+    const response = await fetch(`${config.ai.profiles?.local?.baseUrl || "http://127.0.0.1:11434"}/api/tags`);
+    if (!response.ok) return false;
+    const payload = await response.json();
+    return (payload.models || []).some((entry) => entry.name === model);
+  } catch {
+    return false;
+  }
 }
 
 async function askText(question) {
