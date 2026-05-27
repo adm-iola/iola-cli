@@ -24,7 +24,7 @@
     <img alt="CI" src="https://github.com/adm-iola/iola-cli/actions/workflows/ci.yml/badge.svg">
   </a>
   <a href="https://github.com/adm-iola/iola-cli/actions/workflows/npm-publish.yml">
-    <img alt="npm publish" src="https://github.com/adm-iola/iola-cli/actions/workflows/npm-publish.yml/badge.svg">
+    <img alt="npm publish" src="https://github.com/adm-iola/iola-cli/actions/workflows/npm-publish.yml/badge.svg?event=release">
   </a>
   <a href="https://github.com/adm-iola/iola-cli/blob/main/LICENSE">
     <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
