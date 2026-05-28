@@ -64,8 +64,11 @@ assertIncludes(skills, "reports", "skills list");
 assertNotIncludes(skills, "gosuslugi", "skills list");
 
 const deletePlan = JSON.parse(await runCli(["delete", "--dry-run", "--json"]));
-if (!Array.isArray(deletePlan.willDelete) || !deletePlan.willKeep.includes("Codex CLI")) {
-  throw new Error("delete dry-run should list delete targets and keep Codex CLI");
+if (!Array.isArray(deletePlan.willDelete) || deletePlan.willRemovePackage !== "@iola_adm/iola-cli" || !deletePlan.willKeep.includes("Codex CLI")) {
+  throw new Error("delete dry-run should list delete targets, npm package, and keep Codex CLI");
+}
+if (deletePlan.willKeep.includes("npm package files")) {
+  throw new Error("delete dry-run should not keep npm package files");
 }
 
 console.log("smoke tests passed");

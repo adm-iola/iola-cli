@@ -2138,6 +2138,7 @@ async function handleUninstall(args = []) {
       description: "локальная папка .iola текущего проекта",
     });
   }
+  const npmPackage = "@iola_adm/iola-cli";
 
   const safeTargets = targets.map((target) => ({
     ...target,
@@ -2160,7 +2161,8 @@ async function handleUninstall(args = []) {
         exists: existsSync(target.path),
         description: target.description,
       })),
-      willKeep: ["Codex CLI", "Codex auth/config", "npm package files"],
+      willRemovePackage: npmPackage,
+      willKeep: ["Codex CLI", "Codex auth/config"],
       reinstall: "npm install -g @iola_adm/iola-cli@latest",
     };
     if (options.json) printJson(payload);
@@ -2175,8 +2177,9 @@ async function handleUninstall(args = []) {
       console.log(`  ${target.description}`);
     }
     console.log("");
+    console.log(`Будет удален npm-пакет: ${npmPackage}`);
     console.log("Codex CLI и его настройки не удаляются.");
-    const confirmed = await confirm("Удалить локальные данные iola-cli? [y/N] ");
+    const confirmed = await confirm("Полностью удалить iola-cli? [y/N] ");
     if (!confirmed) {
       console.log("Удаление отменено.");
       return { deleted: false };
@@ -2188,9 +2191,11 @@ async function handleUninstall(args = []) {
   }
 
   console.log("Локальные данные iola-cli удалены.");
+  console.log(`Удаляю npm-пакет ${npmPackage}...`);
+  await runCommand(getNpmCommand(), ["remove", "-g", npmPackage], { inherit: true });
+  console.log("npm-пакет iola-cli удален.");
   console.log("Codex CLI не тронут.");
-  console.log("Для полной переустановки npm-пакета:");
-  console.log("  npm remove -g @iola_adm/iola-cli");
+  console.log("Для повторной установки:");
   console.log("  npm install -g @iola_adm/iola-cli@latest");
   return { deleted: true };
 }
@@ -9984,6 +9989,10 @@ function runCommand(command, args, options = {}) {
       child.stdin?.end(options.input);
     }
   });
+}
+
+function getNpmCommand() {
+  return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
 function debugLog(message) {
