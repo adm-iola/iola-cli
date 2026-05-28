@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync, inflateSync } from "node:zlib";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
 const MIN_NODE_VERSION = "22.5.0";
@@ -20,20 +21,25 @@ const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
 const DB_SCHEMA_VERSION = 8;
+const IOLA_LOCAL_MODEL = "iola-router-1b";
+const IOLA_LOCAL_OLLAMA_MODEL = "gemma3:1b";
+const IOLA_ROUTER_HF_REPO = process.env.IOLA_ROUTER_HF_REPO || "LMSerg/iola-1b-router-2026-05-28-merged";
+const IOLA_MODEL_DIR = path.join(CONFIG_DIR, "models", "router");
+const IOLA_MODEL_RUNTIME_DIR = path.join(CONFIG_DIR, "model-runtime");
+const IOLA_MODEL_RUNNER = path.resolve(__dirname, "iola_hf_runner.py");
 const PROJECT_IOLA_DIR = path.join(process.cwd(), ".iola");
 const PROJECT_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "config.json");
 const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
-const LOCAL_TOOLS = ["search_data", "get_card", "export_report", "file_read", "browser_open"];
+const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUILTIN_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 const USER_SKILLS_DIR = path.join(CONFIG_DIR, "skills");
 const PROJECT_CONTEXT_FILE = path.join(process.cwd(), "IOLA.md");
@@ -102,9 +108,9 @@ const SKILL_BUNDLES = {
     requirements: ["files mode read-only/workspace-write", "7-Zip для архивов"],
   },
   "local-agent": {
-    description: "Локальная модель Ollama с проверочным reasoning и локальными tools.",
+    description: "Локальная модель IOLA с проверочным reasoning и локальными tools.",
     skills: ["local-model", "open-data"],
-    requirements: ["Ollama", "локальная модель"],
+    requirements: ["Python", "локальная модель"],
   },
 };
 let onboardRanThisProcess = false;
@@ -115,14 +121,14 @@ const DEFAULT_AI_CONFIG = {
   },
   ai: {
     activeProfile: "local",
-    provider: "ollama",
-    model: "llama3.2:1b",
-    baseUrl: "http://127.0.0.1:11434",
+    provider: "iola",
+    model: IOLA_LOCAL_MODEL,
     profiles: {
       local: {
-        provider: "ollama",
-        model: "llama3.2:1b",
-        baseUrl: "http://127.0.0.1:11434",
+        provider: "iola",
+        model: IOLA_LOCAL_MODEL,
+        repo: IOLA_ROUTER_HF_REPO,
+        modelDir: IOLA_MODEL_DIR,
       },
       openai: {
         provider: "openai",
@@ -146,6 +152,8 @@ const DEFAULT_AI_CONFIG = {
   permissions: {
     localTools: {
       search_data: true,
+      search_entities: true,
+      resolve_entity_field: true,
       get_card: true,
       export_report: true,
       file_read: false,
@@ -434,6 +442,8 @@ export async function main(argv) {
     throw new Error(`Нужен Node.js ${MIN_NODE_VERSION} или новее. Сейчас: ${nodeStatus.current}. Запустите: iola init --upgrade-node`);
   }
 
+  await maybeRefreshIolaModelForCommand(command, args);
+
   const handler = COMMANDS.get(command);
 
   if (!handler) {
@@ -446,6 +456,23 @@ export async function main(argv) {
   }
 
   await handler(runtime.debugFile ? [...args, "--debug-file", runtime.debugFile] : args);
+}
+
+async function maybeRefreshIolaModelForCommand(command, args = []) {
+  if (process.env.IOLA_SKIP_MODEL_CHECK === "1") return;
+  const aiRuntimeCommands = new Set(["ask", "agent", "chat"]);
+  const isAiCommand = command === "ai" && !["setup", "models", "key", "profile", "profiles", "doctor"].includes(args[0]);
+  if (!aiRuntimeCommands.has(command) && !isAiCommand) return;
+  const config = await loadConfig();
+  const profile = config.ai.profiles?.[getActiveProfileName(config)];
+  if (profile?.provider !== "iola" && config.ai.provider !== "iola") return;
+  await ensureIolaModelFresh({
+    repo: profile?.repo || IOLA_ROUTER_HF_REPO,
+    modelDir: profile?.modelDir || IOLA_MODEL_DIR,
+    quiet: true,
+  }).catch((error) => {
+    if (process.env.IOLA_DEBUG) console.error(error instanceof Error ? error.message : String(error));
+  });
 }
 
 async function showHelp() {
@@ -552,7 +579,7 @@ Usage:
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
-  iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
+  iola ai ask TEXT [--provider iola|ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
   iola ai key set openai
   iola ai key set openrouter
@@ -562,9 +589,10 @@ Usage:
   iola ai profile add NAME --provider PROVIDER --model MODEL
   iola ai profile use NAME
   iola ai profile delete NAME
-  iola ai models ollama|openai|openrouter|codex [--search TEXT]
+  iola ai models iola|ollama|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
+  iola ai setup iola [--yes]
   iola ai setup ollama [--yes] [--model MODEL]
   iola health [--json]
   iola layers [--json]
@@ -682,9 +710,11 @@ async function getAiReadiness() {
     hasUsableOllamaModel(),
     hasUsableCodexAuth(),
   ]);
+  const iola = await hasUsableIolaModel();
   const openai = Boolean(process.env.OPENAI_API_KEY || secrets.openai?.apiKey);
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY || secrets.openrouter?.apiKey);
   const providerReady = {
+    iola,
     ollama,
     openai,
     openrouter,
@@ -695,8 +725,9 @@ async function getAiReadiness() {
     activeProfile: activeProfileName,
     activeProvider: activeProfile.provider || "-",
     activeModel: activeProfile.model || "-",
-    anyReady: Boolean(ollama || openai || openrouter || codex),
+    anyReady: Boolean(iola || ollama || openai || openrouter || codex),
     profiles: config.ai.profiles || {},
+    iola,
     ollama,
     openai,
     openrouter,
@@ -705,7 +736,7 @@ async function getAiReadiness() {
 }
 
 function getFallbackAiProfile(readiness) {
-  const priority = ["openai", "openrouter", "codex", "ollama"];
+  const priority = ["iola", "openai", "openrouter", "codex", "ollama"];
   for (const provider of priority) {
     if (!readiness[provider]) continue;
     const entry = Object.entries(readiness.profiles || {}).find(([, profile]) => profile.provider === provider);
@@ -1500,6 +1531,7 @@ function buildAgentStatusLine(state) {
   const ai = state.aiStatus;
   if (!ai) return cwd;
   const kind = {
+    iola: "IOLA local",
     ollama: "локальная",
     openai: "API",
     openrouter: "API",
@@ -1885,6 +1917,10 @@ async function upgradeNodeWithInstaller() {
 }
 
 async function checkConfiguredModel(config) {
+  if (config.ai.provider === "iola") {
+    return await hasUsableIolaModel() ? "installed" : "missing";
+  }
+
   if (config.ai.provider !== "ollama") {
     return "external-api";
   }
@@ -1934,6 +1970,7 @@ async function initCli(args = []) {
   if (!process.stdin.isTTY || options.yes) {
     console.log("");
     console.log("Для настройки AI используйте:");
+    console.log("  iola ai setup iola --yes");
     console.log("  iola ai setup ollama");
     console.log("  iola ai key set openai");
     console.log("  iola ai setup openai --model gpt-4.1-mini");
@@ -1957,19 +1994,20 @@ async function handleAi(args) {
   if (subcommand === "help") {
     await showBanner();
     console.log(`AI-команды:
-  iola ai ask TEXT [--provider ollama|openai|openrouter] [--model MODEL]
+  iola ai ask TEXT [--provider iola|ollama|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
   iola ai key delete openai|openrouter
   iola ai profiles
-  iola ai profile add NAME --provider ollama|openai|openrouter|codex --model MODEL
+  iola ai profile add NAME --provider iola|ollama|openai|openrouter|codex --model MODEL
   iola ai profile use NAME
   iola ai profile delete NAME
-  iola ai models ollama|openai|openrouter|codex [--search TEXT]
+  iola ai models iola|ollama|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
+  iola ai setup iola [--yes]
   iola ai setup ollama [--yes] [--model MODEL]
   iola ai setup openai [--model MODEL]
   iola ai setup openrouter [--model MODEL]
@@ -3981,6 +4019,11 @@ async function aiSetup(args) {
     return;
   }
 
+  if (provider === "iola") {
+    await setupIolaLocal(args.slice(1));
+    return;
+  }
+
   if (provider === "ollama") {
     await setupOllama(args.slice(1));
     return;
@@ -4103,8 +4146,8 @@ async function aiModels(args) {
   const [provider] = args;
   const options = parseOptions(args.slice(1));
 
-  if (!["ollama", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер обязателен: iola ai models ollama|openai|openrouter|codex");
+  if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер обязателен: iola ai models iola|ollama|openai|openrouter|codex");
   }
 
   const models = await listAiModels(provider);
@@ -4125,6 +4168,18 @@ async function aiModels(args) {
 }
 
 async function listAiModels(provider) {
+  if (provider === "iola") {
+    const state = readConfigLayerSync(getIolaModelStateFile(IOLA_MODEL_DIR)) || {};
+    const remote = await getRemoteIolaModelRevision().catch(() => null);
+    return [{
+      id: IOLA_LOCAL_MODEL,
+      provider: "iola",
+      note: state.revision
+        ? `installed ${state.revision.slice(0, 12)}${remote?.sha && remote.sha !== state.revision ? ", update available" : ""}`
+        : "not installed",
+    }];
+  }
+
   if (provider === "ollama") {
     try {
       const config = await loadConfig();
@@ -4198,9 +4253,9 @@ async function listAiModels(provider) {
 
 function getRecommendedOllamaModels(notePrefix = "recommended") {
   return [
+    { id: IOLA_LOCAL_OLLAMA_MODEL, provider: "ollama", note: `${notePrefix} IOLA default low RAM` },
     { id: "qwen3:1.7b", provider: "ollama", note: `${notePrefix} recommended low RAM` },
     { id: "qwen3:4b", provider: "ollama", note: `${notePrefix} recommended balanced` },
-    { id: "gemma3:1b", provider: "ollama", note: `${notePrefix} Gemma low RAM` },
     { id: "gemma3:4b", provider: "ollama", note: `${notePrefix} Gemma balanced` },
     { id: "llama3.2:3b", provider: "ollama", note: `${notePrefix} legacy fallback` },
     { id: "llama3.2:1b", provider: "ollama", note: `${notePrefix} minimal fallback only` },
@@ -4249,8 +4304,8 @@ async function addAiProfile(name, args) {
   const options = parseOptions(args);
   const provider = options.provider;
 
-  if (!["ollama", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер должен быть ollama, openai, openrouter или codex.");
+  if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер должен быть iola, ollama, openai, openrouter или codex.");
   }
 
   const profile = buildProfileFromOptions(provider, options);
@@ -4329,7 +4384,7 @@ async function deleteAiProfile(name) {
 }
 
 function buildProfileFromOptions(provider, options) {
-  const defaults = DEFAULT_AI_CONFIG.ai.profiles[provider === "ollama" ? "local" : provider];
+  const defaults = DEFAULT_AI_CONFIG.ai.profiles[provider === "ollama" || provider === "iola" ? "local" : provider];
   const profile = {
     ...defaults,
     provider,
@@ -4338,6 +4393,11 @@ function buildProfileFromOptions(provider, options) {
 
   if (options["base-url"]) {
     profile.baseUrl = options["base-url"];
+  }
+
+  if (provider === "iola") {
+    profile.repo = options.repo || defaults.repo || IOLA_ROUTER_HF_REPO;
+    profile.modelDir = options["model-dir"] || defaults.modelDir || IOLA_MODEL_DIR;
   }
 
   if (provider === "codex") {
@@ -4363,17 +4423,18 @@ async function useAiProvider(args) {
 
   const provider = providerOrProfile;
 
-  if (provider !== "ollama" && provider !== "openai" && provider !== "openrouter" && provider !== "codex") {
-    throw new Error("Провайдер должен быть ollama, openai, openrouter, codex или именем AI-профиля.");
+  if (provider !== "iola" && provider !== "ollama" && provider !== "openai" && provider !== "openrouter" && provider !== "codex") {
+    throw new Error("Провайдер должен быть iola, ollama, openai, openrouter, codex или именем AI-профиля.");
   }
 
   const defaultModel = {
-    ollama: config.ai.provider === "ollama" ? config.ai.model : "llama3.2:1b",
+    iola: IOLA_LOCAL_MODEL,
+    ollama: config.ai.provider === "ollama" ? config.ai.model : IOLA_LOCAL_OLLAMA_MODEL,
     openai: config.ai.provider === "openai" ? config.ai.model : "gpt-4.1-mini",
     openrouter: config.ai.provider === "openrouter" ? config.ai.model : "openai/gpt-4.1-mini",
     codex: config.ai.provider === "codex" ? config.ai.model : "gpt-5.5",
   }[provider];
-  const profileName = provider === "ollama" ? "local" : provider;
+  const profileName = provider === "ollama" || provider === "iola" ? "local" : provider;
   const profile = buildProfileFromOptions(provider, { model: defaultModel });
 
   await saveConfig({
@@ -4412,7 +4473,7 @@ async function slashModelMenu(args = []) {
 function normalizeModelMenuTarget(value = "") {
   const normalized = String(value || "").trim().toLocaleLowerCase("ru-RU");
   if (!normalized) return "";
-  if (["local", "локальная", "локально", "ollama"].includes(normalized)) return "local";
+  if (["local", "локальная", "локально", "iola", "иола", "ollama"].includes(normalized)) return "local";
   if (["api", "апи"].includes(normalized)) return "api";
   if (normalized === "openai") return "openai";
   if (normalized === "openrouter" || normalized === "router") return "openrouter";
@@ -4422,7 +4483,7 @@ function normalizeModelMenuTarget(value = "") {
 
 async function chooseModelTarget() {
   console.log("Выберите AI-подключение:");
-  console.log("  1. Локальная модель (Ollama)");
+  console.log("  1. Локальная модель IOLA");
   console.log("  2. API (OpenAI/OpenRouter)");
   console.log("  3. Codex CLI");
   console.log("  0. Отмена");
@@ -4433,7 +4494,7 @@ async function chooseModelTarget() {
 
 async function openModelTargetMenu(target) {
   if (target === "local") {
-    const model = await chooseAiModel("ollama");
+    const model = await chooseAiModel("iola");
     if (model) await switchModelTarget("local", model);
     return;
   }
@@ -4522,12 +4583,15 @@ async function chooseAiModel(provider) {
 
 async function switchModelTarget(target, model) {
   const config = await loadConfig();
-  const provider = target === "local" ? "ollama" : target;
+  const provider = target === "local" ? "iola" : target;
+  if (provider === "iola") {
+    await ensureIolaModelFresh({ quiet: false });
+  }
   if (provider === "ollama") {
     const ready = await ensureOllamaModelAvailable(model, config);
     if (!ready) return;
   }
-  const profileName = provider === "ollama" ? "local" : provider;
+  const profileName = provider === "ollama" || provider === "iola" ? "local" : provider;
   const currentProfile = config.ai.profiles?.[profileName] || buildProfileFromOptions(provider, { model });
   const profile = {
     ...currentProfile,
@@ -5911,20 +5975,22 @@ function assertKeyProvider(provider) {
 
 async function chooseAiProvider() {
   console.log("Выберите режим AI:");
-  console.log("1. Локальная модель через Ollama");
+  console.log("1. Локальная модель IOLA");
   console.log("2. OpenAI API");
   console.log("3. OpenRouter API");
   console.log("4. Codex/MCP");
+  console.log("5. Ollama");
 
   const rl = readline.createInterface({ input, output });
   try {
     const answer = (await rl.question("Введите номер [1]: ")).trim() || "1";
     return {
-      1: "ollama",
+      1: "iola",
       2: "openai",
       3: "openrouter",
       4: "codex",
-    }[answer] || "ollama";
+      5: "ollama",
+    }[answer] || "iola";
   } finally {
     rl.close();
   }
@@ -5984,6 +6050,49 @@ async function setupOllama(args) {
   console.log(`Готово. Локальный AI-профиль сохранен в ${CONFIG_FILE}`);
 }
 
+async function setupIolaLocal(args) {
+  const options = parseOptions(args);
+  const repo = options.repo || IOLA_ROUTER_HF_REPO;
+  const modelDir = options["model-dir"] || IOLA_MODEL_DIR;
+  const profileName = options.name || "local";
+  const optional = Boolean(options.optional);
+
+  try {
+    await ensureIolaModelFresh({ repo, modelDir, force: true, quiet: Boolean(options.quiet) });
+  } catch (error) {
+    if (!optional) throw error;
+    console.warn(`IOLA local model не установлена: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const config = await loadConfig();
+  await saveConfig({
+    ai: {
+      ...config.ai,
+      activeProfile: profileName,
+      provider: "iola",
+      model: IOLA_LOCAL_MODEL,
+      profiles: {
+        ...(config.ai.profiles || {}),
+        [profileName]: {
+          provider: "iola",
+          model: IOLA_LOCAL_MODEL,
+          repo,
+          modelDir,
+        },
+      },
+    },
+  });
+
+  if (options.quiet) return;
+  console.log("");
+  console.log("IOLA local mode готов:");
+  console.log(`  runtime: Python transformers/peft`);
+  console.log(`  model: ${IOLA_LOCAL_MODEL}`);
+  console.log(`  Hugging Face: ${repo}`);
+  console.log(`  cache: ${modelDir}`);
+  console.log("  точные данные: https://apiiola.yasg.ru/api/v1/resolve-entity-field");
+}
+
 async function aiAsk(args, context = {}) {
   const options = parseOptions(args);
   const question = options._.join(" ").trim();
@@ -5995,9 +6104,9 @@ async function aiAsk(args, context = {}) {
   const config = await loadConfig();
   const providerConfig = await resolveUsableAiProfile(config, options);
   if (providerConfig.provider === "codex") await assertPermission("codex");
-  if (providerConfig.provider !== "ollama") await assertPermission("externalAi");
+  if (providerConfig.provider !== "ollama" && providerConfig.provider !== "iola") await assertPermission("externalAi");
   if (options["stream-json"]) options.events = true;
-  if (options.tools && providerConfig.provider === "ollama") {
+  if (providerConfig.provider === "iola" || (options.tools && providerConfig.provider === "ollama")) {
     return localToolAsk(question, providerConfig, options);
   }
   applyRuntimeConfig(providerConfig, options.config);
@@ -6220,14 +6329,25 @@ function resolveAiProfile(config, options = {}) {
     provider,
     model: options.model || activeProfile.model || config.ai.model,
     baseUrl: options["base-url"] || activeProfile.baseUrl || config.ai.baseUrl,
+    repo: options.repo || activeProfile.repo,
+    modelDir: options["model-dir"] || activeProfile.modelDir,
     temperature: options.temperature || activeProfile.temperature,
   };
 }
 
 async function localToolAsk(question, providerConfig, options) {
   if (options["stream-json"]) options.events = true;
+  const guarded = guardNonPublicQuestion(question);
+  if (guarded) {
+    if (!options.quiet) console.log(guarded);
+    return guarded;
+  }
   await ensureLocalData();
   const plan = await buildLocalToolPlan(question, providerConfig, options);
+  if (plan.directAnswer) {
+    if (!options.quiet) console.log(plan.directAnswer);
+    return plan.directAnswer;
+  }
   const validated = validateToolPlan(plan, options);
   if (options.plan) {
     printToolPlan(validated);
@@ -6267,6 +6387,14 @@ async function localToolAsk(question, providerConfig, options) {
   return answer;
 }
 
+function guardNonPublicQuestion(question) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (/(зарплат|получа[ею]т|доход|домашн|паспорт|снилс|личн|персональн)/iu.test(normalized)) {
+    return "Это поле не входит в открытые публичные данные.";
+  }
+  return "";
+}
+
 function printToolPlan(plan) {
   console.log("План выполнения:");
   plan.steps.forEach((step, index) => {
@@ -6276,6 +6404,17 @@ function printToolPlan(plan) {
 
 async function buildLocalToolPlan(question, providerConfig, options) {
   const mode = options.reasoning || "verify";
+
+  if (providerConfig.provider === "iola") {
+    await ensureIolaModelFresh({
+      repo: providerConfig.repo || IOLA_ROUTER_HF_REPO,
+      modelDir: providerConfig.modelDir || IOLA_MODEL_DIR,
+      quiet: true,
+    });
+    const raw = await callIolaLocal(providerConfig, [{ role: "user", content: question }]);
+    return normalizeIolaRouterPlan(raw, question, options);
+  }
+
   const prompt = [
     "Ты планировщик CLI iola. Верни только JSON.",
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
@@ -6296,6 +6435,27 @@ async function buildLocalToolPlan(question, providerConfig, options) {
   } catch {
     return inferToolPlan(question, options);
   }
+}
+
+function normalizeIolaRouterPlan(raw, question, options = {}) {
+  const payload = typeof raw === "string" ? parseJsonObject(raw) : raw;
+  if (payload.action === "tool_call") {
+    const tool = payload.tool === "get_entity_field" ? "resolve_entity_field" : payload.tool;
+    return { steps: [{ tool, args: payload.args || {} }] };
+  }
+  if (payload.action === "direct_answer") {
+    return { directAnswer: payload.answer || "" };
+  }
+  if (payload.action === "clarify") {
+    return { directAnswer: payload.question || "Уточните запрос." };
+  }
+  if (payload.action === "refuse") {
+    return { directAnswer: payload.reason === "field_not_public" ? "Это поле не входит в открытые публичные данные." : "Не могу выполнить этот запрос." };
+  }
+  if (options.reasoning === "vote") {
+    return inferToolPlan(question, options);
+  }
+  throw new Error(`IOLA router вернул неподдерживаемое действие: ${payload.action || "unknown"}`);
 }
 
 function parseJsonObject(text) {
@@ -6347,6 +6507,50 @@ function validateToolPlan(plan, options = {}) {
   return plan;
 }
 
+async function searchPublicEntities(args = {}) {
+  const payload = await postJson(`${await getApiBaseUrl()}/search-entities`, {
+    layer: normalizeEntityLayer(args.layer),
+    query: args.query || args.entity_name || args.name || "",
+    limit: Number(args.limit || 10),
+    filters: args.filters || undefined,
+  });
+  return normalizeItems(payload).map((item) => ({
+    ...(item.entity || item),
+    score: item.score,
+    layer: payload.layer || normalizeEntityLayer(args.layer),
+  }));
+}
+
+async function resolvePublicEntityField(args = {}) {
+  const payload = await postJson(`${await getApiBaseUrl()}/resolve-entity-field`, {
+    layer: normalizeEntityLayer(args.layer),
+    entity_number: args.entity_number ?? args.number,
+    entity_name: args.entity_name || args.name,
+    inn: args.inn,
+    field: normalizeEntityField(args.field),
+    must_refute_user_value: args.must_refute_user_value,
+  });
+  return payload;
+}
+
+function normalizeEntityLayer(layer) {
+  const value = String(layer || "").toLocaleLowerCase("ru-RU");
+  if (value === "school" || value === "schools" || value.includes("школ")) return "schools";
+  if (value === "kindergarten" || value === "kindergartens" || value.includes("сад")) return "kindergartens";
+  return value || "schools";
+}
+
+function normalizeEntityField(field) {
+  const value = String(field || "").toLocaleLowerCase("ru-RU");
+  if (value === "director" || value === "head" || value.includes("директор") || value.includes("руковод")) return "head";
+  if (value === "site" || value === "url" || value === "website" || value.includes("сайт")) return "website";
+  if (value === "mail" || value === "email" || value.includes("почт")) return "email";
+  if (value === "phone" || value.includes("тел")) return "phone";
+  if (value === "address" || value.includes("адрес")) return "address";
+  if (value === "license") return "license_status";
+  return value || "name";
+}
+
 function availableToolNames(options = {}) {
   const names = new Set(LOCAL_TOOLS);
   for (const tool of getLocalMcpToolNames()) names.add(tool);
@@ -6365,6 +6569,13 @@ async function executeToolPlan(plan, options = {}) {
     try {
       if (step.tool === "search_data" || step.tool === "search_local") {
         current = searchLocalRecords(step.args?.query || "", { dataset: step.args?.dataset || "all", limit: step.args?.limit || 20, fts: true });
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "search_entities") {
+        current = await searchPublicEntities(step.args || {});
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (step.tool === "resolve_entity_field") {
+        const resolved = await resolvePublicEntityField(step.args || {});
+        current = Array.isArray(resolved) ? resolved : [resolved];
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (step.tool === "get_card") {
         const card = findCard(step.args?.query || "");
@@ -6514,7 +6725,13 @@ function formatToolResult(result, options) {
   const exported = result.outputs.find((item) => item.output);
   if (exported) return `Готово. Файл сохранен: ${exported.output}. Записей: ${exported.rows}`;
   if (!result.rows.length) return "Данных не найдено.";
-  return result.rows.slice(0, 10).map((row) => `${row.name || row.check}: ${row.address || row.count || ""}`).join("\n");
+  return result.rows.slice(0, 10).map((row) => {
+    if (row.ok && row.entity && row.field) {
+      const name = row.entity.name || row.entity.inn || "организация";
+      return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
+    }
+    return `${row.name || row.check || row.inn || "строка"}: ${row.address || row.phone || row.email || row.website || row.count || ""}`;
+  }).join("\n");
 }
 
 function applyRuntimeConfig(target, value) {
@@ -6906,6 +7123,10 @@ function buildSourceLines(dataContext) {
 }
 
 async function callAiProvider(config, messages) {
+  if (config.provider === "iola") {
+    return callIolaLocal(config, messages);
+  }
+
   if (config.provider === "ollama") {
     return callOllama(config, messages);
   }
@@ -6923,6 +7144,155 @@ async function callAiProvider(config, messages) {
   }
 
   throw new Error(`Неизвестный AI-провайдер: ${config.provider}`);
+}
+
+async function callIolaLocal(config, messages) {
+  const runtime = await ensureIolaModelRuntime({ quiet: true });
+  const repo = config.repo || IOLA_ROUTER_HF_REPO;
+  const modelDir = config.modelDir || IOLA_MODEL_DIR;
+  const payload = {
+    repo,
+    cache_dir: modelDir,
+    messages,
+    max_new_tokens: Number(config.maxNewTokens || 180),
+    temperature: Number(config.temperature ?? 0),
+  };
+  const { stdout, stderr } = await runCommand(runtime.python, [IOLA_MODEL_RUNNER], {
+    input: JSON.stringify(payload),
+    env: {
+      IOLA_ROUTER_HF_REPO: repo,
+      IOLA_MODEL_DIR: modelDir,
+    },
+  });
+  const text = stdout.trim();
+  if (!text) {
+    throw new Error(`IOLA local model вернула пустой ответ.${stderr ? `\n${stderr}` : ""}`);
+  }
+  return text;
+}
+
+async function hasUsableIolaModel() {
+  const state = readConfigLayerSync(getIolaModelStateFile(IOLA_MODEL_DIR));
+  return Boolean(state?.repo && state?.revision && existsSync(IOLA_MODEL_DIR));
+}
+
+async function ensureIolaModelFresh(options = {}) {
+  const repo = options.repo || IOLA_ROUTER_HF_REPO;
+  const modelDir = options.modelDir || IOLA_MODEL_DIR;
+  await mkdir(modelDir, { recursive: true });
+  const stateFile = getIolaModelStateFile(modelDir);
+  const state = readConfigLayerSync(stateFile) || {};
+  const remote = await getRemoteIolaModelRevision(repo).catch(() => null);
+  const stale = options.force || state.repo !== repo || !state.revision || (remote?.sha && remote.sha !== state.revision);
+  if (!stale) return state;
+
+  if (!options.quiet) {
+    const reason = state.revision ? "обновляю" : "устанавливаю";
+    console.log(`IOLA local model: ${reason} ${repo}`);
+    console.log("Загрузка первой установки может занять несколько минут.");
+  }
+
+  const runtime = await ensureIolaModelRuntime({ quiet: options.quiet });
+  const { stdout } = await runCommand(runtime.python, [IOLA_MODEL_RUNNER, "--ensure"], {
+    input: JSON.stringify({ repo, cache_dir: modelDir }),
+    env: {
+      IOLA_ROUTER_HF_REPO: repo,
+      IOLA_MODEL_DIR: modelDir,
+    },
+  });
+  const installed = parseJsonObject(stdout || "{}");
+  const nextState = {
+    repo,
+    revision: installed.revision || remote?.sha || state.revision || `local-${Date.now()}`,
+    installedAt: new Date().toISOString(),
+    runtime: "transformers",
+  };
+  await mkdir(modelDir, { recursive: true });
+  await writeFile(stateFile, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  return nextState;
+}
+
+function getIolaModelStateFile(modelDir = IOLA_MODEL_DIR) {
+  return path.join(modelDir, "manifest.json");
+}
+
+async function ensureIolaModelRuntime(options = {}) {
+  const python = await getIolaRuntimePython();
+  if (python && await checkIolaPythonDeps(python)) return { python };
+
+  const basePython = await findPythonCommand();
+  if (!basePython) {
+    throw new Error("Python не найден. Установите Python 3.11+ и повторите: iola ai setup iola --yes");
+  }
+
+  await mkdir(IOLA_MODEL_RUNTIME_DIR, { recursive: true });
+  if (!python) {
+    if (!options.quiet) console.log(`Создаю Python runtime: ${IOLA_MODEL_RUNTIME_DIR}`);
+    await runCommand(basePython.command, [...basePython.args, "-m", "venv", IOLA_MODEL_RUNTIME_DIR], { inherit: !options.quiet });
+  }
+
+  const runtimePython = await getIolaRuntimePython();
+  if (!runtimePython) {
+    throw new Error("Не удалось создать Python runtime для локальной модели.");
+  }
+
+  if (!options.quiet) console.log("Устанавливаю зависимости локальной модели: torch, transformers, peft.");
+  await runCommand(runtimePython, ["-m", "pip", "install", "--upgrade", "pip"], { inherit: !options.quiet });
+  await runCommand(runtimePython, ["-m", "pip", "install", "torch>=2.6.0", "transformers>=4.57.0,<5.0", "peft>=0.15.0", "accelerate>=1.8.0", "huggingface_hub>=0.34.0,<1.0", "hf_xet>=1.1.0", "safetensors>=0.4.0"], { inherit: !options.quiet });
+
+  if (!await checkIolaPythonDeps(runtimePython)) {
+    throw new Error("Python-зависимости локальной модели не установились.");
+  }
+  return { python: runtimePython };
+}
+
+async function getIolaRuntimePython() {
+  const candidate = process.platform === "win32"
+    ? path.join(IOLA_MODEL_RUNTIME_DIR, "Scripts", "python.exe")
+    : path.join(IOLA_MODEL_RUNTIME_DIR, "bin", "python");
+  return existsSync(candidate) ? candidate : null;
+}
+
+async function checkIolaPythonDeps(python) {
+  try {
+    await runCommand(python, [IOLA_MODEL_RUNNER, "--check-deps"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findPythonCommand() {
+  const candidates = [
+    { command: process.env.IOLA_PYTHON, args: [] },
+    { command: "python", args: [] },
+    { command: "python3", args: [] },
+    { command: "py", args: ["-3"] },
+  ].filter((item) => item.command);
+
+  for (const candidate of candidates) {
+    try {
+      await runCommand(candidate.command, [...candidate.args, "--version"]);
+      return candidate;
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return null;
+}
+
+async function getRemoteIolaModelRevision(repo = IOLA_ROUTER_HF_REPO) {
+  const repoPath = String(repo).split("/").map((part) => encodeURIComponent(part)).join("/");
+  const response = await fetch(`https://huggingface.co/api/models/${repoPath}`, {
+    headers: {
+      accept: "application/json",
+      "user-agent": "@iola_adm/iola-cli",
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`Hugging Face model metadata failed: ${response.status} ${response.statusText}`);
+  const payload = await response.json();
+  return { sha: payload.sha || payload.lastModified || "", lastModified: payload.lastModified || "" };
 }
 
 async function callCodex(config, messages) {
@@ -7262,6 +7632,9 @@ async function onboard(args = []) {
   if (components.includes("workspace")) await handleWorkspace(["init"]);
   if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
   if (components.includes("archive")) await ensureArchiveTool({ install: true });
+  if (components.includes("iola")) {
+    await setupIolaLocal(["--yes"]);
+  }
   if (components.includes("ollama")) {
     await installOllamaIfMissing();
     await setupOllama(["--yes"]);
@@ -7309,7 +7682,7 @@ async function chooseOnboardComponents(status = null) {
     const map = {
       1: "workspace",
       2: "policy",
-      3: "ollama",
+      3: "iola",
       4: "openai",
       5: "openrouter",
       6: "codex",
@@ -7317,6 +7690,7 @@ async function chooseOnboardComponents(status = null) {
       8: "archive",
       9: "index",
       10: "browser",
+      11: "ollama",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -7338,6 +7712,7 @@ async function getOnboardComponentStatus() {
   return {
     workspace: workspaceReady,
     policy: policyReady,
+    iola: Boolean(readiness.iola),
     ollama: Boolean(ollamaVersion && readiness.ollama),
     openai: Boolean(readiness.openai),
     openrouter: Boolean(readiness.openrouter),
@@ -7353,7 +7728,7 @@ function onboardComponentRows(status) {
   const rows = [
     ["1", "workspace", "workspace и контекст", "рабочая папка, IOLA.md и .iola/context.md"],
     ["2", "policy", "policy analyst", "разрешения и профиль аналитика"],
-    ["3", "ollama", "Ollama + локальная модель", "локальная модель найдена"],
+    ["3", "iola", "IOLA локальная модель", "локальная модель найдена"],
     ["4", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
     ["5", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
     ["6", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
@@ -7361,6 +7736,7 @@ function onboardComponentRows(status) {
     ["8", "archive", "7-Zip / архивы", "архиватор найден"],
     ["9", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
     ["10", "browser", "Browser runtime", "Playwright/Chromium установлен"],
+    ["11", "ollama", "Ollama", "опциональный локальный runtime"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -7369,12 +7745,13 @@ function defaultOnboardSelection(status) {
   const defaults = [];
   if (!status.workspace) defaults.push("1");
   if (!status.policy) defaults.push("2");
+  if (!status.iola) defaults.push("3");
   if (!status.archive) defaults.push("8");
   return defaults.length ? defaults : ["1", "2"];
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "ollama", 4: "openai", 5: "openrouter", 6: "codex", 7: "codex-mcp", 8: "archive", 9: "index", 10: "browser" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "openai", 5: "openrouter", 6: "codex", 7: "codex-mcp", 8: "archive", 9: "index", 10: "browser", 11: "ollama" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -7383,12 +7760,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -8663,7 +9040,7 @@ function recordUsage({ providerConfig, question, answer, sessionId, profile }) {
 }
 
 function estimateCost(providerConfig, tokens) {
-  if (!providerConfig || providerConfig.provider === "ollama" || providerConfig.provider === "codex") return 0;
+  if (!providerConfig || providerConfig.provider === "iola" || providerConfig.provider === "ollama" || providerConfig.provider === "codex") return 0;
   const perMillion = providerConfig.provider === "openrouter" ? 0.25 : 0.4;
   return Math.round((tokens / 1_000_000) * perMillion * 1_000_000) / 1_000_000;
 }
@@ -9340,8 +9717,8 @@ function validateConfig(config) {
   if (!config.ai?.profiles || typeof config.ai.profiles !== "object") errors.push("ai.profiles обязателен");
   if (config.ai?.activeProfile && !config.ai.profiles?.[config.ai.activeProfile]) errors.push(`ai.activeProfile не найден в profiles: ${config.ai.activeProfile}`);
   for (const [name, profile] of Object.entries(config.ai?.profiles || {})) {
-    if (!["ollama", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
-    if (profile.provider !== "codex" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
+    if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
+    if (profile.provider !== "codex" && profile.provider !== "iola" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
   }
   for (const tool of Object.keys(config.permissions?.localTools || {})) {
     if (!ALL_TOOL_ALIASES.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
@@ -9358,7 +9735,7 @@ function configSchema() {
     required: ["api", "ai"],
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
-      ai: { required: ["activeProfile", "profiles"], providers: ["ollama", "openai", "openrouter", "codex"] },
+      ai: { required: ["activeProfile", "profiles"], providers: ["iola", "ollama", "openai", "openrouter", "codex"] },
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },
       files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },
@@ -9373,7 +9750,7 @@ function getActiveProfileName(config) {
     return config.ai.activeProfile;
   }
 
-  const provider = config.ai.provider === "ollama" ? "local" : config.ai.provider;
+  const provider = config.ai.provider === "ollama" || config.ai.provider === "iola" ? "local" : config.ai.provider;
   if (provider && config.ai.profiles?.[provider]) {
     return provider;
   }
@@ -9555,6 +9932,25 @@ async function fetchJson(url) {
 
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText} (${url})`);
+  }
+
+  return response.json();
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "user-agent": "@iola_adm/iola-cli",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Request failed: ${response.status} ${response.statusText} (${url})${text ? `\n${text}` : ""}`);
   }
 
   return response.json();

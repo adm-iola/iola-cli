@@ -116,11 +116,19 @@ iola review config
 iola browser status
 ```
 
-Локальная модель через Ollama:
+Локальная модель IOLA через Hugging Face:
+
+```bash
+iola ai setup iola --yes
+iola ask "дай телефон школы № 2"
+```
+
+CLI скачивает `LMSerg/iola-1b-router-2026-05-28-merged` в `~/.iola/models/router`, проверяет свежесть модели при запуске AI-команд и обновляет ее автоматически.
+
+Ollama остается опциональным runtime:
 
 ```bash
 iola ai setup ollama
-iola ask "выгрузи школы на Петрова в csv" --profile local --tools
 ```
 
 Обновление:
@@ -154,8 +162,8 @@ iola version --check
 - интеграция с публичным MCP-сервером Йошкар-Олы;
 - поиск и выгрузка открытых данных;
 - локальная SQLite-БД, история, сессии и FTS-поиск;
-- AI-профили для Ollama, OpenAI, OpenRouter и Codex CLI;
-- локальный tool-agent для слабых моделей с минимальными tools `search_data`, `get_card`, `export_report`, `file_read`, `browser_open`;
+- AI-профили для IOLA local, Ollama, OpenAI, OpenRouter и Codex CLI;
+- локальный tool-agent для модели IOLA с tools `search_data`, `search_entities`, `resolve_entity_field`, `get_card`, `export_report`, `file_read`, `browser_open`;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
 - локальный MCP-сервер по stdio/http для подключения iola-cli к другим AI-клиентам;
@@ -169,6 +177,6 @@ iola version --check
 - staged changes, импорт локальных CSV/JSON, индекс локальных документов, report packs, plugins и локальный MCP endpoint;
 - чтение и индексирование `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.md`, `.txt`, `.csv`, `.json`, `.html`;
 - работа с архивами через 7-Zip: `.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.tgz`, `.bz2`, `.xz` и другие;
-- расширенный `iola onboard` с установкой 7-Zip, браузерного runtime, Ollama, Codex CLI и настройкой выбранных компонентов;
+- расширенный `iola onboard` с установкой 7-Zip, браузерного runtime, IOLA local, Ollama, Codex CLI и настройкой выбранных компонентов;
 - cron-задачи, локальный daemon, web dashboard и RPC для автоматизаций;
 - контекстные файлы `IOLA.md` и `.iola/context.md`;
