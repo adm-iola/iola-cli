@@ -899,8 +899,7 @@ async function startAgentRawInput() {
     }
   } finally {
     clearAgentInputArea(state);
-    clearAgentStatusBar(state);
-    finishAgentTerminalLine();
+    finishAgentTerminalLine(state);
     if (!wasRaw) input.setRawMode(false);
     input.pause();
   }
@@ -1425,9 +1424,21 @@ function clearAgentStatusBar(state) {
   state.statusRows = 0;
 }
 
-function finishAgentTerminalLine() {
+function finishAgentTerminalLine(state = null) {
   if (!output.isTTY) return;
-  output.write("\r\x1b[0K\n");
+  const rows = Number(output.rows || state?.statusRows || 0);
+  output.write("\x1b[r");
+  if (rows >= 1) {
+    output.write(`\x1b[${rows};1H\x1b[2K\n`);
+  } else {
+    output.write("\r\x1b[0K\n");
+  }
+  if (state) {
+    state.statusBar = false;
+    state.statusRows = 0;
+    state.renderedInputLines = 0;
+    state.renderedLines = 0;
+  }
 }
 
 function startActivityIndicator(label = "работаю") {
@@ -6302,7 +6313,7 @@ function buildDirectDataAnswer(question, dataContext) {
 
 function detectDirectDataFields(normalizedQuestion) {
   const fields = [];
-  if (/(директор|руководител|заведующ|кто возглавляет)/iu.test(normalizedQuestion)) fields.push("head");
+  if (/(директ|руководител|заведующ|кто возглавляет)/iu.test(normalizedQuestion)) fields.push("head");
   if (/(сайт|website|url|ссылка)/iu.test(normalizedQuestion)) fields.push("website");
   if (/(телефон|номер телефона|позвонить)/iu.test(normalizedQuestion)) fields.push("phone");
   if (/(почт|email|e-mail|имейл|электронн)/iu.test(normalizedQuestion)) fields.push("email");
@@ -6448,6 +6459,11 @@ async function localToolAsk(question, providerConfig, options) {
     return casualAnswer;
   }
   await ensureLocalData();
+  const personRoleAnswer = buildPersonRoleDirectAnswer(question);
+  if (personRoleAnswer) {
+    if (!options.quiet) console.log(personRoleAnswer);
+    return personRoleAnswer;
+  }
   const plan = await buildLocalToolPlan(question, providerConfig, options);
   if (plan.directAnswer) {
     if (!options.quiet) console.log(plan.directAnswer);
@@ -6522,6 +6538,68 @@ function buildCasualDirectAnswer(question) {
     return "Пожалуйста.";
   }
   return "";
+}
+
+function buildPersonRoleDirectAnswer(question) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  const asksHead = /(директ|руководител|заведующ|возглавляет)/iu.test(normalized);
+  const asksOrganization = /(какой|какая|где|чего|организац|учрежден|школ|сад|детсад|гимнази|лицей)/iu.test(normalized);
+  if (!asksHead || !asksOrganization) return "";
+
+  const nameTokens = extractPersonNameTokens(question);
+  if (nameTokens.length < 2) return "";
+
+  const dataset = normalized.includes("сад") || normalized.includes("детсад")
+    ? "kindergartens"
+    : normalized.includes("школ") || normalized.includes("гимнази") || normalized.includes("лицей")
+      ? "schools"
+      : "all";
+  const rows = searchLocalRecords("", { dataset, limit: 10000 })
+    .filter((row) => personTokensMatchHead(row.head, nameTokens));
+
+  if (rows.length === 0) {
+    return `В открытых данных не нашел руководителя с ФИО: ${formatPersonTokens(nameTokens)}.`;
+  }
+
+  const exactRows = rows.filter((row) => personTokensMatchHead(row.head, nameTokens, { strict: true }));
+  const matches = exactRows.length > 0 ? exactRows : rows;
+  if (matches.length === 1) {
+    const row = matches[0];
+    return [
+      `${row.head} является руководителем: ${row.name}.`,
+      row.address ? `Адрес: ${row.address}` : "",
+      row.inn ? `ИНН: ${row.inn}` : "",
+      "Источник: открытый слой образования.",
+    ].filter(Boolean).join("\n");
+  }
+
+  return [
+    `Нашел несколько организаций для ФИО ${formatPersonTokens(nameTokens)}:`,
+    ...matches.slice(0, 10).map((row) => `- ${row.head}: ${row.name}${row.inn ? `, ИНН ${row.inn}` : ""}`),
+  ].join("\n");
+}
+
+function extractPersonNameTokens(question) {
+  const stopWords = new Set([
+    "так", "а", "и", "или", "кто", "что", "какой", "какая", "какого", "какой-то", "это",
+    "директор", "директора", "директором", "руководитель", "руководителем", "заведующая", "заведующий",
+    "школа", "школы", "школе", "сад", "сада", "детский", "детского", "гимназия", "лицей",
+    "является", "возглавляет", "найди", "покажи",
+  ]);
+  return [...String(question || "").toLocaleLowerCase("ru-RU").matchAll(/\p{L}{3,}/gu)]
+    .map((match) => match[0])
+    .filter((token) => !stopWords.has(token));
+}
+
+function personTokensMatchHead(head, tokens, options = {}) {
+  const headTokens = new Set([...String(head || "").toLocaleLowerCase("ru-RU").matchAll(/\p{L}{3,}/gu)].map((match) => match[0]));
+  if (options.strict) return tokens.every((token) => headTokens.has(token));
+  const headText = [...headTokens].join(" ");
+  return tokens.every((token) => headTokens.has(token) || headText.includes(token));
+}
+
+function formatPersonTokens(tokens) {
+  return tokens.map(capitalizeFirst).join(" ");
 }
 
 function printToolPlan(plan) {
@@ -6662,15 +6740,68 @@ async function searchPublicEntities(args = {}) {
 }
 
 async function resolvePublicEntityField(args = {}) {
-  const payload = await postJson(`${await getApiBaseUrl()}/resolve-entity-field`, {
-    layer: normalizeEntityLayer(args.layer),
+  const endpoint = `${await getApiBaseUrl()}/resolve-entity-field`;
+  const requestedField = normalizeEntityField(args.field);
+  const layer = normalizeEntityLayer(args.layer);
+  const payload = {
+    layer,
     entity_number: args.entity_number ?? args.number,
     entity_name: args.entity_name || args.name,
     inn: args.inn,
-    field: normalizeEntityField(args.field),
+    field: requestedField,
     must_refute_user_value: args.must_refute_user_value,
+  };
+  try {
+    return await postJson(endpoint, payload);
+  } catch (error) {
+    const fallbackField = pickResolveFieldFallback(requestedField, error);
+    if (fallbackField && fallbackField !== requestedField) {
+      try {
+        return await postJson(endpoint, { ...payload, field: fallbackField });
+      } catch (retryError) {
+        const resolvedBySearch = await resolvePublicEntityFieldViaSearch({ ...payload, field: fallbackField }, retryError);
+        if (resolvedBySearch) return resolvedBySearch;
+        throw retryError;
+      }
+    }
+    const resolvedBySearch = await resolvePublicEntityFieldViaSearch(payload, error);
+    if (resolvedBySearch) return resolvedBySearch;
+    throw error;
+  }
+}
+
+async function resolvePublicEntityFieldViaSearch(payload, originalError) {
+  const details = parseErrorJsonDetails(originalError);
+  if (details?.error !== "entity_not_found") return null;
+  if (payload.inn) return null;
+  const query = payload.entity_name || buildEntitySearchQuery(payload.layer, payload.entity_number);
+  if (!query) return null;
+  const candidates = await searchPublicEntities({ layer: payload.layer, query, limit: 10 });
+  const candidate = pickResolvedEntityCandidate(candidates, payload);
+  if (!candidate?.inn) return null;
+  return postJson(`${await getApiBaseUrl()}/resolve-entity-field`, {
+    layer: payload.layer,
+    inn: candidate.inn,
+    field: payload.field,
+    must_refute_user_value: payload.must_refute_user_value,
   });
-  return payload;
+}
+
+function buildEntitySearchQuery(layer, number) {
+  if (number === undefined || number === null || number === "") return "";
+  const label = layer === "kindergartens" ? "детский сад" : "школа";
+  return `${label} ${number}`;
+}
+
+function pickResolvedEntityCandidate(candidates, payload) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  const number = payload.entity_number === undefined || payload.entity_number === null ? "" : String(payload.entity_number);
+  if (number) {
+    const exact = candidates.find((item) => itemNameHasNumber(item, number));
+    if (exact) return exact;
+  }
+  if (candidates.length === 1) return candidates[0];
+  return candidates.find((item) => Number(item.score || 0) > 0) || candidates[0];
 }
 
 function normalizeEntityLayer(layer) {
@@ -6682,13 +6813,38 @@ function normalizeEntityLayer(layer) {
 
 function normalizeEntityField(field) {
   const value = String(field || "").toLocaleLowerCase("ru-RU");
-  if (value === "director" || value === "head" || value.includes("директор") || value.includes("руковод")) return "head";
+  if (value === "director" || value === "directors" || value === "directs" || value === "direct" || value === "head" || value === "head_name" || value.includes("директ") || value.includes("руковод")) return "director";
   if (value === "site" || value === "url" || value === "website" || value.includes("сайт")) return "website";
   if (value === "mail" || value === "email" || value.includes("почт")) return "email";
   if (value === "phone" || value.includes("тел")) return "phone";
   if (value === "address" || value.includes("адрес")) return "address";
   if (value === "license") return "license_status";
   return value || "name";
+}
+
+function pickResolveFieldFallback(requestedField, error) {
+  const details = parseErrorJsonDetails(error);
+  if (details?.error !== "field_not_public") return "";
+  const publicFields = new Set((details.public_fields || []).map((field) => String(field)));
+  const aliases = {
+    director: ["director", "head_name", "head"],
+    head: ["director", "head_name", "head"],
+    head_name: ["director", "head_name", "head"],
+    license_status: ["license_status", "license_number", "license_date"],
+  }[requestedField] || [];
+  return aliases.find((field) => field !== requestedField && publicFields.has(field)) || "";
+}
+
+function parseErrorJsonDetails(error) {
+  const text = error instanceof Error ? error.message : String(error || "");
+  const match = text.match(/\{[\s\S]*\}$/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]);
+    return parsed.detail || parsed;
+  } catch {
+    return null;
+  }
 }
 
 function availableToolNames(options = {}) {

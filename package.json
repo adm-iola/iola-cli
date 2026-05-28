@@ -1,6 +1,6 @@
 {
   "name": "@iola_adm/iola-cli",
-  "version": "0.1.98",
+  "version": "0.1.100",
   "description": "CLI и AI-агент городского округа Йошкар-Ола.",
   "license": "MIT",
   "homepage": "https://github.com/adm-iola/iola-cli#readme",
