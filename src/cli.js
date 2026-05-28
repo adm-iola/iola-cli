@@ -299,7 +299,6 @@ const SLASH_COMMANDS = [
   { command: "/views", description: "saved views" },
   { command: "/config get", description: "конфигурация" },
   { command: "/delete", description: "удалить локальные данные iola-cli" },
-  { command: "/uninstall", description: "алиас для /delete" },
   { command: "/layers", description: "слои данных" },
   { command: "/data schools --limit 10", description: "данные слоя" },
   { command: "/schools --limit 10", description: "школы" },
@@ -391,7 +390,6 @@ const COMMANDS = new Map([
   ["alias", handleAlias],
   ["run", runNaturalLanguage],
   ["config", handleConfig],
-  ["uninstall", handleUninstall],
   ["purge", handleUninstall],
   ["delete", handleUninstall],
   ["banner", showBanner],
@@ -582,7 +580,6 @@ Usage:
   iola config set api.mcpBaseUrl URL
   iola config reset
   iola delete
-  iola uninstall
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
@@ -1264,7 +1261,6 @@ async function handleAgentLine(line, state) {
     diff: ["diff", args],
     config: ["config", args],
     delete: ["delete", args],
-    uninstall: ["uninstall", args],
     purge: ["purge", args],
     layers: ["layers", args],
     data: ["data", args],
@@ -2195,7 +2191,7 @@ async function handleUninstall(args = []) {
   console.log("Локальные данные iola-cli удалены.");
   console.log("Codex CLI не тронут.");
   console.log("Для полной переустановки npm-пакета:");
-  console.log("  npm uninstall -g @iola_adm/iola-cli");
+  console.log("  npm remove -g @iola_adm/iola-cli");
   console.log("  npm install -g @iola_adm/iola-cli@latest");
 }
 
