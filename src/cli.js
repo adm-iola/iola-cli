@@ -390,7 +390,6 @@ const COMMANDS = new Map([
   ["alias", handleAlias],
   ["run", runNaturalLanguage],
   ["config", handleConfig],
-  ["purge", handleUninstall],
   ["delete", handleUninstall],
   ["banner", showBanner],
   ["agent", startAgent],
@@ -1261,7 +1260,6 @@ async function handleAgentLine(line, state) {
     diff: ["diff", args],
     config: ["config", args],
     delete: ["delete", args],
-    purge: ["purge", args],
     layers: ["layers", args],
     data: ["data", args],
     schools: ["schools", args],
@@ -1286,7 +1284,8 @@ async function handleAgentLine(line, state) {
   }
 
   const [cliCommand, cliArgs] = mapped;
-  await COMMANDS.get(cliCommand)(cliArgs);
+  const result = await COMMANDS.get(cliCommand)(cliArgs);
+  if (cliCommand === "delete" && result?.deleted) return true;
   return false;
 }
 
@@ -2166,7 +2165,7 @@ async function handleUninstall(args = []) {
     };
     if (options.json) printJson(payload);
     else printKeyValue(Object.fromEntries(payload.willDelete.map((item) => [item.label, `${item.path} (${item.exists ? "exists" : "missing"})`])));
-    return;
+    return { deleted: false };
   }
 
   if (!options.yes) {
@@ -2180,7 +2179,7 @@ async function handleUninstall(args = []) {
     const confirmed = await confirm("Удалить локальные данные iola-cli? [y/N] ");
     if (!confirmed) {
       console.log("Удаление отменено.");
-      return;
+      return { deleted: false };
     }
   }
 
@@ -2193,6 +2192,7 @@ async function handleUninstall(args = []) {
   console.log("Для полной переустановки npm-пакета:");
   console.log("  npm remove -g @iola_adm/iola-cli");
   console.log("  npm install -g @iola_adm/iola-cli@latest");
+  return { deleted: true };
 }
 
 async function handleDb(args) {
