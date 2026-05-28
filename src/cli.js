@@ -628,13 +628,19 @@ async function runDefaultCli() {
 
   initDatabase();
   if (!isFirstRunCompleted()) {
-    await showBanner();
-    console.log("Первый запуск iola-cli. Сейчас откроется мастер настройки.");
-    console.log("После мастера запустится интерактивный агент.");
-    console.log("");
-    await onboard([]);
-    markFirstRunCompleted();
-    console.log("");
+    const readiness = await getAiReadiness();
+    if (readiness.ready) {
+      markFirstRunCompleted();
+    } else {
+      await showBanner();
+      console.log("Первый запуск iola-cli. Сейчас откроется мастер настройки.");
+      console.log("После мастера запустится интерактивный агент.");
+      console.log("Введите 0, чтобы пропустить мастер и перейти в CLI.");
+      console.log("");
+      await onboard([]);
+      markFirstRunCompleted();
+      console.log("");
+    }
   }
 
   await startAgent([]);
@@ -7717,6 +7723,11 @@ async function onboard(args = []) {
 
   const componentStatus = await getOnboardComponentStatus();
   const components = options.yes ? defaultOnboardComponents(componentStatus) : await chooseOnboardComponents(componentStatus);
+  if (components.length === 0) {
+    markFirstRunCompleted();
+    console.log("Мастер пропущен. Переход в CLI.");
+    return;
+  }
   if (components.includes("workspace")) await handleWorkspace(["init"]);
   if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
   if (components.includes("archive")) await ensureArchiveTool({ install: true });
@@ -7758,6 +7769,7 @@ async function chooseOnboardComponents(status = null) {
   const componentStatus = status || await getOnboardComponentStatus();
   console.log("");
   console.log("Выберите компоненты через запятую:");
+  console.log("0. выход в CLI [без настройки] - пропустить мастер");
   for (const item of onboardComponentRows(componentStatus)) {
     console.log(`${item.number}. ${item.title} [${item.status}] - ${item.hint}`);
   }
@@ -7765,7 +7777,8 @@ async function chooseOnboardComponents(status = null) {
   const rl = readline.createInterface({ input, output });
   try {
     const defaults = defaultOnboardSelection(componentStatus);
-    const answer = (await rl.question(`Компоненты [${defaults.join(",")}]: `)).trim() || defaults.join(",");
+    const answer = (await rl.question(`Компоненты [${defaults.join(",")}], 0 - выход в CLI: `)).trim() || defaults.join(",");
+    if (isOnboardExitAnswer(answer)) return [];
     const selected = new Set(answer.split(/[,\s]+/).filter(Boolean));
     const map = {
       1: "workspace",
@@ -7784,6 +7797,10 @@ async function chooseOnboardComponents(status = null) {
   } finally {
     rl.close();
   }
+}
+
+function isOnboardExitAnswer(answer) {
+  return /^(0|q|quit|exit|\/exit|skip|пропустить|выход)$/iu.test(String(answer || "").trim());
 }
 
 async function getOnboardComponentStatus() {
