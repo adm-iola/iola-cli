@@ -298,6 +298,7 @@ const SLASH_COMMANDS = [
   { command: "/quality", description: "качество данных" },
   { command: "/views", description: "saved views" },
   { command: "/config get", description: "конфигурация" },
+  { command: "/uninstall --yes", description: "удалить локальные данные iola-cli" },
   { command: "/layers", description: "слои данных" },
   { command: "/data schools --limit 10", description: "данные слоя" },
   { command: "/schools --limit 10", description: "школы" },
@@ -389,6 +390,8 @@ const COMMANDS = new Map([
   ["alias", handleAlias],
   ["run", runNaturalLanguage],
   ["config", handleConfig],
+  ["uninstall", handleUninstall],
+  ["purge", handleUninstall],
   ["banner", showBanner],
   ["agent", startAgent],
   ["chat", startAgent],
@@ -576,6 +579,7 @@ Usage:
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
   iola config reset
+  iola uninstall --yes
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
@@ -2114,6 +2118,79 @@ async function handleConfig(args) {
   }
 
   throw new Error("Команды config: get, set, validate, schema, reset.");
+}
+
+async function handleUninstall(args = []) {
+  const options = parseOptions(args);
+  const targets = [
+    {
+      label: "user data",
+      path: CONFIG_DIR,
+      description: "config, secrets, SQLite-БД, модель IOLA, Python/browser runtime, cache, history",
+    },
+  ];
+
+  if (options.project) {
+    targets.push({
+      label: "project data",
+      path: PROJECT_IOLA_DIR,
+      description: "локальная папка .iola текущего проекта",
+    });
+  }
+
+  const safeTargets = targets.map((target) => ({
+    ...target,
+    path: path.resolve(target.path),
+  }));
+  const home = path.resolve(os.homedir());
+  for (const target of safeTargets) {
+    const isUserConfig = target.path === path.resolve(CONFIG_DIR) && target.path.startsWith(home);
+    const isProjectConfig = target.path === path.resolve(PROJECT_IOLA_DIR) && target.path.startsWith(path.resolve(process.cwd()));
+    if (!isUserConfig && !isProjectConfig) {
+      throw new Error(`Небезопасный путь удаления: ${target.path}`);
+    }
+  }
+
+  if (options["dry-run"] || options.json) {
+    const payload = {
+      willDelete: safeTargets.map((target) => ({
+        label: target.label,
+        path: target.path,
+        exists: existsSync(target.path),
+        description: target.description,
+      })),
+      willKeep: ["Codex CLI", "Codex auth/config", "npm package files"],
+      reinstall: "npm install -g @iola_adm/iola-cli@latest",
+    };
+    if (options.json) printJson(payload);
+    else printKeyValue(Object.fromEntries(payload.willDelete.map((item) => [item.label, `${item.path} (${item.exists ? "exists" : "missing"})`])));
+    return;
+  }
+
+  if (!options.yes) {
+    console.log("Будет удалено:");
+    for (const target of safeTargets) {
+      console.log(`- ${target.path}`);
+      console.log(`  ${target.description}`);
+    }
+    console.log("");
+    console.log("Codex CLI и его настройки не удаляются.");
+    const confirmed = await confirm("Удалить локальные данные iola-cli? [y/N] ");
+    if (!confirmed) {
+      console.log("Удаление отменено.");
+      return;
+    }
+  }
+
+  for (const target of safeTargets) {
+    await rm(target.path, { recursive: true, force: true });
+  }
+
+  console.log("Локальные данные iola-cli удалены.");
+  console.log("Codex CLI не тронут.");
+  console.log("Для полной переустановки npm-пакета:");
+  console.log("  npm uninstall -g @iola_adm/iola-cli");
+  console.log("  npm install -g @iola_adm/iola-cli@latest");
 }
 
 async function handleDb(args) {
@@ -7764,7 +7841,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
