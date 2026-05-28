@@ -48,8 +48,8 @@ assertIncludes(help, "iola ask", "help");
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");
 assertIncludes(commands, "iola mcp list|status|install|remove|serve [--stdio]", "commands");
-assertIncludes(commands, "iola delete --yes", "commands");
-assertIncludes(commands, "iola uninstall --yes", "commands");
+assertIncludes(commands, "iola delete", "commands");
+assertIncludes(commands, "iola uninstall", "commands");
 assertNotIncludes(commands, "Госуслуг", "commands");
 assertNotIncludes(commands, "gosuslugi", "commands");
 

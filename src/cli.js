@@ -298,8 +298,8 @@ const SLASH_COMMANDS = [
   { command: "/quality", description: "качество данных" },
   { command: "/views", description: "saved views" },
   { command: "/config get", description: "конфигурация" },
-  { command: "/delete --yes", description: "удалить локальные данные iola-cli" },
-  { command: "/uninstall --yes", description: "алиас для /delete --yes" },
+  { command: "/delete", description: "удалить локальные данные iola-cli" },
+  { command: "/uninstall", description: "алиас для /delete" },
   { command: "/layers", description: "слои данных" },
   { command: "/data schools --limit 10", description: "данные слоя" },
   { command: "/schools --limit 10", description: "школы" },
@@ -581,8 +581,8 @@ Usage:
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
   iola config reset
-  iola delete --yes
-  iola uninstall --yes
+  iola delete
+  iola uninstall
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
