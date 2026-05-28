@@ -900,6 +900,7 @@ async function startAgentRawInput() {
   } finally {
     clearAgentInputArea(state);
     clearAgentStatusBar(state);
+    finishAgentTerminalLine();
     if (!wasRaw) input.setRawMode(false);
     input.pause();
   }
@@ -1422,6 +1423,11 @@ function clearAgentStatusBar(state) {
   if (rows >= 1) output.write(`\x1b7\x1b[${rows};1H\x1b[2K\x1b8`);
   state.statusBar = false;
   state.statusRows = 0;
+}
+
+function finishAgentTerminalLine() {
+  if (!output.isTTY) return;
+  output.write("\r\x1b[0K\n");
 }
 
 function startActivityIndicator(label = "работаю") {
