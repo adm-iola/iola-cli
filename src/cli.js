@@ -298,7 +298,8 @@ const SLASH_COMMANDS = [
   { command: "/quality", description: "качество данных" },
   { command: "/views", description: "saved views" },
   { command: "/config get", description: "конфигурация" },
-  { command: "/uninstall --yes", description: "удалить локальные данные iola-cli" },
+  { command: "/delete --yes", description: "удалить локальные данные iola-cli" },
+  { command: "/uninstall --yes", description: "алиас для /delete --yes" },
   { command: "/layers", description: "слои данных" },
   { command: "/data schools --limit 10", description: "данные слоя" },
   { command: "/schools --limit 10", description: "школы" },
@@ -392,6 +393,7 @@ const COMMANDS = new Map([
   ["config", handleConfig],
   ["uninstall", handleUninstall],
   ["purge", handleUninstall],
+  ["delete", handleUninstall],
   ["banner", showBanner],
   ["agent", startAgent],
   ["chat", startAgent],
@@ -579,6 +581,7 @@ Usage:
   iola config set api.baseUrl URL
   iola config set api.mcpBaseUrl URL
   iola config reset
+  iola delete --yes
   iola uninstall --yes
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
@@ -1260,6 +1263,9 @@ async function handleAgentLine(line, state) {
     sync: ["sync", args],
     diff: ["diff", args],
     config: ["config", args],
+    delete: ["delete", args],
+    uninstall: ["uninstall", args],
+    purge: ["purge", args],
     layers: ["layers", args],
     data: ["data", args],
     schools: ["schools", args],

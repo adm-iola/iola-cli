@@ -48,6 +48,7 @@ assertIncludes(help, "iola ask", "help");
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");
 assertIncludes(commands, "iola mcp list|status|install|remove|serve [--stdio]", "commands");
+assertIncludes(commands, "iola delete --yes", "commands");
 assertIncludes(commands, "iola uninstall --yes", "commands");
 assertNotIncludes(commands, "Госуслуг", "commands");
 assertNotIncludes(commands, "gosuslugi", "commands");
@@ -65,6 +66,11 @@ assertNotIncludes(skills, "gosuslugi", "skills list");
 const uninstallPlan = JSON.parse(await runCli(["uninstall", "--dry-run", "--json"]));
 if (!Array.isArray(uninstallPlan.willDelete) || !uninstallPlan.willKeep.includes("Codex CLI")) {
   throw new Error("uninstall dry-run should list delete targets and keep Codex CLI");
+}
+
+const deletePlan = JSON.parse(await runCli(["delete", "--dry-run", "--json"]));
+if (!Array.isArray(deletePlan.willDelete) || !deletePlan.willKeep.includes("Codex CLI")) {
+  throw new Error("delete dry-run should list delete targets and keep Codex CLI");
 }
 
 console.log("smoke tests passed");
