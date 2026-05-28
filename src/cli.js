@@ -33,7 +33,7 @@ const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
-const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open"];
+const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open", "get_current_date"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
@@ -6436,6 +6436,11 @@ async function localToolAsk(question, providerConfig, options) {
     if (!options.quiet) console.log(guarded);
     return guarded;
   }
+  const casualAnswer = buildCasualDirectAnswer(question);
+  if (casualAnswer) {
+    if (!options.quiet) console.log(casualAnswer);
+    return casualAnswer;
+  }
   await ensureLocalData();
   const plan = await buildLocalToolPlan(question, providerConfig, options);
   if (plan.directAnswer) {
@@ -6489,6 +6494,20 @@ function guardNonPublicQuestion(question) {
   return "";
 }
 
+function buildCasualDirectAnswer(question) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU").trim();
+  if (/^(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер|hi|hello|hey)([!.?\s]+(как дела|как ты|что нового)[?.!\s]*)?$/iu.test(normalized)) {
+    return "Привет. Работаю нормально. Могу помочь с открытыми данными Йошкар-Олы: школами, детскими садами, адресами, телефонами, сайтами и ИНН.";
+  }
+  if (/^(как дела|как ты|что нового|ты тут|ты здесь)[?.!\s]*$/iu.test(normalized)) {
+    return "Я на месте. Могу искать и проверять открытые городские данные.";
+  }
+  if (/^(спасибо|благодарю)[!.?\s]*$/iu.test(normalized)) {
+    return "Пожалуйста.";
+  }
+  return "";
+}
+
 function printToolPlan(plan) {
   console.log("План выполнения:");
   plan.steps.forEach((step, index) => {
@@ -6534,7 +6553,12 @@ async function buildLocalToolPlan(question, providerConfig, options) {
 function normalizeIolaRouterPlan(raw, question, options = {}) {
   const payload = typeof raw === "string" ? parseJsonObject(raw) : raw;
   if (payload.action === "tool_call") {
-    const tool = payload.tool === "get_entity_field" ? "resolve_entity_field" : payload.tool;
+    const tool = normalizeIolaToolName(payload.tool);
+    if (!availableToolNames(options).includes(tool)) {
+      const casualAnswer = buildCasualDirectAnswer(question);
+      if (casualAnswer) return { directAnswer: casualAnswer };
+      return inferToolPlan(question, options);
+    }
     return { steps: [{ tool, args: payload.args || {} }] };
   }
   if (payload.action === "direct_answer") {
@@ -6550,6 +6574,12 @@ function normalizeIolaRouterPlan(raw, question, options = {}) {
     return inferToolPlan(question, options);
   }
   throw new Error(`IOLA router вернул неподдерживаемое действие: ${payload.action || "unknown"}`);
+}
+
+function normalizeIolaToolName(tool) {
+  if (tool === "get_entity_field") return "resolve_entity_field";
+  if (tool === "current_date" || tool === "date_now" || tool === "today") return "get_current_date";
+  return tool;
 }
 
 function parseJsonObject(text) {
@@ -6704,6 +6734,9 @@ async function executeToolPlan(plan, options = {}) {
         const text = await runBrowserAutomation("text", { url: step.args?.url, waitMs: Number(step.args?.waitMs || 0), timeout: Number(step.args?.timeout || 30000), viewport: step.args?.viewport || "1366x768" });
         current = [{ url: step.args?.url, text }];
         outputs.push({ tool: step.tool, rows: 1 });
+      } else if (step.tool === "get_current_date") {
+        current = [getCurrentDateInfo()];
+        outputs.push({ tool: step.tool, rows: current.length });
       } else if (String(step.tool || "").startsWith("mcp:")) {
         const result = await callConfiguredMcpTool(step.tool, step.args || {});
         current = Array.isArray(result) ? result : [result];
@@ -6740,6 +6773,16 @@ async function executeToolPlan(plan, options = {}) {
     await runHooks("PostToolUse", { tool: step.tool, rows: current.length });
   }
   return { rows: current, outputs };
+}
+
+function getCurrentDateInfo() {
+  const now = new Date();
+  return {
+    name: "текущая дата",
+    date: new Intl.DateTimeFormat("ru-RU", { dateStyle: "long" }).format(now),
+    time: new Intl.DateTimeFormat("ru-RU", { timeStyle: "short" }).format(now),
+    iso: now.toISOString(),
+  };
 }
 
 function getLocalMcpToolNames() {
@@ -6824,6 +6867,7 @@ function formatToolResult(result, options) {
       const name = row.entity.name || row.entity.inn || "организация";
       return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
     }
+    if (row.date && row.time) return `Сегодня ${row.date}, ${row.time}.`;
     return `${row.name || row.check || row.inn || "строка"}: ${row.address || row.phone || row.email || row.website || row.count || ""}`;
   }).join("\n");
 }
