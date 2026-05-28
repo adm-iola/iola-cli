@@ -6057,6 +6057,10 @@ async function setupIolaLocal(args) {
   const profileName = options.name || "local";
   const optional = Boolean(options.optional);
 
+  if (optional && process.env.CI === "true") {
+    return;
+  }
+
   try {
     await ensureIolaModelFresh({ repo, modelDir, force: true, quiet: Boolean(options.quiet) });
   } catch (error) {
