@@ -6622,12 +6622,12 @@ function buildPersonRoleDirectAnswer(question) {
 
 function extractPersonNameTokens(question) {
   const stopWords = new Set([
-    "так", "а", "и", "или", "кто", "что", "какой", "какая", "какого", "какой-то", "это",
+    "так", "а", "в", "во", "и", "или", "кто", "что", "какой", "какая", "какого", "каком", "какую", "какой-то", "это",
     "директор", "директора", "директором", "руководитель", "руководителем", "заведующая", "заведующий",
-    "школа", "школы", "школе", "сад", "сада", "детский", "детского", "гимназия", "лицей",
+    "школа", "школы", "школе", "школу", "сад", "сада", "саду", "детсад", "детсаду", "детский", "детского", "детском", "гимназия", "лицей",
     "является", "возглавляет", "найди", "покажи",
   ]);
-  return [...String(question || "").toLocaleLowerCase("ru-RU").matchAll(/\p{L}{3,}/gu)]
+  return [...String(question || "").toLocaleLowerCase("ru-RU").matchAll(/\p{L}{2,}/gu)]
     .map((match) => match[0])
     .filter((token) => !stopWords.has(token));
 }
@@ -6784,26 +6784,36 @@ async function resolvePublicEntityField(args = {}) {
   const endpoint = `${await getApiBaseUrl()}/resolve-entity-field`;
   const requestedField = normalizeEntityField(args.field);
   const layer = normalizeEntityLayer(args.layer);
+  const strictQuestionNumber = extractEntityNumberFromQuestion(args.source_question, layer);
   const payload = {
     layer,
-    entity_number: args.entity_number ?? args.number,
+    entity_number: strictQuestionNumber || (args.entity_number ?? args.number),
     entity_name: args.entity_name || args.name,
     inn: args.inn,
     field: requestedField,
     must_refute_user_value: args.must_refute_user_value,
     source_question: args.source_question,
+    strict_entity_number: Boolean(strictQuestionNumber),
   };
   try {
     const resolved = await postJson(endpoint, stripInternalResolveArgs(payload));
+    const correctedByNumber = await correctResolvedEntityByQuestionNumber(resolved, payload);
+    if (correctedByNumber) return correctedByNumber;
     return await correctResolvedEntityByQuestionName(resolved, payload) || resolved;
   } catch (error) {
+    if (payload.strict_entity_number && isEntityNotFoundError(error)) throw error;
+    if (isLocalEntityValidationError(error)) throw error;
     const fallbackField = pickResolveFieldFallback(requestedField, error);
     if (fallbackField && fallbackField !== requestedField) {
       try {
         const fallbackPayload = { ...payload, field: fallbackField };
         const resolved = await postJson(endpoint, stripInternalResolveArgs(fallbackPayload));
+        const correctedByNumber = await correctResolvedEntityByQuestionNumber(resolved, fallbackPayload);
+        if (correctedByNumber) return correctedByNumber;
         return await correctResolvedEntityByQuestionName(resolved, fallbackPayload) || resolved;
       } catch (retryError) {
+        if (payload.strict_entity_number && isEntityNotFoundError(retryError)) throw retryError;
+        if (isLocalEntityValidationError(retryError)) throw retryError;
         const resolvedBySearch = await resolvePublicEntityFieldViaSearch({ ...payload, field: fallbackField }, retryError);
         if (resolvedBySearch) return resolvedBySearch;
         throw retryError;
@@ -6819,6 +6829,7 @@ async function resolvePublicEntityFieldViaSearch(payload, originalError) {
   const details = parseErrorJsonDetails(originalError);
   if (details?.error !== "entity_not_found") return null;
   if (payload.inn) return null;
+  if (payload.strict_entity_number) return null;
   const query = payload.entity_name || buildEntitySearchQuery(payload.layer, payload.entity_number);
   if (!query) return null;
   const candidates = await searchPublicEntities({ layer: payload.layer, query, limit: 10 });
@@ -6833,8 +6844,26 @@ async function resolvePublicEntityFieldViaSearch(payload, originalError) {
 }
 
 function stripInternalResolveArgs(payload) {
-  const { source_question: _sourceQuestion, ...publicPayload } = payload || {};
+  const { source_question: _sourceQuestion, strict_entity_number: _strictEntityNumber, ...publicPayload } = payload || {};
   return publicPayload;
+}
+
+async function correctResolvedEntityByQuestionNumber(resolved, payload) {
+  if (!payload.strict_entity_number || !payload.entity_number) return null;
+  const resolvedEntity = resolved?.entity || resolved || {};
+  if (itemNameHasNumber(resolvedEntity, payload.entity_number)) return null;
+
+  const candidates = await searchPublicEntities({ layer: payload.layer, query: buildEntitySearchQuery(payload.layer, payload.entity_number), limit: 10 });
+  const candidate = candidates.find((item) => itemNameHasNumber(item, payload.entity_number));
+  if (!candidate?.inn) throw createEntityNotFoundError(payload, buildEntitySearchQuery(payload.layer, payload.entity_number));
+  if (candidate.inn === resolvedEntity.inn) return null;
+
+  return postJson(`${await getApiBaseUrl()}/resolve-entity-field`, stripInternalResolveArgs({
+    layer: payload.layer,
+    inn: candidate.inn,
+    field: payload.field,
+    must_refute_user_value: payload.must_refute_user_value,
+  }));
 }
 
 async function correctResolvedEntityByQuestionName(resolved, payload) {
@@ -6845,7 +6874,8 @@ async function correctResolvedEntityByQuestionName(resolved, payload) {
 
   const candidates = await searchPublicEntities({ layer: payload.layer, query: questionNameQuery, limit: 5 });
   const candidate = pickNamedEntityCandidate(candidates, questionNameQuery);
-  if (!candidate?.inn || candidate.inn === resolvedEntity.inn) return null;
+  if (!candidate?.inn) throw createEntityNotFoundError(payload, questionNameQuery);
+  if (candidate.inn === resolvedEntity.inn) return null;
 
   return postJson(`${await getApiBaseUrl()}/resolve-entity-field`, stripInternalResolveArgs({
     layer: payload.layer,
@@ -6857,6 +6887,7 @@ async function correctResolvedEntityByQuestionName(resolved, payload) {
 
 function extractEntityNameQueryFromQuestion(question, layer) {
   let text = String(question || "").toLocaleLowerCase("ru-RU");
+  if (extractEntityNumberFromQuestion(text, layer)) return "";
   const correction = text.match(/(?:просил|просила|просили)\s+(.+?)\s+а\s+не(?:\s|$)/iu);
   if (correction?.[1]) text = correction[1];
 
@@ -6864,7 +6895,7 @@ function extractEntityNameQueryFromQuestion(question, layer) {
     "а", "в", "во", "где", "же", "и", "или", "как", "какая", "какие", "какой", "кто", "на", "не",
     "найди", "находится", "подскажи", "покажи", "просил", "скажи", "так", "там", "это",
     "адрес", "директор", "директора", "заведующая", "заведующий", "инн", "почта", "сайт", "телефон",
-    "гимназия", "детсад", "детсада", "детский", "лицей", "мбдоу", "мбоу", "сад", "сада", "садик",
+    "гимназия", "гимназии", "детсад", "детсада", "детский", "лицей", "лицея", "лицее", "мбдоу", "мбоу", "сад", "сада", "садик",
     "сош", "школа", "школе", "школу", "школы",
   ]);
   const tokens = [...text.normalize("NFC").matchAll(/[\p{L}\d]+/gu)]
@@ -6902,6 +6933,38 @@ function entityQueryTokens(query) {
 
 function normalizeEntityText(text) {
   return String(text || "").toLocaleLowerCase("ru-RU").replace(/ё/g, "е");
+}
+
+function extractEntityNumberFromQuestion(question, layer) {
+  const text = String(question || "").toLocaleLowerCase("ru-RU");
+  const isKindergarten = layer === "kindergartens";
+  const isSchool = layer === "schools";
+  const patterns = isKindergarten
+    ? [/(?:детск\w*\s+сад\w*|детсад\w*|сад\w*)\s*(?:№|номер|n)?\s*(\d{1,4})/iu, /№\s*(\d{1,4})/iu]
+    : isSchool
+      ? [/(?:школ\w*|сош|гимнази\w*|лице\w*)\s*(?:№|номер|n)?\s*(\d{1,4})/iu, /№\s*(\d{1,4})/iu]
+      : [/№\s*(\d{1,4})/iu];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function createEntityNotFoundError(payload, query = "") {
+  const detail = {
+    error: "entity_not_found",
+    message: "No public entity matched the provided selector",
+    layer: payload.layer,
+    entity_number: payload.entity_number,
+    entity_name: payload.entity_name || query,
+    local_validation: true,
+  };
+  return new Error(`Request failed: 404 Not Found (${awaitedApiPlaceholder()})\n${JSON.stringify({ detail })}`);
+}
+
+function awaitedApiPlaceholder() {
+  return "local-validation";
 }
 
 function buildEntitySearchQuery(layer, number) {
@@ -6964,9 +7027,20 @@ function parseErrorJsonDetails(error) {
   }
 }
 
+function isEntityNotFoundError(error) {
+  return parseErrorJsonDetails(error)?.error === "entity_not_found";
+}
+
+function isLocalEntityValidationError(error) {
+  return Boolean(parseErrorJsonDetails(error)?.local_validation);
+}
+
 function formatToolExecutionError(error, plan) {
   const details = parseErrorJsonDetails(error);
   if (details?.error !== "entity_not_found") return "";
+  if (details.local_validation && details.entity_name) {
+    return `В открытом слое не нашел организацию по названию "${details.entity_name}". Проверьте название.`;
+  }
 
   const step = (plan?.steps || []).find((item) => item.tool === "resolve_entity_field" || item.tool === "search_entities");
   const args = step?.args || {};
