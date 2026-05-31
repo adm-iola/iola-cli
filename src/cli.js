@@ -6551,10 +6551,31 @@ async function localToolAsk(question, providerConfig, options) {
 
 function guardNonPublicQuestion(question) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (isDangerousInstructionQuestion(normalized)) {
+    return "Не могу помогать с созданием оружия, взрывчатых веществ или инструкциями по причинению вреда.";
+  }
   if (/(зарплат|получа[ею]т|доход|домашн|паспорт|снилс|личн|персональн)/iu.test(normalized)) {
     return "Это поле не входит в открытые публичные данные.";
   }
+  if (isUnsupportedPublicEntityQuestion(normalized)) {
+    return "Сейчас в открытых слоях CLI подключены школы и детские сады. По музеям, маршрутам, больницам и другим организациям я пока не могу давать проверяемые ответы.";
+  }
   return "";
+}
+
+function isDangerousInstructionQuestion(normalized) {
+  const asksHow = /(как|сдела|собра|изготов|созда|надо|нужн|инструкц|рецепт|схем|компонент)/iu.test(normalized);
+  const weapon = /(бомб|взрывчат|взрывн|детонатор|термит|напалм|оруж|патрон|яд|отрав|боеприпас|мина|гранат)/iu.test(normalized);
+  const nuclear = /(атомн|ядерн|уран|плутони|обогащен)/iu.test(normalized) && /(бомб|оруж|собра|сдела|созда|надо|нужн)/iu.test(normalized);
+  return (asksHow && weapon) || nuclear;
+}
+
+function isUnsupportedPublicEntityQuestion(normalized) {
+  const unsupportedEntity = /(музе[йяею]|театр|больниц|поликлиник|аптек|магазин|кафе|ресторан|гостиниц|банк|мфц|библиотек|парк|маршрут|остановк)/iu.test(normalized);
+  if (!unsupportedEntity) return false;
+  const supportedEducation = /(школ|гимнази|лице|детск\w*\s+сад|детсад|садик)/iu.test(normalized);
+  if (supportedEducation) return false;
+  return /(адрес|где|как пройти|как добраться|директ|руководител|заведующ|телефон|сайт|почт|инн|кто|находится)/iu.test(normalized);
 }
 
 function buildCasualDirectAnswer(question) {
@@ -6767,8 +6788,10 @@ function validateToolPlan(plan, options = {}) {
 }
 
 async function searchPublicEntities(args = {}) {
+  const layer = normalizeEntityLayer(args.layer);
+  assertSupportedPublicEntityLayer(layer);
   const payload = await postJson(`${await getApiBaseUrl()}/search-entities`, {
-    layer: normalizeEntityLayer(args.layer),
+    layer,
     query: args.query || args.entity_name || args.name || "",
     limit: Number(args.limit || 10),
     filters: args.filters || undefined,
@@ -6784,6 +6807,7 @@ async function resolvePublicEntityField(args = {}) {
   const endpoint = `${await getApiBaseUrl()}/resolve-entity-field`;
   const requestedField = normalizeEntityField(args.field);
   const layer = normalizeEntityLayer(args.layer);
+  assertSupportedPublicEntityLayer(layer);
   const strictQuestionNumber = extractEntityNumberFromQuestion(args.source_question, layer);
   const payload = {
     layer,
@@ -6988,7 +7012,22 @@ function normalizeEntityLayer(layer) {
   const value = String(layer || "").toLocaleLowerCase("ru-RU");
   if (value === "school" || value === "schools" || value.includes("школ")) return "schools";
   if (value === "kindergarten" || value === "kindergartens" || value.includes("сад")) return "kindergartens";
+  if (value === "museum" || value === "museums" || value.includes("музе")) return "museums";
   return value || "schools";
+}
+
+function assertSupportedPublicEntityLayer(layer) {
+  if (layer === "schools" || layer === "kindergartens") return;
+  throw createUnsupportedPublicDatasetError(layer);
+}
+
+function createUnsupportedPublicDatasetError(layer) {
+  const detail = {
+    error: "unsupported_public_dataset",
+    message: "Unknown public dataset",
+    layer,
+  };
+  return new Error(`Request failed: 400 Bad Request (local-validation)\n${JSON.stringify({ detail })}`);
 }
 
 function normalizeEntityField(field) {
@@ -7037,6 +7076,9 @@ function isLocalEntityValidationError(error) {
 
 function formatToolExecutionError(error, plan) {
   const details = parseErrorJsonDetails(error);
+  if (details?.error === "unsupported_public_dataset" || details === "Unknown public dataset") {
+    return "Сейчас в открытых слоях CLI подключены школы и детские сады. По этому типу организаций я пока не могу давать проверяемые ответы.";
+  }
   if (details?.error !== "entity_not_found") return "";
   if (details.local_validation && details.entity_name) {
     return `В открытом слое не нашел организацию по названию "${details.entity_name}". Проверьте название.`;
