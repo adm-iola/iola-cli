@@ -1,11 +1,12 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { emitKeypressEvents } from "node:readline";
 import readline from "node:readline/promises";
+import { Readable } from "node:stream";
 import { stdin as input, stdout as output } from "node:process";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -21,9 +22,11 @@ const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
 const DB_SCHEMA_VERSION = 8;
-const IOLA_LOCAL_MODEL = "iola-router-1b";
-const IOLA_LOCAL_OLLAMA_MODEL = "gemma3:1b";
+const IOLA_LOCAL_MODEL = "iola-router:qwen3-1.7b-v4-q8";
+const IOLA_LOCAL_OLLAMA_MODEL = IOLA_LOCAL_MODEL;
 const IOLA_ROUTER_HF_REPO = process.env.IOLA_ROUTER_HF_REPO || "LMSerg/iola-1b-router-2026-05-28-merged";
+const IOLA_ROUTER_GGUF_REPO = process.env.IOLA_ROUTER_GGUF_REPO || "LMSerg/iola-router-qwen3-1.7b-v4-gguf";
+const IOLA_ROUTER_GGUF_FILE = process.env.IOLA_ROUTER_GGUF_FILE || "iola-router-qwen3-1.7b-v4-q8_0.gguf";
 const IOLA_MODEL_DIR = path.join(CONFIG_DIR, "models", "router");
 const IOLA_MODEL_RUNTIME_DIR = path.join(CONFIG_DIR, "model-runtime");
 const IOLA_MODEL_RUNNER = path.resolve(__dirname, "iola_hf_runner.py");
@@ -127,7 +130,10 @@ const DEFAULT_AI_CONFIG = {
       local: {
         provider: "iola",
         model: IOLA_LOCAL_MODEL,
-        repo: IOLA_ROUTER_HF_REPO,
+        runtime: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        ggufRepo: IOLA_ROUTER_GGUF_REPO,
+        ggufFile: IOLA_ROUTER_GGUF_FILE,
         modelDir: IOLA_MODEL_DIR,
       },
       openai: {
@@ -469,7 +475,12 @@ async function maybeRefreshIolaModelForCommand(command, args = []) {
   const profile = config.ai.profiles?.[getActiveProfileName(config)];
   if (profile?.provider !== "iola" && config.ai.provider !== "iola") return;
   await ensureIolaModelFresh({
+    runtime: profile?.runtime,
     repo: profile?.repo || IOLA_ROUTER_HF_REPO,
+    ggufRepo: profile?.ggufRepo,
+    ggufFile: profile?.ggufFile,
+    model: profile?.model,
+    baseUrl: profile?.baseUrl,
     modelDir: profile?.modelDir || IOLA_MODEL_DIR,
     quiet: true,
   }).catch((error) => {
@@ -4503,7 +4514,11 @@ function buildProfileFromOptions(provider, options) {
   }
 
   if (provider === "iola") {
+    profile.runtime = options.runtime || defaults.runtime || "ollama";
+    profile.baseUrl = options["base-url"] || defaults.baseUrl || "http://127.0.0.1:11434";
     profile.repo = options.repo || defaults.repo || IOLA_ROUTER_HF_REPO;
+    profile.ggufRepo = options["gguf-repo"] || defaults.ggufRepo || IOLA_ROUTER_GGUF_REPO;
+    profile.ggufFile = options["gguf-file"] || defaults.ggufFile || IOLA_ROUTER_GGUF_FILE;
     profile.modelDir = options["model-dir"] || defaults.modelDir || IOLA_MODEL_DIR;
   }
 
@@ -4692,7 +4707,7 @@ async function switchModelTarget(target, model) {
   const config = await loadConfig();
   const provider = target === "local" ? "iola" : target;
   if (provider === "iola") {
-    await ensureIolaModelFresh({ quiet: false });
+    await ensureIolaModelFresh({ model, quiet: false });
   }
   if (provider === "ollama") {
     const ready = await ensureOllamaModelAvailable(model, config);
@@ -6160,16 +6175,29 @@ async function setupOllama(args) {
 async function setupIolaLocal(args) {
   const options = parseOptions(args);
   const repo = options.repo || IOLA_ROUTER_HF_REPO;
+  const ggufRepo = options["gguf-repo"] || IOLA_ROUTER_GGUF_REPO;
+  const ggufFile = options["gguf-file"] || IOLA_ROUTER_GGUF_FILE;
   const modelDir = options["model-dir"] || IOLA_MODEL_DIR;
   const profileName = options.name || "local";
   const optional = Boolean(options.optional);
+  const runtime = options.runtime || "ollama";
+  const model = options.model || IOLA_LOCAL_MODEL;
 
   if (optional && process.env.CI === "true") {
     return;
   }
 
   try {
-    await ensureIolaModelFresh({ repo, modelDir, force: true, quiet: Boolean(options.quiet) });
+    await ensureIolaModelFresh({
+      runtime,
+      repo,
+      ggufRepo,
+      ggufFile,
+      modelDir,
+      model,
+      force: true,
+      quiet: Boolean(options.quiet),
+    });
   } catch (error) {
     if (!optional) throw error;
     console.warn(`IOLA local model не установлена: ${error instanceof Error ? error.message : String(error)}`);
@@ -6181,13 +6209,18 @@ async function setupIolaLocal(args) {
       ...config.ai,
       activeProfile: profileName,
       provider: "iola",
-      model: IOLA_LOCAL_MODEL,
+      model,
+      baseUrl: "http://127.0.0.1:11434",
       profiles: {
         ...(config.ai.profiles || {}),
         [profileName]: {
           provider: "iola",
-          model: IOLA_LOCAL_MODEL,
+          model,
+          runtime,
+          baseUrl: "http://127.0.0.1:11434",
           repo,
+          ggufRepo,
+          ggufFile,
           modelDir,
         },
       },
@@ -6197,9 +6230,9 @@ async function setupIolaLocal(args) {
   if (options.quiet) return;
   console.log("");
   console.log("IOLA local mode готов:");
-  console.log(`  runtime: Python transformers/peft`);
-  console.log(`  model: ${IOLA_LOCAL_MODEL}`);
-  console.log(`  Hugging Face: ${repo}`);
+  console.log(`  runtime: ${runtime === "transformers" ? "Python transformers/peft" : "Ollama GGUF"}`);
+  console.log(`  model: ${model}`);
+  console.log(`  Hugging Face: ${runtime === "transformers" ? repo : ggufRepo}`);
   console.log(`  cache: ${modelDir}`);
   console.log("  точные данные: https://apiiola.yasg.ru/api/v1/resolve-entity-field");
 }
@@ -7457,6 +7490,28 @@ async function callAiProvider(config, messages) {
 }
 
 async function callIolaLocal(config, messages) {
+  if ((config.runtime || "ollama") !== "transformers") {
+    const model = config.model || IOLA_LOCAL_MODEL;
+    await ensureIolaModelFresh({
+      runtime: "ollama",
+      model,
+      baseUrl: config.baseUrl,
+      modelDir: config.modelDir || IOLA_MODEL_DIR,
+      ggufRepo: config.ggufRepo || IOLA_ROUTER_GGUF_REPO,
+      ggufFile: config.ggufFile || IOLA_ROUTER_GGUF_FILE,
+      quiet: true,
+    });
+    const routerMessages = withIolaRouterSystemPrompt(messages);
+    return callOllama({
+      ...config,
+      provider: "ollama",
+      model,
+      temperature: 0,
+      numPredict: Number(config.numPredict || 128),
+      qwenNoThink: true,
+    }, routerMessages);
+  }
+
   const runtime = await ensureIolaModelRuntime({ quiet: true });
   const repo = config.repo || IOLA_ROUTER_HF_REPO;
   const modelDir = config.modelDir || IOLA_MODEL_DIR;
@@ -7482,11 +7537,16 @@ async function callIolaLocal(config, messages) {
 }
 
 async function hasUsableIolaModel() {
+  if (await hasOllamaModel(IOLA_LOCAL_MODEL)) return true;
   const state = readConfigLayerSync(getIolaModelStateFile(IOLA_MODEL_DIR));
-  return Boolean(state?.repo && state?.revision && existsSync(IOLA_MODEL_DIR));
+  return Boolean(state?.runtime === "transformers" && state?.repo && state?.revision && existsSync(IOLA_MODEL_DIR));
 }
 
 async function ensureIolaModelFresh(options = {}) {
+  if ((options.runtime || "ollama") !== "transformers") {
+    return ensureIolaOllamaModelFresh(options);
+  }
+
   const repo = options.repo || IOLA_ROUTER_HF_REPO;
   const modelDir = options.modelDir || IOLA_MODEL_DIR;
   await mkdir(modelDir, { recursive: true });
@@ -7525,6 +7585,142 @@ async function ensureIolaModelFresh(options = {}) {
 function getIolaModelStateFile(modelDir = IOLA_MODEL_DIR) {
   return path.join(modelDir, "manifest.json");
 }
+
+async function ensureIolaOllamaModelFresh(options = {}) {
+  const model = options.model || IOLA_LOCAL_MODEL;
+  const modelDir = options.modelDir || IOLA_MODEL_DIR;
+  const repo = options.ggufRepo || IOLA_ROUTER_GGUF_REPO;
+  const ggufFile = options.ggufFile || IOLA_ROUTER_GGUF_FILE;
+  const baseUrl = options.baseUrl || "http://127.0.0.1:11434";
+  const ollamaCommand = await resolveOllamaCommand();
+  if (!ollamaCommand) {
+    throw new Error("Ollama не найден. Установите Ollama и повторите: iola ai setup iola --yes");
+  }
+
+  await mkdir(modelDir, { recursive: true });
+  const stateFile = getIolaModelStateFile(modelDir);
+  const state = readConfigLayerSync(stateFile) || {};
+  const remote = await getRemoteIolaModelRevision(repo).catch(() => null);
+  const installed = await hasOllamaModel(model, baseUrl);
+  if (installed && !options.force && (!state.revision || state.runtime !== "ollama" || state.model !== model || state.repo !== repo)) {
+    const nextState = {
+      repo,
+      ggufFile,
+      revision: remote?.sha || state.revision || `local-${Date.now()}`,
+      installedAt: state.installedAt || new Date().toISOString(),
+      runtime: "ollama",
+      model,
+    };
+    await writeFile(stateFile, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+    return nextState;
+  }
+  const stale = options.force || !installed || state.runtime !== "ollama" || state.model !== model || state.repo !== repo || !state.revision || (remote?.sha && remote.sha !== state.revision);
+  if (!stale) return state;
+
+  if (!options.quiet) {
+    const reason = installed ? "обновляю" : "устанавливаю";
+    console.log(`IOLA local model: ${reason} ${model}`);
+    console.log(`Источник GGUF: https://huggingface.co/${repo}`);
+  }
+
+  const ggufPath = path.join(modelDir, ggufFile);
+  const modelfilePath = path.join(modelDir, "Modelfile");
+  const url = `https://huggingface.co/${repo}/resolve/main/${encodeURIComponent(ggufFile)}`;
+  if (options.force || !existsSync(ggufPath)) {
+    await downloadFile(url, ggufPath, { quiet: options.quiet });
+  }
+
+  await writeFile(modelfilePath, buildIolaOllamaModelfile(ggufPath), "utf8");
+  await runCommand(ollamaCommand, ["create", model, "-f", modelfilePath], { inherit: !options.quiet });
+
+  const nextState = {
+    repo,
+    ggufFile,
+    revision: remote?.sha || state.revision || `local-${Date.now()}`,
+    installedAt: new Date().toISOString(),
+    runtime: "ollama",
+    model,
+  };
+  await writeFile(stateFile, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  return nextState;
+}
+
+async function hasOllamaModel(model, baseUrl = "http://127.0.0.1:11434") {
+  try {
+    const response = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return false;
+    const payload = await response.json();
+    return (payload.models || []).some((item) => item.name === model);
+  } catch {
+    return false;
+  }
+}
+
+async function downloadFile(url, targetPath, options = {}) {
+  const response = await fetch(url, {
+    headers: { "user-agent": "@iola_adm/iola-cli" },
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Не удалось скачать модель: ${response.status} ${response.statusText} (${url})`);
+  }
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  if (!options.quiet) console.log(`Скачиваю модель: ${targetPath}`);
+  await new Promise((resolve, reject) => {
+    const file = createWriteStream(targetPath);
+    Readable.fromWeb(response.body).pipe(file);
+    file.on("finish", resolve);
+    file.on("error", reject);
+  });
+}
+
+function buildIolaOllamaModelfile(ggufPath) {
+  return `FROM ${ggufPath}
+
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end -}}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}<|im_end|>
+{{ end -}}
+{{ end -}}
+<|im_start|>assistant
+"""
+
+PARAMETER temperature 0
+PARAMETER repeat_penalty 1
+PARAMETER stop <|im_start|>
+PARAMETER stop <|im_end|>
+`;
+}
+
+function withIolaRouterSystemPrompt(messages = []) {
+  const normalized = messages.map((message) => ({ ...message }));
+  const hasSystem = normalized.some((message) => message.role === "system");
+  const withNoThink = normalized.map((message, index) => {
+    if (message.role === "user" && index === normalized.findLastIndex((item) => item.role === "user")) {
+      return { ...message, content: `${message.content}\n/no_think` };
+    }
+    return message;
+  });
+  return hasSystem ? withNoThink : [{ role: "system", content: IOLA_ROUTER_SYSTEM_PROMPT }, ...withNoThink];
+}
+
+const IOLA_ROUTER_SYSTEM_PROMPT = `You are the IOLA CLI router for public open data of Yoshkar-Ola.
+Return only valid JSON. No markdown, no prose.
+Allowed actions:
+- {"action":"tool_call","tool":"resolve_entity_field","args":{"layer":"schools|kindergartens","entity_number":1,"field":"address|phone|email|website|inn|head|license_status"}}
+- {"action":"tool_call","tool":"search_entities","args":{"layer":"schools|kindergartens","query":"..."}}
+- {"action":"tool_call","tool":"rag_search","args":{"query":"...","collections":["city_history","official_documents"]}}
+- {"action":"tool_call","tool":"get_current_official","args":{"jurisdiction":"yoshkar_ola","office_query":"..."}}
+- {"action":"tool_call","tool":"get_official_by_date","args":{"jurisdiction":"yoshkar_ola","office_query":"...","date":"YYYY or date"}}
+- {"action":"clarify","question":"..."}
+- {"action":"refuse","reason":"field_not_public"}
+- {"action":"direct_answer","answer":"..."}
+Never invent current officials, salaries, private data, addresses, phones, websites, heads, or license statuses.
+Use tool calls for public entity data. Use refuse for non-public fields.`;
 
 async function ensureIolaModelRuntime(options = {}) {
   const python = await getIolaRuntimePython();
@@ -7652,8 +7848,10 @@ async function callOllama(config, messages) {
         model: config.model || "llama3.2:1b",
         messages,
         stream: false,
+        think: config.qwenNoThink ? false : undefined,
         options: {
           temperature: Number(config.temperature ?? 0.1),
+          num_predict: config.numPredict ? Number(config.numPredict) : undefined,
         },
       }),
     });
@@ -10026,6 +10224,21 @@ function sanitizeConfig(config) {
   }
   if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("open-data") && !next.skills.enabled.includes("education")) {
     next.skills.enabled = ["education", ...next.skills.enabled];
+  }
+  const localProfile = next.ai?.profiles?.local;
+  if (localProfile?.provider === "iola") {
+    if (!localProfile.runtime || localProfile.model === "iola-router-1b") {
+      localProfile.runtime = "ollama";
+      localProfile.model = IOLA_LOCAL_MODEL;
+      localProfile.baseUrl = localProfile.baseUrl || "http://127.0.0.1:11434";
+      localProfile.ggufRepo = localProfile.ggufRepo || IOLA_ROUTER_GGUF_REPO;
+      localProfile.ggufFile = localProfile.ggufFile || IOLA_ROUTER_GGUF_FILE;
+      localProfile.modelDir = localProfile.modelDir || IOLA_MODEL_DIR;
+    }
+  }
+  if (next.ai?.activeProfile === "local" && next.ai.provider === "iola" && next.ai.model === "iola-router-1b") {
+    next.ai.model = IOLA_LOCAL_MODEL;
+    next.ai.baseUrl = next.ai.baseUrl || "http://127.0.0.1:11434";
   }
   return next;
 }
