@@ -6512,7 +6512,15 @@ async function localToolAsk(question, providerConfig, options) {
     }
   }
   const runId = `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const result = await executeToolPlan(validated, { ...options, runId });
+  let result;
+  try {
+    result = await executeToolPlan(validated, { ...options, runId });
+  } catch (error) {
+    const friendlyError = formatToolExecutionError(error, validated);
+    if (!friendlyError) throw error;
+    if (!options.quiet) console.log(friendlyError);
+    return friendlyError;
+  }
   const answer = formatToolResult(result, options);
 
   if (!options["no-history"] && isFeatureEnabled("sqlite-history")) {
@@ -6686,7 +6694,7 @@ function normalizeIolaRouterPlan(raw, question, options = {}) {
       if (casualAnswer) return { directAnswer: casualAnswer };
       return inferToolPlan(question, options);
     }
-    return { steps: [{ tool, args: payload.args || {} }] };
+    return { steps: [{ tool, args: { ...(payload.args || {}), source_question: question } }] };
   }
   if (payload.action === "direct_answer") {
     return { directAnswer: payload.answer || "" };
@@ -6783,14 +6791,18 @@ async function resolvePublicEntityField(args = {}) {
     inn: args.inn,
     field: requestedField,
     must_refute_user_value: args.must_refute_user_value,
+    source_question: args.source_question,
   };
   try {
-    return await postJson(endpoint, payload);
+    const resolved = await postJson(endpoint, stripInternalResolveArgs(payload));
+    return await correctResolvedEntityByQuestionName(resolved, payload) || resolved;
   } catch (error) {
     const fallbackField = pickResolveFieldFallback(requestedField, error);
     if (fallbackField && fallbackField !== requestedField) {
       try {
-        return await postJson(endpoint, { ...payload, field: fallbackField });
+        const fallbackPayload = { ...payload, field: fallbackField };
+        const resolved = await postJson(endpoint, stripInternalResolveArgs(fallbackPayload));
+        return await correctResolvedEntityByQuestionName(resolved, fallbackPayload) || resolved;
       } catch (retryError) {
         const resolvedBySearch = await resolvePublicEntityFieldViaSearch({ ...payload, field: fallbackField }, retryError);
         if (resolvedBySearch) return resolvedBySearch;
@@ -6812,12 +6824,84 @@ async function resolvePublicEntityFieldViaSearch(payload, originalError) {
   const candidates = await searchPublicEntities({ layer: payload.layer, query, limit: 10 });
   const candidate = pickResolvedEntityCandidate(candidates, payload);
   if (!candidate?.inn) return null;
-  return postJson(`${await getApiBaseUrl()}/resolve-entity-field`, {
+  return postJson(`${await getApiBaseUrl()}/resolve-entity-field`, stripInternalResolveArgs({
     layer: payload.layer,
     inn: candidate.inn,
     field: payload.field,
     must_refute_user_value: payload.must_refute_user_value,
-  });
+  }));
+}
+
+function stripInternalResolveArgs(payload) {
+  const { source_question: _sourceQuestion, ...publicPayload } = payload || {};
+  return publicPayload;
+}
+
+async function correctResolvedEntityByQuestionName(resolved, payload) {
+  const questionNameQuery = extractEntityNameQueryFromQuestion(payload.source_question, payload.layer);
+  if (!questionNameQuery) return null;
+  const resolvedEntity = resolved?.entity || resolved || {};
+  if (entityNameMatchesQuery(resolvedEntity.name, questionNameQuery)) return null;
+
+  const candidates = await searchPublicEntities({ layer: payload.layer, query: questionNameQuery, limit: 5 });
+  const candidate = pickNamedEntityCandidate(candidates, questionNameQuery);
+  if (!candidate?.inn || candidate.inn === resolvedEntity.inn) return null;
+
+  return postJson(`${await getApiBaseUrl()}/resolve-entity-field`, stripInternalResolveArgs({
+    layer: payload.layer,
+    inn: candidate.inn,
+    field: payload.field,
+    must_refute_user_value: payload.must_refute_user_value,
+  }));
+}
+
+function extractEntityNameQueryFromQuestion(question, layer) {
+  let text = String(question || "").toLocaleLowerCase("ru-RU");
+  const correction = text.match(/(?:просил|просила|просили)\s+(.+?)\s+а\s+не(?:\s|$)/iu);
+  if (correction?.[1]) text = correction[1];
+
+  const stopWords = new Set([
+    "а", "в", "во", "где", "же", "и", "или", "как", "какая", "какие", "какой", "кто", "на", "не",
+    "найди", "находится", "подскажи", "покажи", "просил", "скажи", "так", "там", "это",
+    "адрес", "директор", "директора", "заведующая", "заведующий", "инн", "почта", "сайт", "телефон",
+    "гимназия", "детсад", "детсада", "детский", "лицей", "мбдоу", "мбоу", "сад", "сада", "садик",
+    "сош", "школа", "школе", "школу", "школы",
+  ]);
+  const tokens = [...text.normalize("NFC").matchAll(/[\p{L}\d]+/gu)]
+    .map((match) => normalizeEntityText(match[0]))
+    .filter((token) => token && !stopWords.has(token) && !/^\d+$/.test(token));
+  const uniqueTokens = [...new Set(tokens)];
+  if (uniqueTokens.length === 0) return "";
+  if (uniqueTokens.length === 1 && uniqueTokens[0].length < 5) return "";
+  return uniqueTokens.join(" ");
+}
+
+function pickNamedEntityCandidate(candidates, query) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  const tokens = entityQueryTokens(query);
+  const exact = candidates.find((item) => entityNameMatchesQuery(item.name, query));
+  if (exact) return exact;
+  if (candidates.length === 1 && Number(candidates[0].score || 0) >= 0.5) return candidates[0];
+  return candidates.find((item) => {
+    const name = normalizeEntityText(item.name || "");
+    return Number(item.score || 0) >= 0.8 && tokens.filter((token) => name.includes(token)).length >= Math.ceil(tokens.length / 2);
+  }) || null;
+}
+
+function entityNameMatchesQuery(name, query) {
+  const normalizedName = normalizeEntityText(name || "");
+  const tokens = entityQueryTokens(query);
+  return tokens.length > 0 && tokens.every((token) => normalizedName.includes(token));
+}
+
+function entityQueryTokens(query) {
+  return [...String(query || "").matchAll(/[\p{L}\d]+/gu)]
+    .map((match) => normalizeEntityText(match[0]))
+    .filter(Boolean);
+}
+
+function normalizeEntityText(text) {
+  return String(text || "").toLocaleLowerCase("ru-RU").replace(/ё/g, "е");
 }
 
 function buildEntitySearchQuery(layer, number) {
@@ -6878,6 +6962,24 @@ function parseErrorJsonDetails(error) {
   } catch {
     return null;
   }
+}
+
+function formatToolExecutionError(error, plan) {
+  const details = parseErrorJsonDetails(error);
+  if (details?.error !== "entity_not_found") return "";
+
+  const step = (plan?.steps || []).find((item) => item.tool === "resolve_entity_field" || item.tool === "search_entities");
+  const args = step?.args || {};
+  const layer = normalizeEntityLayer(args.layer);
+  const number = args.entity_number ?? args.number;
+  const name = args.entity_name || args.name;
+  const entityLabel = layer === "kindergartens" ? "детский сад" : "школу";
+  const selector = number !== undefined && number !== null && number !== ""
+    ? `${entityLabel} № ${number}`
+    : name
+      ? `${entityLabel} "${name}"`
+      : "такую организацию";
+  return `В открытом слое не нашел ${selector}. Проверьте номер или название.`;
 }
 
 function availableToolNames(options = {}) {
