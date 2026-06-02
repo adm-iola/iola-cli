@@ -4812,6 +4812,11 @@ async function chooseAiModel(provider) {
     return chooseOpenRouterModel();
   }
 
+  if (provider === "openai") {
+    const ready = await ensureApiKeyForModelSelection(provider);
+    if (!ready) return "";
+  }
+
   let search = "";
   if (provider === "openai") {
     search = (await askText("Фильтр моделей (Enter - без фильтра): ")).trim();
@@ -4849,6 +4854,9 @@ async function chooseAiModel(provider) {
 }
 
 async function chooseOpenRouterModel() {
+  const ready = await ensureApiKeyForModelSelection("openrouter");
+  if (!ready) return "";
+
   let models;
   try {
     models = await listAiModels("openrouter");
@@ -4897,6 +4905,20 @@ async function chooseOpenRouterModel() {
     const modelAnswer = Number(await askText("Номер: "));
     if (!modelAnswer) continue;
     return filtered[modelAnswer - 1]?.id || "";
+  }
+}
+
+async function ensureApiKeyForModelSelection(provider) {
+  if (provider !== "openai" && provider !== "openrouter") return true;
+  if (await getApiKey(provider)) return true;
+  const label = provider === "openai" ? "OpenAI" : "OpenRouter";
+  console.log(`${label} API key не найден. Введите ключ, чтобы получить список моделей.`);
+  try {
+    await setAiKey(provider);
+    return Boolean(await getApiKey(provider));
+  } catch (error) {
+    console.log(error instanceof Error ? error.message : String(error));
+    return false;
   }
 }
 
