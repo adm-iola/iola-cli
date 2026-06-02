@@ -18,6 +18,51 @@ iola ask "найди школы на Петрова"
 
 Если выбранная Ollama-модель еще не установлена, CLI предложит скачать ее через `ollama pull`. При выборе сторонней Ollama-модели профиль `local` сохраняется как `provider: ollama`; при выборе штатной модели IOLA профиль `local` возвращается к `provider: iola`.
 
+## Российские AI
+
+Российские провайдеры вынесены в отдельный блок `/model` и вызываются напрямую, без gateway/proxy:
+
+```text
+/model
+2. Российские AI (YandexGPT/GigaChat)
+```
+
+### YandexGPT
+
+Официальные страницы:
+
+- документация Foundation Models: `https://yandex.cloud/ru/docs/foundation-models/`;
+- аутентификация API: `https://yandex.cloud/ru/docs/ai-studio/api-ref/authentication`;
+- тарифы: `https://yandex.cloud/ru/docs/foundation-models/pricing`.
+
+Для CLI нужны API key и ID каталога Yandex Cloud:
+
+```bash
+iola ai key set yandexgpt
+iola ai setup yandexgpt --model yandexgpt-lite/latest
+```
+
+CLI также понимает env-переменные `YANDEXGPT_API_KEY` или `YANDEX_CLOUD_API_KEY`, а для каталога - `YANDEXGPT_FOLDER_ID` или `YANDEX_CLOUD_FOLDER_ID`.
+
+### GigaChat
+
+Официальные страницы:
+
+- документация GigaChat: `https://developers.sber.ru/docs/ru/gigachat/overview`;
+- получение OAuth-токена: `https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token`;
+- тарифы: `https://developers.sber.ru/docs/ru/gigachat/tariffs`.
+
+Для CLI нужен authorization key:
+
+```bash
+iola ai key set gigachat
+iola ai setup gigachat --model GigaChat-2
+```
+
+CLI также понимает env-переменные `GIGACHAT_AUTH_KEY` или `GIGACHAT_API_KEY`. По умолчанию используется scope `GIGACHAT_API_PERS`; при необходимости его можно задать через `GIGACHAT_SCOPE`.
+
+По тарифам: у GigaChat для физических лиц есть Freemium-лимит на токены; для больших объемов используются платные пакеты. У YandexGPT тарификация идет через Yandex Cloud по токенам и квотам аккаунта, поэтому актуальные бесплатные гранты или лимиты нужно проверять в консоли Yandex Cloud.
+
 ## OpenAI
 
 Получение ключа OpenAI Platform:
@@ -60,7 +105,7 @@ OpenRouter удобен тем, что через один ключ можно �
 
 Важно: оплата российскими банковскими картами для OpenAI Platform и OpenRouter может быть невозможна. Перед настройкой платных API заранее проверьте доступный способ оплаты и пополнения баланса в личном кабинете выбранного сервиса.
 
-Ключи OpenAI/OpenRouter сохраняются локально на устройстве пользователя в `~/.iola/secrets.json`. CLI не публикует ключи в репозиторий и не записывает их в документацию.
+Ключи YandexGPT, GigaChat, OpenAI и OpenRouter сохраняются локально на устройстве пользователя в `~/.iola/secrets.json`. CLI не публикует ключи в репозиторий и не записывает их в документацию.
 
 В интерактивном CLI модели удобнее выбирать через slash-команду:
 
@@ -92,4 +137,4 @@ iola ai profile use local
 iola ai profile use openrouter
 ```
 
-В интерактивном агенте можно использовать `/model`, чтобы выбрать подключение и модель без ручного ввода id модели.
+В интерактивном агенте можно использовать `/model`, чтобы выбрать подключение и модель без ручного ввода id модели. Порядок меню: локальные модели, российские AI, зарубежные API, Codex CLI.

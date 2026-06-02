@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { emitKeypressEvents } from "node:readline";
 import readline from "node:readline/promises";
 import { Readable } from "node:stream";
@@ -163,6 +164,20 @@ const DEFAULT_AI_CONFIG = {
         model: "openai/gpt-4.1-mini",
         baseUrl: "https://openrouter.ai/api/v1",
         networkMode: "gateway",
+      },
+      yandexgpt: {
+        provider: "yandexgpt",
+        model: "yandexgpt-lite/latest",
+        baseUrl: "https://llm.api.cloud.yandex.net/foundationModels/v1",
+        networkMode: "direct",
+      },
+      gigachat: {
+        provider: "gigachat",
+        model: "GigaChat-2",
+        baseUrl: "https://gigachat.devices.sberbank.ru/api/v1",
+        authUrl: "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+        scope: "GIGACHAT_API_PERS",
+        networkMode: "direct",
       },
       codex: {
         provider: "codex",
@@ -611,21 +626,25 @@ Usage:
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
-  iola ai ask TEXT [--provider iola|ollama|openai|openrouter] [--model MODEL]
+  iola ai ask TEXT [--provider iola|ollama|yandexgpt|gigachat|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
+  iola ai key set yandexgpt
+  iola ai key set gigachat
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
-  iola ai key delete openai|openrouter
+  iola ai key delete yandexgpt|gigachat|openai|openrouter
   iola ai profiles
   iola ai profile add NAME --provider PROVIDER --model MODEL
   iola ai profile use NAME
   iola ai profile delete NAME
-  iola ai models iola|ollama|openai|openrouter|codex [--search TEXT]
+  iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup iola [--yes] [--force]
   iola ai setup ollama [--yes] [--model MODEL]
+  iola ai setup yandexgpt [--model MODEL]
+  iola ai setup gigachat [--model MODEL]
   iola health [--json]
   iola layers [--json]
   iola schools [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
@@ -753,9 +772,14 @@ async function getAiReadiness() {
   const iola = await hasUsableIolaModel();
   const openai = Boolean(process.env.OPENAI_API_KEY || secrets.openai?.apiKey);
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY || secrets.openrouter?.apiKey);
+  const yandexgpt = Boolean((process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY || secrets.yandexgpt?.apiKey)
+    && (process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexgpt?.folderId));
+  const gigachat = Boolean(process.env.GIGACHAT_AUTH_KEY || process.env.GIGACHAT_API_KEY || secrets.gigachat?.apiKey);
   const providerReady = {
     iola,
     ollama,
+    yandexgpt,
+    gigachat,
     openai,
     openrouter,
     codex,
@@ -765,10 +789,12 @@ async function getAiReadiness() {
     activeProfile: activeProfileName,
     activeProvider: activeProfile.provider || "-",
     activeModel: activeProfile.model || "-",
-    anyReady: Boolean(iola || ollama || openai || openrouter || codex),
+    anyReady: Boolean(iola || ollama || yandexgpt || gigachat || openai || openrouter || codex),
     profiles: config.ai.profiles || {},
     iola,
     ollama,
+    yandexgpt,
+    gigachat,
     openai,
     openrouter,
     codex,
@@ -776,7 +802,7 @@ async function getAiReadiness() {
 }
 
 function getFallbackAiProfile(readiness) {
-  const priority = ["iola", "openai", "openrouter", "codex", "ollama"];
+  const priority = ["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"];
   for (const provider of priority) {
     if (!readiness[provider]) continue;
     const entry = Object.entries(readiness.profiles || {}).find(([, profile]) => profile.provider === provider);
@@ -1612,6 +1638,8 @@ function buildAgentStatusLine(state) {
   const kind = {
     iola: "IOLA local",
     ollama: "локальная",
+    yandexgpt: "YandexGPT",
+    gigachat: "GigaChat",
     openai: "API",
     openrouter: "API",
     codex: "Codex",
@@ -2051,6 +2079,8 @@ async function initCli(args = []) {
     console.log("Для настройки AI используйте:");
     console.log("  iola ai setup iola --yes");
     console.log("  iola ai setup ollama");
+    console.log("  iola ai key set yandexgpt");
+    console.log("  iola ai key set gigachat");
     console.log("  iola ai key set openai");
     console.log("  iola ai setup openai --model gpt-4.1-mini");
     return;
@@ -2073,21 +2103,25 @@ async function handleAi(args) {
   if (subcommand === "help") {
     await showBanner();
     console.log(`AI-команды:
-  iola ai ask TEXT [--provider iola|ollama|openai|openrouter] [--model MODEL]
+  iola ai ask TEXT [--provider iola|ollama|yandexgpt|gigachat|openai|openrouter] [--model MODEL]
   iola ai context TEXT [--json]
+  iola ai key set yandexgpt
+  iola ai key set gigachat
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
-  iola ai key delete openai|openrouter
+  iola ai key delete yandexgpt|gigachat|openai|openrouter
   iola ai profiles
-  iola ai profile add NAME --provider iola|ollama|openai|openrouter|codex --model MODEL
+  iola ai profile add NAME --provider iola|ollama|yandexgpt|gigachat|openai|openrouter|codex --model MODEL
   iola ai profile use NAME
   iola ai profile delete NAME
-  iola ai models iola|ollama|openai|openrouter|codex [--search TEXT]
+  iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup iola [--yes] [--force]
   iola ai setup ollama [--yes] [--model MODEL]
+  iola ai setup yandexgpt [--model MODEL]
+  iola ai setup gigachat [--model MODEL]
   iola ai setup openai [--model MODEL]
   iola ai setup openrouter [--model MODEL]
 
@@ -4187,9 +4221,14 @@ async function aiSetup(args) {
     return;
   }
 
-  if (provider === "openai" || provider === "openrouter") {
+  if (provider === "openai" || provider === "openrouter" || provider === "yandexgpt" || provider === "gigachat") {
     const options = parseOptions(args.slice(1));
-    const model = options.model || (provider === "openai" ? "gpt-4.1-mini" : "openai/gpt-4.1-mini");
+    const model = options.model || {
+      openai: "gpt-4.1-mini",
+      openrouter: "openai/gpt-4.1-mini",
+      yandexgpt: "yandexgpt-lite/latest",
+      gigachat: "GigaChat-2",
+    }[provider];
     const profileName = options.name || provider;
     const profile = buildProfileFromOptions(provider, { ...options, model });
     const config = await loadConfig();
@@ -4208,7 +4247,13 @@ async function aiSetup(args) {
     });
     console.log(`AI-профиль ${profileName} сохранен и выбран в ${CONFIG_FILE}`);
     console.log(`Ключ сохраните командой: iola ai key set ${provider}`);
-    console.log(`Также можно использовать переменную окружения ${provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
+    const envHint = {
+      openai: "OPENAI_API_KEY",
+      openrouter: "OPENROUTER_API_KEY",
+      yandexgpt: "YANDEXGPT_API_KEY и YANDEXGPT_FOLDER_ID",
+      gigachat: "GIGACHAT_AUTH_KEY",
+    }[provider];
+    console.log(`Также можно использовать переменную окружения ${envHint}.`);
     return;
   }
 
@@ -4259,10 +4304,12 @@ async function handleAiKey(args) {
   }
 
   throw new Error(`Unknown key command. Use:
+  iola ai key set yandexgpt
+  iola ai key set gigachat
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
-  iola ai key delete openai|openrouter`);
+  iola ai key delete yandexgpt|gigachat|openai|openrouter`);
 }
 
 async function handleAiProfile(args) {
@@ -4304,8 +4351,8 @@ async function aiModels(args) {
   const [provider] = args;
   const options = parseOptions(args.slice(1));
 
-  if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер обязателен: iola ai models iola|ollama|openai|openrouter|codex");
+  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер обязателен: iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|codex");
   }
 
   const models = await listAiModels(provider);
@@ -4410,6 +4457,23 @@ async function listAiModels(provider) {
     return (payload.data || [])
       .map(mapOpenRouterModel)
       .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  if (provider === "yandexgpt") {
+    return [
+      { id: "yandexgpt-lite/latest", provider: "yandexgpt", note: "быстрая и недорогая модель" },
+      { id: "yandexgpt/latest", provider: "yandexgpt", note: "YandexGPT Pro, latest" },
+      { id: "yandexgpt/rc", provider: "yandexgpt", note: "YandexGPT Pro, release candidate" },
+    ];
+  }
+
+  if (provider === "gigachat") {
+    return [
+      { id: "GigaChat-2", provider: "gigachat", note: "основная модель" },
+      { id: "GigaChat-2-Pro", provider: "gigachat", note: "повышенное качество" },
+      { id: "GigaChat-2-Max", provider: "gigachat", note: "максимальное качество" },
+      { id: "GigaChat", provider: "gigachat", note: "legacy/fallback" },
+    ];
   }
 
   const version = await getCommandVersion("codex", ["--version"]);
@@ -4562,7 +4626,7 @@ async function printAiProfiles() {
     baseUrl: profile.baseUrl || "-",
     mode: profile.provider === "codex"
       ? `sandbox=${profile.sandbox || "read-only"}, approval=${profile.approval || "never"}`
-      : (profile.provider === "openai" || profile.provider === "openrouter" ? `network=${getAiNetworkMode(profile)}` : "-"),
+      : (profile.provider === "openai" || profile.provider === "openrouter" || profile.provider === "yandexgpt" || profile.provider === "gigachat" ? `network=${getAiNetworkMode(profile)}` : "-"),
   }));
 
   printTable(rows, [
@@ -4595,8 +4659,8 @@ async function addAiProfile(name, args) {
   const options = parseOptions(args);
   const provider = options.provider;
 
-  if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер должен быть iola, ollama, openai, openrouter или codex.");
+  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер должен быть iola, ollama, yandexgpt, gigachat, openai, openrouter или codex.");
   }
 
   const profile = buildProfileFromOptions(provider, options);
@@ -4676,6 +4740,7 @@ async function deleteAiProfile(name) {
 
 function buildProfileFromOptions(provider, options) {
   const defaults = DEFAULT_AI_CONFIG.ai.profiles[provider === "ollama" || provider === "iola" ? "local" : provider];
+  if (!defaults) throw new Error(`Неизвестный AI-провайдер: ${provider}`);
   const profile = {
     ...defaults,
     provider,
@@ -4724,13 +4789,15 @@ async function useAiProvider(args) {
 
   const provider = providerOrProfile;
 
-  if (provider !== "iola" && provider !== "ollama" && provider !== "openai" && provider !== "openrouter" && provider !== "codex") {
-    throw new Error("Провайдер должен быть iola, ollama, openai, openrouter, codex или именем AI-профиля.");
+  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(provider)) {
+    throw new Error("Провайдер должен быть iola, ollama, yandexgpt, gigachat, openai, openrouter, codex или именем AI-профиля.");
   }
 
   const defaultModel = {
     iola: IOLA_LOCAL_MODEL,
     ollama: config.ai.provider === "ollama" ? config.ai.model : IOLA_LOCAL_OLLAMA_MODEL,
+    yandexgpt: config.ai.provider === "yandexgpt" ? config.ai.model : "yandexgpt-lite/latest",
+    gigachat: config.ai.provider === "gigachat" ? config.ai.model : "GigaChat-2",
     openai: config.ai.provider === "openai" ? config.ai.model : "gpt-4.1-mini",
     openrouter: config.ai.provider === "openrouter" ? config.ai.model : "openai/gpt-4.1-mini",
     codex: config.ai.provider === "codex" ? config.ai.model : "gpt-5.5",
@@ -4775,6 +4842,7 @@ function normalizeModelMenuTarget(value = "") {
   const normalized = String(value || "").trim().toLocaleLowerCase("ru-RU");
   if (!normalized) return "";
   if (["local", "локальная", "локально", "iola", "иола", "ollama"].includes(normalized)) return "local";
+  if (["ru", "rus", "russian", "российские", "российская", "россия", "яндекс", "yandex", "yandexgpt", "gigachat", "гигачат"].includes(normalized)) return normalized === "yandexgpt" || normalized === "яндекс" || normalized === "yandex" ? "yandexgpt" : normalized === "gigachat" || normalized === "гигачат" ? "gigachat" : "russian";
   if (["api", "апи"].includes(normalized)) return "api";
   if (normalized === "openai") return "openai";
   if (normalized === "openrouter" || normalized === "router") return "openrouter";
@@ -4784,13 +4852,14 @@ function normalizeModelMenuTarget(value = "") {
 
 async function chooseModelTarget() {
   console.log("Выберите AI-подключение:");
-  console.log("  1. Локальная модель IOLA");
-  console.log("  2. API (OpenAI/OpenRouter)");
-  console.log("  3. Codex CLI");
+  console.log("  1. Локальные модели");
+  console.log("  2. Российские AI (YandexGPT/GigaChat)");
+  console.log("  3. API (OpenAI/OpenRouter)");
+  console.log("  4. Codex CLI");
   console.log("  0. Отмена");
 
   const answer = await askText("Номер: ");
-  return { 1: "local", 2: "api", 3: "codex" }[answer.trim()] || "";
+  return { 1: "local", 2: "russian", 3: "api", 4: "codex" }[answer.trim()] || "";
 }
 
 async function openModelTargetMenu(target) {
@@ -4812,6 +4881,20 @@ async function openModelTargetMenu(target) {
     return;
   }
 
+  if (target === "yandexgpt" || target === "gigachat") {
+    const model = await chooseAiModel(target);
+    if (model) await switchModelTarget(target, model);
+    return;
+  }
+
+  if (target === "russian") {
+    const provider = await chooseRussianProvider();
+    if (!provider) return;
+    const model = await chooseAiModel(provider);
+    if (model) await switchModelTarget(provider, model);
+    return;
+  }
+
   const provider = await chooseApiProvider();
   if (!provider) return;
   const model = await chooseAiModel(provider);
@@ -4830,6 +4913,25 @@ async function chooseApiProvider() {
   ].filter((item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index);
 
   console.log("Выберите API-подключение:");
+  choices.forEach((item, index) => console.log(`  ${index + 1}. ${item.label}`));
+  console.log("  0. Отмена");
+
+  const answer = Number(await askText("Номер: "));
+  return choices[answer - 1]?.id || "";
+}
+
+async function chooseRussianProvider() {
+  const config = await loadConfig();
+  const russianProfiles = Object.entries(config.ai.profiles || {})
+    .filter(([, profile]) => profile.provider === "yandexgpt" || profile.provider === "gigachat")
+    .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})` }));
+  const choices = [
+    ...russianProfiles,
+    { id: "yandexgpt", label: "YandexGPT API" },
+    { id: "gigachat", label: "GigaChat API" },
+  ].filter((item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index);
+
+  console.log("Выберите российское AI-подключение:");
   choices.forEach((item, index) => console.log(`  ${index + 1}. ${item.label}`));
   console.log("  0. Отмена");
 
@@ -4881,7 +4983,7 @@ async function chooseAiModel(provider) {
     return chooseOpenRouterModel();
   }
 
-  if (provider === "openai") {
+  if (provider === "openai" || provider === "yandexgpt" || provider === "gigachat") {
     const ready = await ensureApiKeyForModelSelection(provider);
     if (!ready) return "";
   }
@@ -4986,9 +5088,14 @@ async function chooseOpenRouterModel() {
 }
 
 async function ensureApiKeyForModelSelection(provider) {
-  if (provider !== "openai" && provider !== "openrouter") return true;
-  if (await getApiKey(provider)) return true;
-  const label = provider === "openai" ? "OpenAI" : "OpenRouter";
+  if (!["openai", "openrouter", "yandexgpt", "gigachat"].includes(provider)) return true;
+  if (await getApiKey(provider) && (provider !== "yandexgpt" || await getYandexFolderId())) return true;
+  const label = {
+    openai: "OpenAI",
+    openrouter: "OpenRouter",
+    yandexgpt: "YandexGPT",
+    gigachat: "GigaChat",
+  }[provider];
   console.log(`${label} API key не найден. Введите ключ, чтобы получить список моделей.`);
   try {
     await setAiKey(provider);
@@ -5114,7 +5221,12 @@ async function setAiKey(provider) {
     throw new Error("Для сохранения ключа запустите команду в интерактивном терминале.");
   }
 
-  const envName = provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY";
+  const envName = {
+    openai: "OPENAI_API_KEY",
+    openrouter: "OPENROUTER_API_KEY",
+    yandexgpt: "YANDEXGPT_API_KEY",
+    gigachat: "GIGACHAT_AUTH_KEY",
+  }[provider];
   const key = (await askText(`Введите ${envName}: `)).trim();
 
   if (!key) {
@@ -5122,23 +5234,44 @@ async function setAiKey(provider) {
   }
 
   const secrets = await loadSecrets();
-  secrets[provider] = { apiKey: key };
+  if (provider === "yandexgpt") {
+    const folderId = (await askText("Введите YANDEXGPT_FOLDER_ID / ID каталога Yandex Cloud: ")).trim();
+    if (!folderId) throw new Error("Folder ID пустой, сохранение отменено.");
+    secrets[provider] = { apiKey: key, folderId };
+  } else if (provider === "gigachat") {
+    const scope = (await askText("Scope [GIGACHAT_API_PERS]: ")).trim() || "GIGACHAT_API_PERS";
+    secrets[provider] = { apiKey: key, scope };
+  } else {
+    secrets[provider] = { apiKey: key };
+  }
   await saveSecrets(secrets);
   console.log(`Ключ ${provider} сохранен локально: ${SECRETS_FILE}`);
 }
 
 async function printAiKeyStatus() {
   const secrets = await loadSecrets();
-  const rows = ["openai", "openrouter"].map((provider) => ({
-    provider,
-    env: provider === "openai" ? (process.env.OPENAI_API_KEY ? "yes" : "no") : (process.env.OPENROUTER_API_KEY ? "yes" : "no"),
-    local: secrets[provider]?.apiKey ? "yes" : "no",
-  }));
+  const rows = ["yandexgpt", "gigachat", "openai", "openrouter"].map((provider) => {
+    const env = {
+      openai: process.env.OPENAI_API_KEY,
+      openrouter: process.env.OPENROUTER_API_KEY,
+      yandexgpt: process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY,
+      gigachat: process.env.GIGACHAT_AUTH_KEY || process.env.GIGACHAT_API_KEY,
+    }[provider];
+    return {
+      provider,
+      env: env ? "yes" : "no",
+      local: secrets[provider]?.apiKey ? "yes" : "no",
+      extra: provider === "yandexgpt"
+        ? ((process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexgpt?.folderId) ? "folder ok" : "folder missing")
+        : (provider === "gigachat" && secrets.gigachat?.scope ? `scope ${secrets.gigachat.scope}` : ""),
+    };
+  });
 
   printTable(rows, [
     ["provider", "Провайдер"],
     ["env", "Env"],
     ["local", "Локально"],
+    ["extra", "Дополнительно"],
   ]);
 }
 
@@ -6393,26 +6526,30 @@ function toCsv(rows) {
 }
 
 function assertKeyProvider(provider) {
-  if (provider !== "openai" && provider !== "openrouter") {
-    throw new Error("Провайдер должен быть openai или openrouter.");
+  if (!["openai", "openrouter", "yandexgpt", "gigachat"].includes(provider)) {
+    throw new Error("Провайдер должен быть yandexgpt, gigachat, openai или openrouter.");
   }
 }
 
 async function chooseAiProvider() {
   console.log("Выберите режим AI:");
   console.log("1. Локальная модель IOLA");
-  console.log("2. OpenAI API");
-  console.log("3. OpenRouter API");
-  console.log("4. Codex/MCP");
-  console.log("5. Ollama");
+  console.log("2. Ollama");
+  console.log("3. YandexGPT API");
+  console.log("4. GigaChat API");
+  console.log("5. OpenAI API");
+  console.log("6. OpenRouter API");
+  console.log("7. Codex/MCP");
 
   const answer = (await askText("Введите номер [1]: ")).trim() || "1";
   return {
     1: "iola",
-    2: "openai",
-    3: "openrouter",
-    4: "codex",
-    5: "ollama",
+    2: "ollama",
+    3: "yandexgpt",
+    4: "gigachat",
+    5: "openai",
+    6: "openrouter",
+    7: "codex",
   }[answer] || "iola";
 }
 
@@ -8000,6 +8137,14 @@ async function callAiProvider(config, messages) {
     return callOpenAiCompatible(config, messages, await getApiKey("openrouter"), "OpenRouter");
   }
 
+  if (config.provider === "yandexgpt") {
+    return callYandexGpt(config, messages);
+  }
+
+  if (config.provider === "gigachat") {
+    return callGigaChat(config, messages);
+  }
+
   if (config.provider === "codex") {
     return callCodex(config, messages);
   }
@@ -8477,6 +8622,96 @@ async function callAiRelayModels(config, apiKey, providerName) {
   return response.json();
 }
 
+async function callYandexGpt(config, messages) {
+  const apiKey = await getApiKey("yandexgpt");
+  const folderId = await getYandexFolderId();
+  if (!apiKey || !folderId) {
+    throw new Error("YandexGPT API key или folder ID не найден. Выполните iola ai key set yandexgpt или задайте YANDEXGPT_API_KEY и YANDEXGPT_FOLDER_ID.");
+  }
+
+  const model = config.model || "yandexgpt-lite/latest";
+  const modelUri = model.startsWith("gpt://") ? model : `gpt://${folderId}/${model}`;
+  const response = await fetch(`${String(config.baseUrl || "https://llm.api.cloud.yandex.net/foundationModels/v1").replace(/\/+$/, "")}/completion`, {
+    method: "POST",
+    headers: {
+      authorization: `Api-Key ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      modelUri,
+      completionOptions: {
+        stream: false,
+        temperature: Number(config.temperature ?? 0.2),
+        maxTokens: String(config.maxTokens || 2000),
+      },
+      messages: messages.map((message) => ({
+        role: message.role === "assistant" ? "assistant" : message.role === "system" ? "system" : "user",
+        text: message.content,
+      })),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`YandexGPT request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, apiKey)}`);
+  }
+
+  const payload = await response.json();
+  return payload.result?.alternatives?.[0]?.message?.text || "";
+}
+
+async function callGigaChat(config, messages) {
+  const authKey = await getApiKey("gigachat");
+  if (!authKey) {
+    throw new Error("GigaChat authorization key не найден. Выполните iola ai key set gigachat или задайте GIGACHAT_AUTH_KEY.");
+  }
+
+  const token = await getGigaChatAccessToken(config, authKey);
+  const response = await fetch(`${String(config.baseUrl || "https://gigachat.devices.sberbank.ru/api/v1").replace(/\/+$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model || "GigaChat-2",
+      messages,
+      temperature: Number(config.temperature ?? 0.2),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`GigaChat request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, token)}`);
+  }
+
+  const payload = await response.json();
+  return payload.choices?.[0]?.message?.content || "";
+}
+
+async function getGigaChatAccessToken(config, authKey) {
+  const secrets = await loadSecrets();
+  const scope = process.env.GIGACHAT_SCOPE || secrets.gigachat?.scope || config.scope || "GIGACHAT_API_PERS";
+  const response = await fetch(config.authUrl || "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${authKey}`,
+      "content-type": "application/x-www-form-urlencoded",
+      RqUID: randomUUID(),
+    },
+    body: new URLSearchParams({ scope }).toString(),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`GigaChat token request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, authKey)}`);
+  }
+
+  const payload = await response.json();
+  if (!payload.access_token) throw new Error("GigaChat не вернул access_token.");
+  return payload.access_token;
+}
+
 function getAiNetworkMode(config = {}) {
   return validateAiNetworkMode(AI_NETWORK_MODE || config.networkMode || "gateway");
 }
@@ -8507,8 +8742,24 @@ async function getApiKey(provider) {
     return process.env.OPENROUTER_API_KEY;
   }
 
+  if (provider === "yandexgpt" && (process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY)) {
+    return process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY;
+  }
+
+  if (provider === "gigachat" && (process.env.GIGACHAT_AUTH_KEY || process.env.GIGACHAT_API_KEY)) {
+    return process.env.GIGACHAT_AUTH_KEY || process.env.GIGACHAT_API_KEY;
+  }
+
   const secrets = await loadSecrets();
   return secrets[provider]?.apiKey || "";
+}
+
+async function getYandexFolderId() {
+  if (process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID) {
+    return process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID;
+  }
+  const secrets = await loadSecrets();
+  return secrets.yandexgpt?.folderId || "";
 }
 
 async function listLayers(args) {
@@ -8768,6 +9019,20 @@ async function onboard(args = []) {
       await chooseAndSaveApiModel("openrouter");
     }
   }
+  if (components.includes("yandexgpt")) {
+    await aiSetup(["yandexgpt"]);
+    if (process.stdin.isTTY) {
+      await setAiKey("yandexgpt");
+      await chooseAndSaveApiModel("yandexgpt");
+    }
+  }
+  if (components.includes("gigachat")) {
+    await aiSetup(["gigachat"]);
+    if (process.stdin.isTTY) {
+      await setAiKey("gigachat");
+      await chooseAndSaveApiModel("gigachat");
+    }
+  }
   if (components.includes("codex")) {
     await installCodexIfMissing();
     await aiSetup(["codex"]);
@@ -8806,14 +9071,16 @@ async function chooseOnboardComponents(status = null) {
       1: "workspace",
       2: "policy",
       3: "iola",
-      4: "openai",
-      5: "openrouter",
-      6: "codex",
-      7: "codex-mcp",
-      8: "archive",
-      9: "index",
-      10: "browser",
-      11: "ollama",
+      4: "yandexgpt",
+      5: "gigachat",
+      6: "openai",
+      7: "openrouter",
+      8: "codex",
+      9: "codex-mcp",
+      10: "archive",
+      11: "index",
+      12: "browser",
+      13: "ollama",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -8841,6 +9108,8 @@ async function getOnboardComponentStatus() {
     policy: policyReady,
     iola: Boolean(readiness.iola),
     ollama: Boolean(ollamaVersion && readiness.ollama),
+    yandexgpt: Boolean(readiness.yandexgpt),
+    gigachat: Boolean(readiness.gigachat),
     openai: Boolean(readiness.openai),
     openrouter: Boolean(readiness.openrouter),
     codex: Boolean(codexVersion !== "не найден" && readiness.codex),
@@ -8856,14 +9125,16 @@ function onboardComponentRows(status) {
     ["1", "workspace", "workspace и контекст", "рабочая папка, IOLA.md и .iola/context.md"],
     ["2", "policy", "policy analyst", "разрешения и профиль аналитика"],
     ["3", "iola", "IOLA локальная модель", "локальная модель найдена"],
-    ["4", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
-    ["5", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
-    ["6", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
-    ["7", "codex-mcp", "MCP для Codex", "можно переустановить/обновить"],
-    ["8", "archive", "7-Zip / архивы", "архиватор найден"],
-    ["9", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
-    ["10", "browser", "Browser runtime", "Playwright/Chromium установлен"],
-    ["11", "ollama", "Ollama", "опциональный локальный runtime"],
+    ["4", "yandexgpt", "YandexGPT API", "ключ и folder ID сохранены или есть в env"],
+    ["5", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
+    ["6", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
+    ["7", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+    ["8", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
+    ["9", "codex-mcp", "MCP для Codex", "можно переустановить/обновить"],
+    ["10", "archive", "7-Zip / архивы", "архиватор найден"],
+    ["11", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
+    ["12", "browser", "Browser runtime", "Playwright/Chromium установлен"],
+    ["13", "ollama", "Ollama", "опциональный локальный runtime"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -8873,12 +9144,12 @@ function defaultOnboardSelection(status) {
   if (!status.workspace) defaults.push("1");
   if (!status.policy) defaults.push("2");
   if (!status.iola) defaults.push("3");
-  if (!status.archive) defaults.push("8");
+  if (!status.archive) defaults.push("10");
   return defaults.length ? defaults : ["1", "2"];
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "openai", 5: "openrouter", 6: "codex", 7: "codex-mcp", 8: "archive", 9: "index", 10: "browser", 11: "ollama" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -10854,6 +11125,9 @@ function sanitizeConfig(config) {
     if (profile?.provider === "openai" || profile?.provider === "openrouter") {
       profile.networkMode = profile.networkMode || "gateway";
     }
+    if (profile?.provider === "yandexgpt" || profile?.provider === "gigachat") {
+      profile.networkMode = profile.networkMode || "direct";
+    }
   }
   return next;
 }
@@ -10866,7 +11140,7 @@ function validateConfig(config) {
   if (!config.ai?.profiles || typeof config.ai.profiles !== "object") errors.push("ai.profiles обязателен");
   if (config.ai?.activeProfile && !config.ai.profiles?.[config.ai.activeProfile]) errors.push(`ai.activeProfile не найден в profiles: ${config.ai.activeProfile}`);
   for (const [name, profile] of Object.entries(config.ai?.profiles || {})) {
-    if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
+    if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
     if (profile.provider !== "codex" && profile.provider !== "iola" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
     if (profile.networkMode && !["direct", "gateway", "auto"].includes(profile.networkMode)) errors.push(`ai.profiles.${name}.networkMode должен быть direct, gateway или auto`);
   }
@@ -10885,7 +11159,7 @@ function configSchema() {
     required: ["api", "ai"],
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
-      ai: { required: ["activeProfile", "profiles"], providers: ["iola", "ollama", "openai", "openrouter", "codex"] },
+      ai: { required: ["activeProfile", "profiles"], providers: ["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"] },
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },
       files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },

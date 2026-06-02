@@ -10,7 +10,7 @@
 - проверка качества данных;
 - выгрузка CSV/JSON;
 - работа с локальной моделью Ollama;
-- работа с OpenAI, OpenRouter и Codex CLI;
+- работа с YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
 - подключение публичного MCP-сервера.
 
 Быстрый старт:

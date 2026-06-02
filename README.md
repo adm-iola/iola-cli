@@ -131,7 +131,7 @@ CLI использует модель `iola-router:qwen3-1.7b-v4-q8` из GGUF-�
 /model
 ```
 
-В интерактивном CLI команда `/model` переключает локальную модель IOLA, API-профили OpenAI/OpenRouter и Codex CLI. Для OpenRouter выбор устроен так: сначала выбирается разработчик моделей, затем CLI показывает до 30 самых свежих моделей для текстовой работы с датой релиза и размером контекста. В списке моделей `0` возвращает к выбору разработчика.
+В интерактивном CLI команда `/model` переключает локальные модели, российские AI-провайдеры YandexGPT/GigaChat, API-профили OpenAI/OpenRouter и Codex CLI. Российские провайдеры вызываются напрямую, без gateway/proxy. Для OpenRouter выбор устроен так: сначала выбирается разработчик моделей, затем CLI показывает до 30 самых свежих моделей для текстовой работы с датой релиза и размером контекста. В списке моделей `0` возвращает к выбору разработчика.
 
 В локальном выборе доступны:
 
@@ -141,7 +141,22 @@ CLI использует модель `iola-router:qwen3-1.7b-v4-q8` из GGUF-�
 
 Если выбранная Ollama-модель еще не скачана, CLI предложит выполнить `ollama pull`.
 
-API-ключи:
+Российские AI:
+
+- Yandex AI Studio / YandexGPT: документация `https://yandex.cloud/ru/docs/foundation-models/`, аутентификация `https://yandex.cloud/ru/docs/ai-studio/api-ref/authentication`, тарифы `https://yandex.cloud/ru/docs/foundation-models/pricing`;
+- GigaChat: документация `https://developers.sber.ru/docs/ru/gigachat/overview`, получение токена `https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token`, тарифы `https://developers.sber.ru/docs/ru/gigachat/tariffs`.
+
+```bash
+iola ai key set yandexgpt
+iola ai setup yandexgpt --model yandexgpt-lite/latest
+
+iola ai key set gigachat
+iola ai setup gigachat --model GigaChat-2
+```
+
+У GigaChat для физических лиц есть Freemium-лимит на токены; для больших объемов используются платные пакеты. У YandexGPT тарификация идет через Yandex Cloud по токенам и квотам аккаунта, актуальные бесплатные гранты или лимиты нужно проверять в консоли Yandex Cloud.
+
+Зарубежные API-ключи:
 
 - OpenAI Platform: регистрация `https://platform.openai.com/`, ключи `https://platform.openai.com/api-keys`;
 - OpenRouter: регистрация `https://openrouter.ai/`, ключи `https://openrouter.ai/settings/keys`.
@@ -185,7 +200,7 @@ iola version --check
 - интеграция с публичным MCP-сервером Йошкар-Олы;
 - поиск и выгрузка открытых данных;
 - локальная SQLite-БД, история, сессии и FTS-поиск;
-- AI-профили для IOLA local, Ollama, OpenAI, OpenRouter и Codex CLI;
+- AI-профили для IOLA local, Ollama, YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
 - локальный tool-agent для модели IOLA с tools `search_data`, `search_entities`, `resolve_entity_field`, `get_card`, `export_report`, `file_read`, `browser_open`;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
