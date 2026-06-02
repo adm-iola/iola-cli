@@ -72,7 +72,24 @@ jobs:
           fi
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        shell: bash
+        run: |
+          set +e
+          OUTPUT="$(npm publish --access public --provenance 2>&1)"
+          STATUS="$?"
+          set -e
+          printf '%s\n' "$OUTPUT"
+          if [ "$STATUS" -eq 0 ]; then
+            exit 0
+          fi
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if printf '%s\n' "$OUTPUT" | grep -q "previously published versions" \
+            && npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION was published before npm returned E403; continuing."
+            exit 0
+          fi
+          exit "$STATUS"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
