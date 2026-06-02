@@ -4038,7 +4038,7 @@ async function yandexMailSend(args = {}) {
     await smtpCommand(session, `MAIL FROM:<${email}>`);
     for (const recipient of to) await smtpCommand(session, `RCPT TO:<${recipient}>`);
     await smtpCommand(session, "DATA", { expect: /^354/u });
-    await smtpCommand(session, `${buildMimeMessage({ from: email, to, subject, text })}\r\n.`);
+    await smtpCommand(session, `${dotStuffSmtpData(buildMimeMessage({ from: email, to, subject, text }))}\r\n.`);
     await smtpCommand(session, "QUIT").catch(() => {});
     return { from: email, to, subject, status: "sent" };
   } finally {
@@ -4052,16 +4052,26 @@ function buildXoauth2(email, token) {
 
 function buildMimeMessage({ from, to, subject, text }) {
   const encodedSubject = Buffer.from(subject, "utf8").toString("base64");
+  const messageIdDomain = String(from || "").split("@")[1] || "localhost";
+  const messageId = `${randomUUID()}@${messageIdDomain}`;
   return [
     `From: ${from}`,
     `To: ${to.join(", ")}`,
+    `Reply-To: ${from}`,
     `Subject: =?UTF-8?B?${encodedSubject}?=`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${messageId}>`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
     "Content-Transfer-Encoding: base64",
+    "X-Mailer: IOLA CLI",
     "",
     Buffer.from(text.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64").replace(/.{1,76}/g, "$&\r\n").trim(),
   ].join("\r\n");
+}
+
+function dotStuffSmtpData(message) {
+  return String(message || "").replace(/\r?\n/g, "\r\n").replace(/(^|\r\n)\./g, "$1..");
 }
 
 function imapConnect() {
