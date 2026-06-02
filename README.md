@@ -156,6 +156,16 @@ iola ai setup gigachat --model GigaChat-2
 
 У GigaChat для физических лиц есть Freemium-лимит на токены; для больших объемов используются платные пакеты. У YandexGPT тарификация идет через Yandex Cloud по токенам и квотам аккаунта, актуальные бесплатные гранты или лимиты нужно проверять в консоли Yandex Cloud.
 
+Геокодер для пользовательских geo-skills:
+
+```bash
+iola geo key set yandex
+iola geo key doctor
+iola geo geocode "Йошкар-Ола, улица Петрова, 15"
+```
+
+Инструкция по получению ключа: [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key).
+
 Зарубежные API-ключи:
 
 - OpenAI Platform: регистрация `https://platform.openai.com/`, ключи `https://platform.openai.com/api-keys`;
@@ -182,6 +192,8 @@ iola version --check
 - [Первый запуск](https://github.com/adm-iola/iola-cli/wiki/Первый-запуск)
 - [Мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Мастер-настройки)
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
+- [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key)
+- [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
 - [Skills и toolsets](https://github.com/adm-iola/iola-cli/wiki/Skills-и-toolsets)
 - [Локальные файлы](https://github.com/adm-iola/iola-cli/wiki/Локальные-файлы)

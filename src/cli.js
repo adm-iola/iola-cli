@@ -440,6 +440,7 @@ const COMMANDS = new Map([
   ["health", checkHealth],
   ["layers", listLayers],
   ["data", handleData],
+  ["geo", handleGeo],
   ["schools", listSchools],
   ["kindergartens", listKindergartens],
   ["search", searchAll],
@@ -653,6 +654,9 @@ Usage:
   iola kindergartens [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
   iola kindergartens get --inn INN [--json]
   iola search TEXT [--limit 5] [--format table|json|csv]
+  iola geo key set yandex
+  iola geo key doctor
+  iola geo geocode "Йошкар-Ола, ул. Петрова, 15"
   iola mcp-info [--json]
   iola setup codex
   iola onboard
@@ -1881,6 +1885,7 @@ async function doctor(args = []) {
       modelAvailable: await checkConfiguredModel({ ai: activeAiProfile }),
       openaiKey: process.env.OPENAI_API_KEY ? "env" : secrets.openai?.apiKey ? "local" : "missing",
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
+      yandexGeocoderKey: (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) ? "env" : secrets.yandexGeocoder?.apiKey ? "local" : "missing",
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
     },
     skills: {
@@ -2565,6 +2570,8 @@ async function handleWiki(args) {
     ["Первый запуск", `${base}/Первый-запуск`],
     ["Мастер настройки", `${base}/Мастер-настройки`],
     ["AI-профили", `${base}/AI-профили`],
+    ["Yandex Geocoder API key", `${base}/Yandex-Geocoder-API-key`],
+    ["Скиллы для жителей", `${base}/Скиллы-для-жителей`],
     ["Локальный инструментальный агент", `${base}/Локальный-инструментальный-агент`],
     ["Skills и toolsets", `${base}/Skills-и-toolsets`],
     ["Локальные файлы", `${base}/Локальные-файлы`],
@@ -5321,6 +5328,176 @@ async function deleteAiKey(provider) {
   delete secrets[provider];
   await saveSecrets(secrets);
   console.log(`Локальный ключ ${provider} удален.`);
+}
+
+async function handleGeo(args) {
+  const [command, subcommand, ...rest] = args;
+
+  if (command === "key") {
+    await handleGeoKey([subcommand, ...rest]);
+    return;
+  }
+
+  if (command === "geocode") {
+    await geoGeocode([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (command === "doctor" || command === "status") {
+    await printGeoKeyStatus({ check: command === "doctor" });
+    return;
+  }
+
+  throw new Error(`Команды geo:
+  iola geo key set yandex
+  iola geo key status
+  iola geo key doctor
+  iola geo key delete yandex
+  iola geo geocode "Йошкар-Ола, ул. Петрова, 15"`);
+}
+
+async function handleGeoKey(args) {
+  const [action, provider = "yandex"] = args;
+  if (provider !== "yandex") {
+    throw new Error("Сейчас поддерживается только провайдер: yandex");
+  }
+
+  if (action === "set") {
+    await setYandexGeocoderKey();
+    return;
+  }
+
+  if (action === "status") {
+    await printGeoKeyStatus();
+    return;
+  }
+
+  if (action === "doctor" || action === "check") {
+    await printGeoKeyStatus({ check: true });
+    return;
+  }
+
+  if (action === "delete") {
+    const secrets = await loadSecrets();
+    delete secrets.yandexGeocoder;
+    await saveSecrets(secrets);
+    console.log("Локальный ключ yandex geocoder удален.");
+    return;
+  }
+
+  throw new Error("Команды geo key: set yandex, status, doctor, delete yandex.");
+}
+
+async function setYandexGeocoderKey() {
+  if (!process.stdin.isTTY) {
+    throw new Error("Для сохранения ключа запустите команду в интерактивном терминале.");
+  }
+
+  const key = (await askText("Введите YANDEX_GEOCODER_API_KEY: ")).trim();
+  if (!key) throw new Error("Ключ пустой, сохранение отменено.");
+
+  const secrets = await loadSecrets();
+  secrets.yandexGeocoder = { apiKey: key };
+  await saveSecrets(secrets);
+  console.log(`Ключ yandex geocoder сохранен локально: ${SECRETS_FILE}`);
+
+  const shouldCheck = await confirm("Проверить ключ запросом к Yandex Geocoder? [Y/n] ");
+  if (shouldCheck) await checkYandexGeocoderKey({ print: true });
+}
+
+async function printGeoKeyStatus(options = {}) {
+  const key = await getYandexGeocoderKey();
+  const rows = [{
+    provider: "yandex-geocoder",
+    env: (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) ? "yes" : "no",
+    local: (await loadSecrets()).yandexGeocoder?.apiKey ? "yes" : "no",
+    status: key ? "configured" : "missing",
+  }];
+  printTable(rows, [
+    ["provider", "Провайдер"],
+    ["env", "Env"],
+    ["local", "Локально"],
+    ["status", "Статус"],
+  ]);
+  if (options.check) await checkYandexGeocoderKey({ print: true });
+}
+
+async function geoGeocode(args) {
+  const query = args.join(" ").trim();
+  if (!query) throw new Error('Адрес обязателен. Пример: iola geo geocode "Йошкар-Ола, ул. Петрова, 15"');
+  const result = await callYandexGeocoder(query);
+  if (!result) {
+    console.log("Yandex Geocoder не вернул результат.");
+    return;
+  }
+  printKeyValue(result);
+}
+
+async function checkYandexGeocoderKey(options = {}) {
+  try {
+    const result = await callYandexGeocoder("Йошкар-Ола");
+    if (!result?.coordinates) throw new Error("Yandex Geocoder вернул пустой результат.");
+    if (options.print) {
+      console.log(`Yandex Geocoder: ok (${result.name || result.address || result.coordinates})`);
+    }
+    return true;
+  } catch (error) {
+    if (options.print) {
+      console.log(`Yandex Geocoder: error - ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return false;
+  }
+}
+
+async function callYandexGeocoder(query) {
+  const apiKey = await getYandexGeocoderKey();
+  if (!apiKey) {
+    throw new Error("Yandex Geocoder API key не найден. Выполните iola geo key set yandex или задайте YANDEX_GEOCODER_API_KEY.");
+  }
+
+  const url = new URL("https://geocode-maps.yandex.ru/v1/");
+  url.searchParams.set("apikey", apiKey);
+  url.searchParams.set("geocode", query);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("lang", "ru_RU");
+  url.searchParams.set("results", "1");
+
+  let response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  } catch (error) {
+    throw new Error(formatProviderFetchError("Yandex Geocoder", error));
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    if (response.status === 403 && /Invalid api key/i.test(text)) {
+      throw new Error(`Yandex Geocoder request failed: ${response.status} ${response.statusText}\nInvalid api key. Если ключ только что создан, подождите до 15 минут: Yandex указывает, что активация ключа может занять до 15 минут.`);
+    }
+    throw new Error(`Yandex Geocoder request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, apiKey)}`);
+  }
+
+  const payload = await response.json();
+  const member = payload?.response?.GeoObjectCollection?.featureMember?.[0];
+  const object = member?.GeoObject;
+  if (!object) return null;
+  const point = object.Point?.pos || "";
+  const [lon, lat] = point.split(/\s+/);
+  return {
+    name: object.name || "",
+    address: object.metaDataProperty?.GeocoderMetaData?.text || object.description || "",
+    precision: object.metaDataProperty?.GeocoderMetaData?.precision || "",
+    coordinates: lat && lon ? `${lat}, ${lon}` : point,
+    map: lat && lon ? `https://yandex.ru/maps/?pt=${lon},${lat}&z=16&l=map` : "",
+  };
+}
+
+async function getYandexGeocoderKey() {
+  if (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) {
+    return process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY;
+  }
+  const secrets = await loadSecrets();
+  return secrets.yandexGeocoder?.apiKey || "";
 }
 
 function openDatabase() {
@@ -9251,6 +9428,11 @@ async function onboard(args = []) {
       await chooseAndSaveApiModel("gigachat");
     }
   }
+  if (components.includes("yandex-geocoder")) {
+    if (process.stdin.isTTY) {
+      await setYandexGeocoderKey();
+    }
+  }
   if (components.includes("codex")) {
     await installCodexIfMissing();
     await aiSetup(["codex"]);
@@ -9299,6 +9481,7 @@ async function chooseOnboardComponents(status = null) {
       11: "index",
       12: "browser",
       13: "ollama",
+      14: "yandex-geocoder",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -9311,13 +9494,14 @@ function isOnboardExitAnswer(answer) {
 }
 
 async function getOnboardComponentStatus() {
-  const [config, readiness, browser, archive, codexVersion, ollamaVersion] = await Promise.all([
+  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey] = await Promise.all([
     loadConfig(),
     getAiReadiness(),
     getBrowserStatus(),
     findCommand(["7z", "7zz", "7za"], ["--help"]).catch(() => null),
     getCommandVersion("codex", ["--version"]),
     getOllamaVersion(),
+    getYandexGeocoderKey(),
   ]);
   const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
   const policyReady = (config.toolsets?.enabled || []).includes("analyst");
@@ -9335,6 +9519,7 @@ async function getOnboardComponentStatus() {
     archive: Boolean(archive),
     index: false,
     browser: browser.installed === "yes",
+    "yandex-geocoder": Boolean(yandexGeocoderKey),
   };
 }
 
@@ -9353,6 +9538,7 @@ function onboardComponentRows(status) {
     ["11", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
     ["12", "browser", "Browser runtime", "Playwright/Chromium установлен"],
     ["13", "ollama", "Ollama", "опциональный локальный runtime"],
+    ["14", "yandex-geocoder", "Yandex Geocoder API", "ключ геокодера сохранен или есть в env"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -9367,7 +9553,7 @@ function defaultOnboardSelection(status) {
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "yandex-geocoder" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
