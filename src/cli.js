@@ -39,6 +39,7 @@ const PROJECT_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "config.json");
 const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
+const CLOUD_DEFAULT_REMOTE_DIR = "/IOLA";
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open", "get_current_date"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
@@ -228,7 +229,14 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["education", "open-data", "geo", "reports", "local-model", "local-files", "browser-agent"],
+    enabled: ["education", "open-data", "geo", "personal-docs", "reports", "local-model", "local-files", "browser-agent"],
+  },
+  cloud: {
+    activeProvider: "",
+    providers: {
+      "yandex-disk": { root: CLOUD_DEFAULT_REMOTE_DIR },
+      "mailru-cloud": { root: CLOUD_DEFAULT_REMOTE_DIR },
+    },
   },
   daemon: {
     host: "127.0.0.1",
@@ -314,6 +322,7 @@ const SLASH_COMMANDS = [
   { command: "/permissions", description: "разрешения" },
   { command: "/tools", description: "tools и toolsets" },
   { command: "/files status", description: "локальные файловые операции" },
+  { command: "/cloud status", description: "облачные диски" },
   { command: "/archive doctor", description: "архиватор" },
   { command: "/changes list", description: "подготовленные изменения" },
   { command: "/index status", description: "индекс документов" },
@@ -389,6 +398,7 @@ const COMMANDS = new Map([
   ["skills", handleSkills],
   ["tools", handleTools],
   ["files", handleFiles],
+  ["cloud", handleCloud],
   ["archive", handleArchive],
   ["changes", handleChanges],
   ["import", handleImport],
@@ -537,6 +547,7 @@ async function showHelp() {
   iola agent                   интерактивный режим
   iola ai setup                настройка AI-профиля
   iola browser status          браузерный runtime
+  iola cloud status            облачные диски
   iola mcp status              MCP-подключение
   iola doctor                  диагностика
   iola wiki                    документация
@@ -576,6 +587,7 @@ Usage:
   iola skills list|show|paths|enable|disable|bundles|bundle|doctor
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
+  iola cloud setup|status|ls|find|upload|download|share|save|backup
   iola archive doctor|list|test|extract|create|index
   iola changes list|show|apply|discard
   iola import file|folder
@@ -2877,6 +2889,467 @@ async function handleFiles(args) {
   }
 
   throw new Error("Команды files: status, mode MODE, approvals POLICY, tree [PATH], read FILE, search TEXT, write FILE --text TEXT, patch FILE --search OLD --replace NEW.");
+}
+
+async function handleCloud(args) {
+  const [action = "status", target, maybeRemote, ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "setup") {
+    await setupCloudProvider(target, options);
+    return;
+  }
+
+  if (action === "use") {
+    const provider = normalizeCloudProvider(target);
+    await requireCloudCredentials(provider);
+    const config = await loadConfig();
+    await saveConfig({ cloud: { ...(config.cloud || {}), activeProvider: provider } });
+    console.log(`Активный облачный диск: ${provider}`);
+    return;
+  }
+
+  if (action === "status") {
+    await printCloudStatus({ check: Boolean(options.check) });
+    return;
+  }
+
+  if (action === "doctor") {
+    await printCloudStatus({ check: true });
+    return;
+  }
+
+  if (action === "delete") {
+    const provider = normalizeCloudProvider(target);
+    const secrets = await loadSecrets();
+    delete secrets.cloud?.[provider];
+    if (secrets.cloud && Object.keys(secrets.cloud).length === 0) delete secrets.cloud;
+    await saveSecrets(secrets);
+    const config = await loadConfig();
+    if (config.cloud?.activeProvider === provider) {
+      await saveConfig({ cloud: { ...(config.cloud || {}), activeProvider: "" } });
+    }
+    console.log(`Локальные секреты облака удалены: ${provider}`);
+    return;
+  }
+
+  if (action === "ls" || action === "list") {
+    const provider = await getCloudProvider(options.provider);
+    const rows = await cloudList(provider, target || cloudRootForProvider(provider));
+    printTable(rows, [["type", "Тип"], ["name", "Имя"], ["path", "Путь"], ["size", "Размер"]]);
+    return;
+  }
+
+  if (action === "find" || action === "search") {
+    if (!target) throw new Error('Пример: iola cloud find "справка" --path /IOLA');
+    const provider = await getCloudProvider(options.provider);
+    const rows = await cloudFind(provider, target, { path: options.path || cloudRootForProvider(provider), limit: Number(options.limit || 50) });
+    printTable(rows, [["type", "Тип"], ["name", "Имя"], ["path", "Путь"], ["size", "Размер"]]);
+    return;
+  }
+
+  if (action === "upload") {
+    if (!target) throw new Error('Пример: iola cloud upload report.md /IOLA/reports/report.md');
+    const provider = await getCloudProvider(options.provider);
+    const remotePath = maybeRemote || `${cloudRootForProvider(provider)}/${path.basename(target)}`;
+    const result = await cloudUpload(provider, target, remotePath, { overwrite: options.overwrite !== false });
+    printKeyValue(result);
+    return;
+  }
+
+  if (action === "download") {
+    if (!target) throw new Error('Пример: iola cloud download /IOLA/report.md ./report.md');
+    const provider = await getCloudProvider(options.provider);
+    const outputPath = maybeRemote || path.basename(target);
+    const result = await cloudDownload(provider, target, outputPath);
+    printKeyValue(result);
+    return;
+  }
+
+  if (action === "share") {
+    if (!target) throw new Error('Пример: iola cloud share /IOLA/report.md');
+    const provider = await getCloudProvider(options.provider);
+    const result = await cloudShare(provider, target);
+    printKeyValue(result);
+    return;
+  }
+
+  if (action === "save") {
+    const provider = await getCloudProvider(options.provider);
+    const text = options.text ?? [target, maybeRemote, ...rest].filter(Boolean).join(" ");
+    if (!text) throw new Error('Пример: iola cloud save --text "Текст" --path /IOLA/notes/note.txt');
+    const remotePath = options.path || `${cloudRootForProvider(provider)}/notes/iola-${timestampForFile()}.txt`;
+    const tempPath = path.join(CONFIG_DIR, `cloud-save-${Date.now()}.txt`);
+    await mkdir(CONFIG_DIR, { recursive: true });
+    await writeFile(tempPath, text, "utf8");
+    try {
+      const result = await cloudUpload(provider, tempPath, remotePath, { overwrite: true });
+      printKeyValue(result);
+    } finally {
+      await rm(tempPath, { force: true }).catch(() => {});
+    }
+    return;
+  }
+
+  if (action === "backup") {
+    const provider = await getCloudProvider(options.provider);
+    const result = await cloudBackup(provider);
+    printKeyValue(result);
+    return;
+  }
+
+  throw new Error(`Команды cloud:
+  iola cloud setup yandex-disk
+  iola cloud setup mailru-cloud
+  iola cloud status|doctor
+  iola cloud use yandex-disk
+  iola cloud ls /IOLA
+  iola cloud find "справка" --path /IOLA
+  iola cloud upload local.txt /IOLA/local.txt
+  iola cloud download /IOLA/local.txt ./local.txt
+  iola cloud share /IOLA/local.txt
+  iola cloud save --text "Текст" --path /IOLA/notes/note.txt
+  iola cloud backup`);
+}
+
+async function setupCloudProvider(providerValue, options = {}) {
+  const provider = normalizeCloudProvider(providerValue);
+  if (!process.stdin.isTTY) throw new Error("Для настройки облака запустите команду в интерактивном терминале.");
+  const secrets = await loadSecrets();
+  secrets.cloud = secrets.cloud || {};
+
+  if (provider === "yandex-disk") {
+    console.log("Яндекс Диск использует OAuth-токен пользователя с доступом к Диску.");
+    console.log("Инструкция: https://github.com/adm-iola/iola-cli/wiki/Облачные-диски");
+    const token = (await askText("Введите OAuth-токен Яндекс Диска: ")).trim();
+    if (!token) throw new Error("Токен пустой, сохранение отменено.");
+    secrets.cloud[provider] = { token };
+  } else if (provider === "mailru-cloud") {
+    console.log("Облако Mail.ru подключается через WebDAV и пароль внешнего приложения.");
+    console.log("Инструкция: https://github.com/adm-iola/iola-cli/wiki/Облачные-диски");
+    const username = (await askText("Введите email Mail.ru: ")).trim();
+    const password = (await askText("Введите пароль внешнего приложения/WebDAV: ")).trim();
+    if (!username || !password) throw new Error("Email или пароль пустой, сохранение отменено.");
+    secrets.cloud[provider] = { username, password, baseUrl: options.baseUrl || "https://webdav.cloud.mail.ru" };
+  }
+
+  await saveSecrets(secrets);
+  const config = await loadConfig();
+  await saveConfig({ cloud: { ...(config.cloud || {}), activeProvider: provider } });
+  console.log(`Облачный диск сохранен и выбран: ${provider}`);
+  await printCloudStatus({ check: true });
+}
+
+async function printCloudStatus(options = {}) {
+  const config = await loadConfig();
+  const secrets = await loadSecrets();
+  const rows = ["yandex-disk", "mailru-cloud"].map((provider) => ({
+    provider,
+    active: config.cloud?.activeProvider === provider ? "yes" : "no",
+    configured: secrets.cloud?.[provider] ? "yes" : "no",
+    root: cloudRootForProvider(provider, config),
+  }));
+  printTable(rows, [["provider", "Провайдер"], ["active", "Активен"], ["configured", "Настроен"], ["root", "Папка"]]);
+  if (options.check) {
+    for (const row of rows.filter((item) => item.configured === "yes")) {
+      try {
+        const listed = await cloudList(row.provider, cloudRootForProvider(row.provider), { allowMissingRoot: true });
+        console.log(`${row.provider}: ok (${listed.length} объектов в корневой папке IOLA или папка доступна)`);
+      } catch (error) {
+        console.log(`${row.provider}: error - ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+}
+
+function normalizeCloudProvider(value) {
+  const text = String(value || "").toLocaleLowerCase("ru-RU").trim();
+  if (!text || text === "yandex" || text === "yandex-disk" || text === "яндекс" || text === "яндекс-диск") return "yandex-disk";
+  if (text === "mailru" || text === "mailru-cloud" || text === "mail" || text === "mail.ru" || text === "облако-mail") return "mailru-cloud";
+  throw new Error("Поддерживаются облака: yandex-disk, mailru-cloud.");
+}
+
+async function getCloudProvider(value) {
+  if (value) return normalizeCloudProvider(value);
+  const config = await loadConfig();
+  const provider = normalizeCloudProvider(config.cloud?.activeProvider || "yandex-disk");
+  await requireCloudCredentials(provider);
+  return provider;
+}
+
+async function requireCloudCredentials(provider) {
+  const secrets = await loadSecrets();
+  const credentials = secrets.cloud?.[provider];
+  if (!credentials) throw new Error(`Облачный диск не настроен: ${provider}. Запустите: iola cloud setup ${provider}`);
+  return credentials;
+}
+
+function cloudRootForProvider(provider, config = null) {
+  const loaded = config || readConfigLayerSync(CONFIG_FILE) || {};
+  return loaded.cloud?.providers?.[provider]?.root || DEFAULT_AI_CONFIG.cloud.providers[provider]?.root || CLOUD_DEFAULT_REMOTE_DIR;
+}
+
+async function cloudList(provider, remotePath, options = {}) {
+  if (provider === "yandex-disk") return yandexDiskList(remotePath, options);
+  if (provider === "mailru-cloud") return mailruCloudList(remotePath, options);
+  throw new Error(`Провайдер не поддерживается: ${provider}`);
+}
+
+async function cloudUpload(provider, localPath, remotePath, options = {}) {
+  if (provider === "yandex-disk") return yandexDiskUpload(localPath, remotePath, options);
+  if (provider === "mailru-cloud") return mailruCloudUpload(localPath, remotePath, options);
+  throw new Error(`Провайдер не поддерживается: ${provider}`);
+}
+
+async function cloudDownload(provider, remotePath, outputPath) {
+  if (provider === "yandex-disk") return yandexDiskDownload(remotePath, outputPath);
+  if (provider === "mailru-cloud") return mailruCloudDownload(remotePath, outputPath);
+  throw new Error(`Провайдер не поддерживается: ${provider}`);
+}
+
+async function cloudFind(provider, query, options = {}) {
+  if (provider === "yandex-disk") return yandexDiskFind(query, options);
+  if (provider === "mailru-cloud") {
+    const rows = await mailruCloudList(options.path || CLOUD_DEFAULT_REMOTE_DIR);
+    return rows.filter((row) => normalizeGeoText(`${row.name} ${row.path}`).includes(normalizeGeoText(query))).slice(0, Number(options.limit || 50));
+  }
+  throw new Error(`Провайдер не поддерживается: ${provider}`);
+}
+
+async function cloudShare(provider, remotePath) {
+  if (provider === "yandex-disk") return yandexDiskShare(remotePath);
+  throw new Error("Публичные ссылки через CLI сейчас поддерживаются только для Яндекс Диска.");
+}
+
+async function yandexDiskRequest(method, apiPath, options = {}) {
+  const credentials = await requireCloudCredentials("yandex-disk");
+  const url = new URL(`https://cloud-api.yandex.net/v1/disk${apiPath}`);
+  for (const [key, value] of Object.entries(options.query || {})) {
+    if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
+  }
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `OAuth ${credentials.token}`,
+      ...(options.headers || {}),
+    },
+    body: options.body,
+    signal: AbortSignal.timeout(Number(options.timeout || 30000)),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Yandex Disk request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, credentials.token)}`);
+  }
+  if (response.status === 204) return {};
+  const text = await response.text();
+  if (!text.trim()) return {};
+  return JSON.parse(text);
+}
+
+async function yandexDiskList(remotePath, options = {}) {
+  await ensureYandexDiskDir(remotePath, { allowExisting: true, allowMissingRoot: Boolean(options.allowMissingRoot) });
+  const payload = await yandexDiskRequest("GET", "/resources", { query: { path: normalizeYandexDiskPath(remotePath), limit: 100 } });
+  const items = payload._embedded?.items || [];
+  return items.map((item) => ({
+    type: item.type === "dir" ? "dir" : "file",
+    name: item.name || path.basename(item.path || ""),
+    path: denormalizeYandexDiskPath(item.path || ""),
+    size: item.size || "-",
+  }));
+}
+
+async function yandexDiskFind(query, options = {}) {
+  const payload = await yandexDiskRequest("GET", "/resources/files", { query: { limit: Math.max(100, Number(options.limit || 50) * 5), fields: "items.name,items.path,items.size,items.type" } });
+  const needle = normalizeGeoText(query);
+  return (payload.items || [])
+    .map((item) => ({
+      type: item.type === "dir" ? "dir" : "file",
+      name: item.name || path.basename(item.path || ""),
+      path: denormalizeYandexDiskPath(item.path || ""),
+      size: item.size || "-",
+    }))
+    .filter((item) => normalizeGeoText(`${item.name} ${item.path}`).includes(needle))
+    .slice(0, Number(options.limit || 50));
+}
+
+async function yandexDiskUpload(localPath, remotePath, options = {}) {
+  const resolved = path.resolve(localPath);
+  const info = await stat(resolved);
+  if (!info.isFile()) throw new Error(`Это не файл: ${localPath}`);
+  await ensureYandexDiskDir(path.dirname(remotePath), { allowExisting: true });
+  const upload = await yandexDiskRequest("GET", "/resources/upload", { query: { path: normalizeYandexDiskPath(remotePath), overwrite: options.overwrite !== false } });
+  const bytes = await readFile(resolved);
+  const response = await fetch(upload.href, { method: upload.method || "PUT", body: bytes, signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw new Error(`Yandex Disk upload failed: ${response.status} ${response.statusText}`);
+  return { provider: "yandex-disk", local: resolved, remote: remotePath, size: info.size };
+}
+
+async function yandexDiskDownload(remotePath, outputPath) {
+  const download = await yandexDiskRequest("GET", "/resources/download", { query: { path: normalizeYandexDiskPath(remotePath) } });
+  const response = await fetch(download.href, { signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw new Error(`Yandex Disk download failed: ${response.status} ${response.statusText}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const resolved = path.resolve(outputPath);
+  await mkdir(path.dirname(resolved), { recursive: true });
+  await writeFile(resolved, buffer);
+  return { provider: "yandex-disk", remote: remotePath, local: resolved, size: buffer.length };
+}
+
+async function yandexDiskShare(remotePath) {
+  await yandexDiskRequest("PUT", "/resources/publish", { query: { path: normalizeYandexDiskPath(remotePath) } });
+  const payload = await yandexDiskRequest("GET", "/resources", { query: { path: normalizeYandexDiskPath(remotePath), fields: "name,path,public_url" } });
+  return { provider: "yandex-disk", remote: remotePath, publicUrl: payload.public_url || "-" };
+}
+
+async function ensureYandexDiskDir(remotePath, options = {}) {
+  const normalized = normalizeYandexDiskPath(remotePath || CLOUD_DEFAULT_REMOTE_DIR);
+  const plain = denormalizeYandexDiskPath(normalized);
+  const parts = plain.split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts) {
+    current += `/${part}`;
+    try {
+      await yandexDiskRequest("PUT", "/resources", { query: { path: current } });
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (/409|DiskPathPointsToExistentDirectoryError|уже существует/iu.test(message)) continue;
+      if (options.allowMissingRoot && /404/iu.test(message)) continue;
+      throw error;
+    }
+  }
+}
+
+function normalizeYandexDiskPath(remotePath) {
+  const text = String(remotePath || CLOUD_DEFAULT_REMOTE_DIR).trim().replace(/\\/g, "/");
+  if (text.startsWith("disk:") || text.startsWith("app:")) return text;
+  return text.startsWith("/") ? text : `/${text}`;
+}
+
+function denormalizeYandexDiskPath(remotePath) {
+  return String(remotePath || "").replace(/^disk:/u, "").replace(/^app:/u, "") || "/";
+}
+
+async function mailruCloudRequest(method, remotePath, options = {}) {
+  const credentials = await requireCloudCredentials("mailru-cloud");
+  const baseUrl = String(credentials.baseUrl || "https://webdav.cloud.mail.ru").replace(/\/+$/u, "");
+  const url = `${baseUrl}${encodeWebDavPath(remotePath)}`;
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")}`,
+      ...(options.headers || {}),
+    },
+    body: options.body,
+    signal: AbortSignal.timeout(Number(options.timeout || 30000)),
+  });
+  if (!response.ok && !(method === "MKCOL" && response.status === 405)) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Mail.ru Cloud WebDAV request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, credentials.password)}`);
+  }
+  return response;
+}
+
+async function mailruCloudList(remotePath, options = {}) {
+  await ensureMailruCloudDir(remotePath, { allowMissingRoot: Boolean(options.allowMissingRoot) });
+  const response = await mailruCloudRequest("PROPFIND", remotePath, { headers: { Depth: "1" } });
+  const text = await response.text();
+  return parseWebDavList(text, remotePath);
+}
+
+async function mailruCloudUpload(localPath, remotePath) {
+  const resolved = path.resolve(localPath);
+  const info = await stat(resolved);
+  if (!info.isFile()) throw new Error(`Это не файл: ${localPath}`);
+  await ensureMailruCloudDir(path.dirname(remotePath));
+  const bytes = await readFile(resolved);
+  await mailruCloudRequest("PUT", remotePath, { body: bytes, timeout: 120000 });
+  return { provider: "mailru-cloud", local: resolved, remote: remotePath, size: info.size };
+}
+
+async function mailruCloudDownload(remotePath, outputPath) {
+  const response = await mailruCloudRequest("GET", remotePath, { timeout: 120000 });
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const resolved = path.resolve(outputPath);
+  await mkdir(path.dirname(resolved), { recursive: true });
+  await writeFile(resolved, buffer);
+  return { provider: "mailru-cloud", remote: remotePath, local: resolved, size: buffer.length };
+}
+
+async function ensureMailruCloudDir(remotePath, options = {}) {
+  const parts = String(remotePath || CLOUD_DEFAULT_REMOTE_DIR).replace(/\\/g, "/").split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts) {
+    current += `/${part}`;
+    try {
+      await mailruCloudRequest("MKCOL", current);
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (/405|409/iu.test(message)) continue;
+      if (options.allowMissingRoot && /404/iu.test(message)) continue;
+      throw error;
+    }
+  }
+}
+
+function encodeWebDavPath(remotePath) {
+  const normalized = String(remotePath || "/").replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean).map(encodeURIComponent);
+  return `/${segments.join("/")}${normalized.endsWith("/") ? "/" : ""}`;
+}
+
+function parseWebDavList(xml, basePath) {
+  const responses = String(xml || "").split(/<[^:>]*:?response[^>]*>/iu).slice(1);
+  const rows = [];
+  for (const response of responses) {
+    const href = decodeXml(stripXmlTags(response.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/iu)?.[1] || ""));
+    const name = decodeXml(stripXmlTags(response.match(/<[^:>]*:?displayname[^>]*>([\s\S]*?)<\/[^:>]*:?displayname>/iu)?.[1] || "")) || path.basename(href);
+    const size = decodeXml(stripXmlTags(response.match(/<[^:>]*:?getcontentlength[^>]*>([\s\S]*?)<\/[^:>]*:?getcontentlength>/iu)?.[1] || ""));
+    const isDir = /<[^:>]*:?collection\s*\/?>/iu.test(response);
+    const normalizedPath = decodeURIComponent(href || "");
+    if (normalizeGeoText(normalizedPath).replace(/\s+/g, "") === normalizeGeoText(basePath).replace(/\s+/g, "")) continue;
+    rows.push({ type: isDir ? "dir" : "file", name, path: normalizedPath, size: size || "-" });
+  }
+  return rows;
+}
+
+function stripXmlTags(value) {
+  return String(value || "").replace(/<[^>]+>/g, "").trim();
+}
+
+function decodeXml(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+}
+
+async function cloudBackup(provider) {
+  const config = await loadConfig();
+  const payload = {
+    createdAt: new Date().toISOString(),
+    version: getPackageVersion(),
+    note: "Секреты, API-ключи и токены не включены в резервную копию.",
+    config: {
+      api: config.api,
+      ai: { activeProfile: config.ai?.activeProfile, provider: config.ai?.provider, model: config.ai?.model, profiles: config.ai?.profiles },
+      files: config.files,
+      skills: config.skills,
+      cloud: config.cloud,
+    },
+  };
+  const tempPath = path.join(CONFIG_DIR, `iola-backup-${timestampForFile()}.json`);
+  await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  try {
+    return cloudUpload(provider, tempPath, `${cloudRootForProvider(provider)}/backup/${path.basename(tempPath)}`, { overwrite: true });
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+function timestampForFile() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 async function handleArchive(args) {
@@ -9928,6 +10401,14 @@ async function onboard(args = []) {
       await setYandexGeocoderKey();
     }
   }
+  if (components.includes("cloud")) {
+    if (process.stdin.isTTY) {
+      const providerAnswer = (await askText("Облачный диск: 1 - Яндекс Диск, 2 - Облако Mail.ru, 0 - пропустить: ")).trim();
+      if (providerAnswer === "1") await setupCloudProvider("yandex-disk");
+      else if (providerAnswer === "2") await setupCloudProvider("mailru-cloud");
+      else console.log("Настройка облачного диска пропущена.");
+    }
+  }
   if (components.includes("codex")) {
     await installCodexIfMissing();
     await aiSetup(["codex"]);
@@ -9977,6 +10458,7 @@ async function chooseOnboardComponents(status = null) {
       12: "browser",
       13: "ollama",
       14: "yandex-geocoder",
+      15: "cloud",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -9989,7 +10471,7 @@ function isOnboardExitAnswer(answer) {
 }
 
 async function getOnboardComponentStatus() {
-  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey] = await Promise.all([
+  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey, cloudSecrets] = await Promise.all([
     loadConfig(),
     getAiReadiness(),
     getBrowserStatus(),
@@ -9997,6 +10479,7 @@ async function getOnboardComponentStatus() {
     getCommandVersion("codex", ["--version"]),
     getOllamaVersion(),
     getYandexGeocoderKey(),
+    loadSecrets().then((secrets) => secrets.cloud || {}),
   ]);
   const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
   const policyReady = (config.toolsets?.enabled || []).includes("analyst");
@@ -10015,6 +10498,7 @@ async function getOnboardComponentStatus() {
     index: false,
     browser: browser.installed === "yes",
     "yandex-geocoder": Boolean(yandexGeocoderKey),
+    cloud: Object.keys(cloudSecrets).length > 0,
   };
 }
 
@@ -10034,6 +10518,7 @@ function onboardComponentRows(status) {
     ["12", "browser", "Browser runtime", "Playwright/Chromium установлен"],
     ["13", "ollama", "Ollama", "опциональный локальный runtime"],
     ["14", "yandex-geocoder", "Yandex Geocoder API", "ключ геокодера сохранен или есть в env"],
+    ["15", "cloud", "Облачный диск", "Яндекс Диск или Облако Mail.ru"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -10048,7 +10533,7 @@ function defaultOnboardSelection(status) {
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "yandex-geocoder" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "yandex-geocoder", 15: "cloud" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -11947,6 +12432,14 @@ function mergeConfig(base, override) {
       ...base.files,
       ...(override.files || {}),
     },
+    cloud: {
+      ...base.cloud,
+      ...(override.cloud || {}),
+      providers: {
+        ...(base.cloud?.providers || {}),
+        ...(override.cloud?.providers || {}),
+      },
+    },
     memory: {
       ...base.memory,
       ...(override.memory || {}),
@@ -12006,6 +12499,9 @@ function sanitizeConfig(config) {
   if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("open-data") && !next.skills.enabled.includes("education")) {
     next.skills.enabled = ["education", ...next.skills.enabled];
   }
+  if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("local-files") && !next.skills.enabled.includes("personal-docs")) {
+    next.skills.enabled = [...next.skills.enabled, "personal-docs"];
+  }
   const localProfile = next.ai?.profiles?.local;
   if (localProfile?.provider === "iola") {
     if (!localProfile.runtime || localProfile.model === "iola-router-1b") {
@@ -12050,6 +12546,9 @@ function validateConfig(config) {
   for (const toolset of config.toolsets?.enabled || []) {
     if (!TOOLSETS[toolset]) errors.push(`toolsets.enabled содержит неизвестный toolset: ${toolset}`);
   }
+  if (config.cloud?.activeProvider && !["yandex-disk", "mailru-cloud"].includes(config.cloud.activeProvider)) {
+    errors.push(`cloud.activeProvider неизвестен: ${config.cloud.activeProvider}`);
+  }
   return errors;
 }
 
@@ -12063,6 +12562,7 @@ function configSchema() {
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },
       files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },
+      cloud: { providers: ["yandex-disk", "mailru-cloud"], root: CLOUD_DEFAULT_REMOTE_DIR },
       skills: { enabled: "array of skill names" },
       daemon: { host: "127.0.0.1", port: DAEMON_PORT },
     },

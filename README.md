@@ -173,6 +173,20 @@ iola geo services "Йошкар-Ола, улица Петрова, 15"
 Инструкция по получению ключа: [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key).
 Список сценариев: [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей).
 
+Облачные диски для личных документов:
+
+```bash
+iola cloud setup yandex-disk
+iola cloud setup mailru-cloud
+iola cloud status
+iola cloud find "справка" --path /IOLA
+iola cloud upload report.md /IOLA/reports/report.md
+iola cloud share /IOLA/reports/report.md
+iola cloud backup
+```
+
+Инструкция: [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски).
+
 Зарубежные API-ключи:
 
 - OpenAI Platform: регистрация `https://platform.openai.com/`, ключи `https://platform.openai.com/api-keys`;
@@ -200,6 +214,7 @@ iola version --check
 - [Мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Мастер-настройки)
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
 - [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key)
+- [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски)
 - [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
 - [Skills и toolsets](https://github.com/adm-iola/iola-cli/wiki/Skills-и-toolsets)
@@ -222,6 +237,7 @@ iola version --check
 - AI-профили для IOLA local, Ollama, YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
 - локальный tool-agent для модели IOLA с tools `search_data`, `search_entities`, `resolve_entity_field`, `get_card`, `export_report`, `file_read`, `browser_open`;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
+- личные облачные диски: Яндекс Диск и Облако Mail.ru для сохранения отчетов, backup и документов;
 - subagents, skill bundles, layered settings, usage/budget accounting и trajectory export;
 - локальный MCP-сервер по stdio/http для подключения iola-cli к другим AI-клиентам;
 - ответы по открытым данным берутся из публичного MCP `https://apiiola.yasg.ru/mcp`;
