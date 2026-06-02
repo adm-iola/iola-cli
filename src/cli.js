@@ -101,6 +101,19 @@ const FEATURES = {
   "mcp-management": { stage: "stable", defaultEnabled: true, description: "Команды управления MCP-интеграциями." },
   "web-search": { stage: "experimental", defaultEnabled: false, description: "Резерв под web-search режимы AI." },
 };
+const MAIN_OPENROUTER_AUTHORS = [
+  ["openai", "OpenAI"],
+  ["anthropic", "Anthropic"],
+  ["google", "Google"],
+  ["qwen", "Qwen / Alibaba"],
+  ["deepseek", "DeepSeek"],
+  ["meta-llama", "Meta / Llama"],
+  ["mistralai", "Mistral AI"],
+  ["x-ai", "xAI"],
+  ["cohere", "Cohere"],
+  ["microsoft", "Microsoft"],
+  ["perplexity", "Perplexity"],
+];
 const SKILL_BUNDLES = {
   analyst: {
     description: "Аналитик открытых данных: поиск, карточки, отчеты и память.",
@@ -4288,6 +4301,7 @@ async function aiModels(args) {
   printTable(filtered, [
     ["id", "Модель"],
     ["provider", "Провайдер"],
+    ["releaseDate", "Дата"],
     ["note", "Примечание"],
   ]);
 }
@@ -4361,11 +4375,7 @@ async function listAiModels(provider) {
     if (apiKey && getAiNetworkMode(relayConfig) === "gateway") {
       const payload = await callAiRelayModels(relayConfig, apiKey, "OpenRouter");
       return (payload.data || [])
-        .map((model) => ({
-          id: model.id,
-          provider: "openrouter",
-          note: model.name || "",
-        }))
+        .map(mapOpenRouterModel)
         .sort((left, right) => left.id.localeCompare(right.id));
     }
     const response = await fetch("https://openrouter.ai/api/v1/models", {
@@ -4378,11 +4388,7 @@ async function listAiModels(provider) {
 
     const payload = await response.json();
     return (payload.data || [])
-      .map((model) => ({
-        id: model.id,
-        provider: "openrouter",
-        note: model.name || "",
-      }))
+      .map(mapOpenRouterModel)
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
@@ -4403,6 +4409,85 @@ async function getApiProviderNetworkConfig(provider) {
     ...profile,
     aiRelayBaseUrl: profile.aiRelayBaseUrl || config.api?.aiRelayBaseUrl || AI_RELAY_BASE_URL,
   };
+}
+
+function mapOpenRouterModel(model) {
+  const id = String(model.id || "");
+  const architecture = model.architecture || {};
+  const created = Number(model.created || 0);
+  return {
+    id,
+    provider: "openrouter",
+    note: model.name || "",
+    author: id.includes("/") ? id.split("/")[0] : "",
+    created,
+    releaseDate: formatUnixDate(created),
+    modality: architecture.modality || "",
+    inputModalities: Array.isArray(architecture.input_modalities) ? architecture.input_modalities : [],
+    outputModalities: Array.isArray(architecture.output_modalities) ? architecture.output_modalities : [],
+    contextLength: Number(model.context_length || model.top_provider?.context_length || 0),
+  };
+}
+
+function isOpenRouterTextModel(model) {
+  const inputs = model.inputModalities || [];
+  const outputs = model.outputModalities || [];
+  if (inputs.length > 0 && !inputs.includes("text")) return false;
+  if (outputs.length > 0 && !outputs.includes("text")) return false;
+  const modality = String(model.modality || "").toLocaleLowerCase("en-US");
+  if (modality && modality !== "text->text") return false;
+  const id = String(model.id || "").toLocaleLowerCase("en-US");
+  const note = String(model.note || "").toLocaleLowerCase("en-US");
+  return !/\b(vl|vision|image|video|audio|tts|embed|embedding|rerank|moderation)\b/.test(`${id} ${note}`);
+}
+
+function buildOpenRouterAuthorChoices(models) {
+  const byAuthor = new Map();
+  for (const model of models) {
+    if (!model.author) continue;
+    const current = byAuthor.get(model.author) || { count: 0, latestCreated: 0 };
+    current.count += 1;
+    current.latestCreated = Math.max(current.latestCreated, Number(model.created || 0));
+    byAuthor.set(model.author, current);
+  }
+
+  return MAIN_OPENROUTER_AUTHORS
+    .map(([id, label]) => {
+      const stat = byAuthor.get(id);
+      if (!stat) return null;
+      return {
+        id,
+        label,
+        count: stat.count,
+        latestReleaseDate: formatUnixDate(stat.latestCreated),
+      };
+    })
+    .filter(Boolean);
+}
+
+function modelMatchesSearch(model, search) {
+  const needle = search.toLocaleLowerCase("ru-RU");
+  return [model.id, model.note, model.author]
+    .some((value) => String(value || "").toLocaleLowerCase("ru-RU").includes(needle));
+}
+
+function sortModelsByFreshness(left, right) {
+  return Number(right.created || 0) - Number(left.created || 0)
+    || String(left.id).localeCompare(String(right.id));
+}
+
+function formatUnixDate(value) {
+  const seconds = Number(value || 0);
+  if (!seconds) return "";
+  return new Date(seconds * 1000).toISOString().slice(0, 10);
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value || 0);
+  if (!number) return "";
+  if (number >= 1_000_000) return `${Math.round(number / 100_000) / 10}M`;
+  if (number >= 1_000) return `${Math.round(number / 100) / 10}K`;
+  return String(number);
 }
 
 function getRecommendedOllamaModels(notePrefix = "recommended") {
@@ -4711,8 +4796,12 @@ async function getDefaultApiProviderForModelSwitch() {
 }
 
 async function chooseAiModel(provider) {
+  if (provider === "openrouter") {
+    return chooseOpenRouterModel();
+  }
+
   let search = "";
-  if (provider === "openrouter" || provider === "openai") {
+  if (provider === "openai") {
     search = (await askText("Фильтр моделей (Enter - без фильтра): ")).trim();
   }
 
@@ -4745,6 +4834,66 @@ async function chooseAiModel(provider) {
 
   const answer = Number(await askText("Номер: "));
   return filtered[answer - 1]?.id || "";
+}
+
+async function chooseOpenRouterModel() {
+  let models;
+  try {
+    models = await listAiModels("openrouter");
+  } catch (error) {
+    console.log(error instanceof Error ? error.message : String(error));
+    return "";
+  }
+
+  const textModels = models.filter(isOpenRouterTextModel);
+  if (textModels.length === 0) {
+    console.log("Текстовые модели OpenRouter не найдены.");
+    return "";
+  }
+
+  const authorChoices = buildOpenRouterAuthorChoices(textModels);
+  console.log("Выберите автора моделей OpenRouter:");
+  authorChoices.forEach((choice, index) => {
+    const date = choice.latestReleaseDate ? `, свежая: ${choice.latestReleaseDate}` : "";
+    console.log(`  ${index + 1}. ${choice.label} (${choice.count}${date})`);
+  });
+  const searchIndex = authorChoices.length + 1;
+  console.log(`  ${searchIndex}. Поиск по всем текстовым моделям`);
+  console.log("  0. Отмена");
+
+  const authorAnswer = Number(await askText("Номер: "));
+  if (!authorAnswer) return "";
+
+  let filtered;
+  if (authorAnswer === searchIndex) {
+    const search = (await askText("Фильтр моделей: ")).trim();
+    if (!search) return "";
+    filtered = textModels.filter((model) => modelMatchesSearch(model, search));
+  } else {
+    const selectedAuthor = authorChoices[authorAnswer - 1];
+    if (!selectedAuthor) return "";
+    filtered = textModels.filter((model) => model.author === selectedAuthor.id);
+  }
+
+  filtered = filtered
+    .sort(sortModelsByFreshness)
+    .slice(0, 30);
+
+  if (filtered.length === 0) {
+    console.log("Модели не найдены.");
+    return "";
+  }
+
+  console.log("Выберите текстовую модель:");
+  filtered.forEach((model, index) => {
+    const date = model.releaseDate || "дата неизвестна";
+    const context = model.contextLength ? `, ctx ${formatCompactNumber(model.contextLength)}` : "";
+    console.log(`  ${index + 1}. ${model.id} (${date}${context}) - ${model.note || model.id}`);
+  });
+  console.log("  0. Отмена");
+
+  const modelAnswer = Number(await askText("Номер: "));
+  return filtered[modelAnswer - 1]?.id || "";
 }
 
 async function chooseAndSaveApiModel(provider) {
