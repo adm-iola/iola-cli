@@ -58,9 +58,15 @@ assertIncludes(cliSource, "dedupeDatedOpenAiModels", "OpenAI model selection sho
 assertIncludes(cliSource, "chooseLocalModel", "Local model selection should support IOLA and Ollama models");
 assertIncludes(cliSource, "Другая Ollama-модель", "Local model selection should allow manual Ollama model names");
 assertIncludes(cliSource, "chooseYandexServicesMenu", "Yandex Connector should have a service selection menu");
-assertIncludes(cliSource, "Запрошены максимальные OAuth-права", "Yandex setup should request maximum connector permissions");
+assertIncludes(cliSource, "OAuth-права встроенного приложения", "Yandex setup should report packaged OAuth app permissions");
 assertIncludes(cliSource, "Выбрать активные функции можно командой /yandex", "Yandex setup should direct service selection to /yandex");
+assertIncludes(cliSource, "runYandexBrowserOAuth", "Yandex setup should support browser OAuth flow");
+assertIncludes(cliSource, "IOLA_YANDEX_OAUTH_CLIENT_ID", "Yandex setup should use a packaged/env OAuth client id");
+assertIncludes(cliSource, "--app", "Yandex token command should persist tokens by OAuth app group");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
+if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
+  throw new Error("package files should include the Yandex OAuth icon");
+}
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

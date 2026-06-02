@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import os from "node:os";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = resolve(rootDir, "bin", "iola.js");
+const oauthIconSource = resolve(rootDir, "docs", "assets", "iola-oauth-icon.png");
+const oauthIconTarget = join(os.homedir(), ".iola", "assets", "iola-oauth-icon.png");
 const node = process.execPath;
 const frames = ["|", "/", "-", "\\"];
 
@@ -20,6 +24,10 @@ const steps = [
   {
     title: "Проверка локальной модели IOLA",
     args: [cliPath, "ai", "setup", "iola", "--yes", "--quiet", "--optional", "--preserve-active"],
+  },
+  {
+    title: "Установка иконки Yandex OAuth",
+    local: installOauthIcon,
   },
 ];
 
@@ -52,9 +60,11 @@ async function runStep(step, current, total) {
   }
   render();
   const timer = setInterval(render, 120);
-  const result = await run(node, ["--no-warnings", ...step.args], (chunk) => {
-    lastOutput = chunk.trim() || lastOutput;
-  });
+  const result = step.local
+    ? await runLocalStep(step.local)
+    : await run(node, ["--no-warnings", ...step.args], (chunk) => {
+      lastOutput = chunk.trim() || lastOutput;
+    });
   clearInterval(timer);
 
   if (result.code !== 0) {
@@ -69,6 +79,21 @@ async function runStep(step, current, total) {
   } else {
     console.log(`✓ ${prefix} готово за ${formatDuration(Date.now() - started)}`);
   }
+}
+
+async function runLocalStep(fn) {
+  try {
+    await fn();
+    return { code: 0 };
+  } catch (error) {
+    return { code: 1, error };
+  }
+}
+
+function installOauthIcon() {
+  if (!existsSync(oauthIconSource)) return;
+  mkdirSync(dirname(oauthIconTarget), { recursive: true });
+  copyFileSync(oauthIconSource, oauthIconTarget);
 }
 
 function run(command, args, onOutput) {

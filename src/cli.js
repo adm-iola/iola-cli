@@ -42,6 +42,11 @@ const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "
 const CLOUD_DEFAULT_REMOTE_DIR = "/IOLA";
 const YANDEX_OAUTH_AUTHORIZE_URL = "https://oauth.yandex.ru/authorize";
 const YANDEX_OAUTH_REDIRECT_URL = "https://oauth.yandex.ru/verification_code";
+const YANDEX_CONNECTOR_CLIENT_ID = process.env.IOLA_YANDEX_OAUTH_CLIENT_ID || process.env.YANDEX_OAUTH_CLIENT_ID || "915b0b6ef0474f3a9b3edd70515c5d60";
+const YANDEX_CONNECTOR_WORKSPACE_CLIENT_ID = process.env.IOLA_YANDEX_WORKSPACE_OAUTH_CLIENT_ID || "";
+const YANDEX_CONNECTOR_REDIRECT_HOST = "127.0.0.1";
+const YANDEX_CONNECTOR_REDIRECT_PORT = Number(process.env.IOLA_YANDEX_OAUTH_PORT || 18791);
+const YANDEX_CONNECTOR_REDIRECT_PATH = "/yandex/oauth/callback";
 const YANDEX_CONNECTOR_SERVICES = {
   identity: {
     title: "Yandex ID",
@@ -149,6 +154,20 @@ const YANDEX_CONNECTOR_SERVICES = {
     hint: "только подготовка заявки/ссылки, без оформления и оплаты",
   },
 };
+const YANDEX_CONNECTOR_OAUTH_APPS = [
+  {
+    id: "core",
+    title: "IOLA Yandex Core",
+    clientId: YANDEX_CONNECTOR_CLIENT_ID,
+    services: ["identity", "disk", "mail"],
+  },
+  {
+    id: "workspace",
+    title: "IOLA Yandex Workspace",
+    clientId: YANDEX_CONNECTOR_WORKSPACE_CLIENT_ID,
+    services: ["contacts", "wiki", "tracker", "forms", "docs"],
+  },
+];
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open", "get_current_date"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
@@ -3294,32 +3313,46 @@ function printYandexServices(options = {}) {
 async function setupYandexConnector(args = []) {
   const options = parseOptions(args);
   const config = await loadConfig();
+  const oauthApps = getConfiguredYandexOAuthApps();
   const authorizedServices = getYandexOAuthCapableServiceIds();
   const enabledServices = config.yandex?.enabledServices?.length ? config.yandex.enabledServices : ["identity", "disk"];
   await saveYandexAuthorizedServices(authorizedServices);
   await saveYandexEnabledServices(enabledServices);
 
-  const clientId = options["client-id"] || config.yandex?.oauth?.clientId || (process.stdin.isTTY ? (await askText("Yandex OAuth Client ID [Enter - пропустить]: ")).trim() : "");
+  const clientId = options["client-id"] || config.yandex?.oauth?.clientId || oauthApps[0]?.clientId || "";
+  const redirectUrl = options["redirect-url"] || getYandexConnectorRedirectUrl();
   if (clientId) {
     await saveConfig({
       yandex: {
         ...(config.yandex || {}),
-        oauth: { ...(config.yandex?.oauth || {}), clientId, redirectUrl: YANDEX_OAUTH_REDIRECT_URL },
+        oauth: { ...(config.yandex?.oauth || {}), clientId, redirectUrl },
       },
     });
   }
 
   console.log("Yandex Connector настроен.");
-  console.log(`Запрошены максимальные OAuth-права: ${authorizedServices.join(", ")}`);
+  console.log(`OAuth-права встроенного приложения: ${authorizedServices.join(", ")}`);
   console.log(`Активные функции CLI: ${normalizeYandexServiceList(enabledServices).join(", ")}`);
   console.log("Выбрать активные функции можно командой /yandex или iola yandex menu.");
-  if (clientId) {
-    const url = buildYandexOAuthUrl({ clientId, services: authorizedServices });
-    console.log("Откройте ссылку авторизации, получите OAuth-токен и сохраните его командой: iola yandex token set");
-    console.log(url);
-    if (options.open) await openUrl(url);
+  if (clientId || oauthApps.length) {
+    if (process.stdin.isTTY && !options["print-url"]) {
+      console.log("Открываю браузер для входа в Яндекс. После авторизации токен сохранится автоматически.");
+      for (const app of oauthApps.length ? oauthApps : [{ id: "custom", title: "Yandex Connector", clientId, services: authorizedServices }]) {
+        console.log(`Авторизация: ${app.title}`);
+        await runYandexBrowserOAuth({ appId: app.id, clientId: app.clientId, services: app.services, redirectUrl });
+      }
+      await printYandexConnectorStatus({ check: true });
+    } else {
+      const app = oauthApps[0] || { clientId, services: authorizedServices };
+      const url = buildYandexOAuthUrl({ clientId: app.clientId, services: app.services, redirectUrl });
+      console.log("Откройте ссылку авторизации, получите OAuth-токен и сохраните его командой: iola yandex token set");
+      console.log(url);
+      if (options.open) await openUrl(url);
+    }
   } else {
-    console.log("Client ID не задан. Создайте OAuth-приложение Яндекса и запустите: iola yandex oauth-url --client-id CLIENT_ID");
+    console.log("Yandex Connector не может открыть браузер: в этой сборке не задан public OAuth client_id приложения IOLA.");
+    console.log("Нужно один раз зарегистрировать OAuth-приложение IOLA и задать IOLA_YANDEX_OAUTH_CLIENT_ID при сборке/запуске CLI.");
+    console.log("Ручной fallback для разработки: iola yandex setup --client-id CLIENT_ID");
   }
 }
 
@@ -3406,20 +3439,116 @@ async function saveYandexAuthorizedServices(services) {
 async function buildYandexOAuthUrlFromConfig(rawArgs = []) {
   const options = parseOptions(rawArgs);
   const config = await loadConfig();
-  const clientId = options["client-id"] || config.yandex?.oauth?.clientId;
+  const clientId = options["client-id"] || config.yandex?.oauth?.clientId || YANDEX_CONNECTOR_CLIENT_ID;
   if (!clientId) throw new Error("Yandex OAuth Client ID не задан. Пример: iola yandex oauth-url disk --client-id CLIENT_ID");
   const services = normalizeYandexServiceList(options._.length ? options._ : (config.yandex?.authorizedServices?.length ? config.yandex.authorizedServices : getYandexOAuthCapableServiceIds()));
-  return buildYandexOAuthUrl({ clientId, services });
+  return buildYandexOAuthUrl({ clientId, services, redirectUrl: options["redirect-url"] || config.yandex?.oauth?.redirectUrl || YANDEX_OAUTH_REDIRECT_URL });
 }
 
-function buildYandexOAuthUrl({ clientId, services }) {
+function buildYandexOAuthUrl({ clientId, services, redirectUrl = YANDEX_OAUTH_REDIRECT_URL }) {
   const scopes = getYandexScopesForServices(services);
   const url = new URL(YANDEX_OAUTH_AUTHORIZE_URL);
   url.searchParams.set("response_type", "token");
   url.searchParams.set("client_id", clientId);
-  url.searchParams.set("redirect_uri", YANDEX_OAUTH_REDIRECT_URL);
+  url.searchParams.set("redirect_uri", redirectUrl);
   if (scopes) url.searchParams.set("scope", scopes);
   return url.toString();
+}
+
+function getYandexConnectorRedirectUrl() {
+  return `http://${YANDEX_CONNECTOR_REDIRECT_HOST}:${YANDEX_CONNECTOR_REDIRECT_PORT}${YANDEX_CONNECTOR_REDIRECT_PATH}`;
+}
+
+async function runYandexBrowserOAuth({ appId = "core", clientId, services, redirectUrl }) {
+  const token = await waitForYandexOAuthToken({ clientId, services, redirectUrl });
+  await setYandexConnectorToken(["--token", token, "--app", appId]);
+  console.log("Yandex Connector подключен.");
+}
+
+function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    const timeoutMs = 180000;
+    const server = createServer(async (req, res) => {
+      try {
+        const url = new URL(req.url || "/", redirectUrl);
+        if (url.pathname === YANDEX_CONNECTOR_REDIRECT_PATH && req.method === "GET") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          res.end(`<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>IOLA Yandex Connector</title></head>
+<body>
+<p>Передаю токен в iola-cli...</p>
+<script>
+(async () => {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const token = params.get("access_token");
+  const error = params.get("error") || "";
+  await fetch("/yandex/oauth/token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token, error })
+  });
+  document.body.innerHTML = token
+    ? "<p>Yandex Connector подключен. Можно закрыть вкладку и вернуться в терминал.</p>"
+    : "<p>Не удалось получить токен. Вернитесь в терминал.</p>";
+})();
+</script>
+</body></html>`);
+          return;
+        }
+        if (url.pathname === "/yandex/oauth/token" && req.method === "POST") {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+          if (payload.error) throw new Error(`Yandex OAuth error: ${payload.error}`);
+          if (!payload.token) throw new Error("Yandex OAuth token не получен.");
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolvePromise(String(payload.token));
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+          server.close();
+          return;
+        }
+        res.writeHead(404);
+        res.end("not found");
+      } catch (error) {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        }
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+        res.end(error instanceof Error ? error.message : String(error));
+        server.close();
+      }
+    });
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        server.close();
+        reject(new Error("Время ожидания авторизации Яндекса истекло."));
+      }
+    }, timeoutMs);
+    server.on("error", (error) => {
+      clearTimeout(timer);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    server.listen(YANDEX_CONNECTOR_REDIRECT_PORT, YANDEX_CONNECTOR_REDIRECT_HOST, async () => {
+      const authUrl = buildYandexOAuthUrl({ clientId, services, redirectUrl });
+      console.log(`Если браузер не открылся, откройте ссылку вручную: ${authUrl}`);
+      try {
+        await openUrl(authUrl);
+      } catch (error) {
+        console.log(`Не удалось открыть браузер автоматически: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  });
 }
 
 function getYandexScopesForServices(services) {
@@ -3434,26 +3563,46 @@ function getYandexScopesForServices(services) {
 }
 
 function getYandexOAuthCapableServiceIds() {
-  return Object.entries(YANDEX_CONNECTOR_SERVICES)
-    .filter(([, service]) => service.scope)
-    .map(([id]) => id);
+  return [...new Set(getConfiguredYandexOAuthApps().flatMap((app) => app.services))];
+}
+
+function getConfiguredYandexOAuthApps() {
+  return YANDEX_CONNECTOR_OAUTH_APPS
+    .filter((app) => app.clientId)
+    .map((app) => ({ ...app, services: normalizeYandexServiceList(app.services) }));
+}
+
+function getYandexOAuthAppById(appId) {
+  return getConfiguredYandexOAuthApps().find((app) => app.id === appId)
+    || YANDEX_CONNECTOR_OAUTH_APPS.find((app) => app.id === appId)
+    || null;
 }
 
 async function setYandexConnectorToken(args = []) {
   const options = parseOptions(args);
+  const appId = options.app || "core";
   const token = options.token || (process.stdin.isTTY ? (await askText("Yandex OAuth token: ")).trim() : "");
   if (!token) throw new Error("OAuth token обязателен.");
+  const app = getYandexOAuthAppById(appId);
+  const appServices = normalizeYandexServiceList(app?.services || []);
+  const hasDiskAccess = appServices.includes("disk") || appId === "core";
   const secrets = await loadSecrets();
   secrets.yandex = secrets.yandex || {};
-  secrets.yandex.oauthToken = token;
+  secrets.yandex.oauthApps = secrets.yandex.oauthApps || {};
+  secrets.yandex.oauthApps[appId] = { token, updatedAt: new Date().toISOString() };
+  if (appId === "core") secrets.yandex.oauthToken = token;
   secrets.yandex.updatedAt = new Date().toISOString();
-  secrets.cloud = secrets.cloud || {};
-  secrets.cloud["yandex-disk"] = { token };
+  if (hasDiskAccess) {
+    secrets.cloud = secrets.cloud || {};
+    secrets.cloud["yandex-disk"] = { token };
+  }
   await saveSecrets(secrets);
-  const config = await loadConfig();
-  await saveConfig({ cloud: { ...(config.cloud || {}), activeProvider: "yandex-disk" } });
+  if (hasDiskAccess) {
+    const config = await loadConfig();
+    await saveConfig({ cloud: { ...(config.cloud || {}), activeProvider: "yandex-disk" } });
+  }
   console.log(`Yandex OAuth token сохранен локально: ${SECRETS_FILE}`);
-  console.log("Токен также подключен к cloud provider yandex-disk.");
+  if (hasDiskAccess) console.log("Токен также подключен к cloud provider yandex-disk.");
 }
 
 async function deleteYandexConnectorToken() {
@@ -11254,12 +11403,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append" || arg === "--preserve-active" || arg === "--open") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append" || arg === "--preserve-active" || arg === "--open" || arg === "--print-url") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
