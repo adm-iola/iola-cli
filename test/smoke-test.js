@@ -68,6 +68,9 @@ assertIncludes(cliSource, "runYandexBrowserOAuth", "Yandex setup should support 
 assertIncludes(cliSource, "IOLA_YANDEX_OAUTH_CLIENT_ID", "Yandex setup should use a packaged/env OAuth client id");
 assertIncludes(cliSource, "IOLA_YANDEX_ORGANIZER_OAUTH_CLIENT_ID", "Yandex setup should support the organizer OAuth app group");
 assertIncludes(cliSource, "addressbook:all", "Yandex contacts should use the addressbook OAuth scope");
+assertIncludes(cliSource, "Автоматический прием OAuth-токена не сработал", "Yandex OAuth should provide manual token fallback");
+assertIncludes(cliSource, "partial (", "Yandex connector status should report partial connections");
+assertIncludes(cliSource, "isYandexConnectorFullyConnected", "Yandex master status should require all OAuth app tokens");
 assertIncludes(cliSource, "--app", "Yandex token command should persist tokens by OAuth app group");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {

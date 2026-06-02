@@ -2019,7 +2019,7 @@ async function doctor(args = []) {
       openaiKey: process.env.OPENAI_API_KEY ? "env" : secrets.openai?.apiKey ? "local" : "missing",
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
       yandexGeocoderKey: (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) ? "env" : secrets.yandexGeocoder?.apiKey ? "local" : "missing",
-      yandexConnector: (process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || Object.keys(secrets.yandex?.oauthApps || {}).length || secrets.cloud?.["yandex-disk"]?.token) ? "local/env" : "missing",
+      yandexConnector: getYandexConnectorSecretStatus(secrets),
       yandexAuthorized: config.yandex?.authorizedServices?.join(", ") || "-",
       yandexServices: config.yandex?.enabledServices?.join(", ") || (secrets.cloud?.["yandex-disk"]?.token ? "disk (legacy cloud token)" : "-"),
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
@@ -3465,7 +3465,16 @@ function getYandexConnectorRedirectUrl() {
 }
 
 async function runYandexBrowserOAuth({ appId = "core", clientId, services, redirectUrl }) {
-  const token = await waitForYandexOAuthToken({ clientId, services, redirectUrl });
+  let token = "";
+  try {
+    token = await waitForYandexOAuthToken({ clientId, services, redirectUrl });
+  } catch (error) {
+    if (!process.stdin.isTTY || !String(error?.message || error).includes("Время ожидания")) throw error;
+    console.log("Автоматический прием OAuth-токена не сработал.");
+    console.log("Если в адресной строке браузера есть access_token, вставьте только значение access_token.");
+    token = (await askText("Yandex OAuth access_token [Enter - пропустить]: ")).trim();
+    if (!token) throw error;
+  }
   await setYandexConnectorToken(["--token", token, "--app", appId]);
   console.log("Yandex Connector подключен.");
 }
@@ -3474,10 +3483,28 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
   return new Promise((resolvePromise, reject) => {
     let settled = false;
     const timeoutMs = 180000;
+    const finish = (token) => {
+      if (!token) throw new Error("Yandex OAuth token не получен.");
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolvePromise(String(token));
+      }
+    };
     const server = createServer(async (req, res) => {
       try {
         const url = new URL(req.url || "/", redirectUrl);
         if (url.pathname === YANDEX_CONNECTOR_REDIRECT_PATH && req.method === "GET") {
+          const tokenFromQuery = url.searchParams.get("access_token") || url.searchParams.get("token");
+          const errorFromQuery = url.searchParams.get("error") || "";
+          if (errorFromQuery) throw new Error(`Yandex OAuth error: ${errorFromQuery}`);
+          if (tokenFromQuery) {
+            finish(tokenFromQuery);
+            res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+            res.end("<p>Yandex Connector подключен. Можно закрыть вкладку и вернуться в терминал.</p>");
+            server.close();
+            return;
+          }
           res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
           res.end(`<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><title>IOLA Yandex Connector</title></head>
@@ -3485,20 +3512,37 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
 <p>Передаю токен в iola-cli...</p>
 <script>
 (async () => {
-  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const params = new URLSearchParams(location.hash.replace(/^#/, "") || location.search.replace(/^\\?/, ""));
   const token = params.get("access_token");
   const error = params.get("error") || "";
-  await fetch("/yandex/oauth/token", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token, error })
-  });
+  const qs = new URLSearchParams({ token: token || "", error }).toString();
+  try {
+    await fetch("/yandex/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, error })
+    });
+  } catch {
+    location.replace("/yandex/oauth/token?" + qs);
+    return;
+  }
   document.body.innerHTML = token
     ? "<p>Yandex Connector подключен. Можно закрыть вкладку и вернуться в терминал.</p>"
     : "<p>Не удалось получить токен. Вернитесь в терминал.</p>";
+  if (!token || error) location.replace("/yandex/oauth/token?" + qs);
 })();
 </script>
 </body></html>`);
+          return;
+        }
+        if (url.pathname === "/yandex/oauth/token" && req.method === "GET") {
+          const token = url.searchParams.get("token") || url.searchParams.get("access_token");
+          const error = url.searchParams.get("error") || "";
+          if (error) throw new Error(`Yandex OAuth error: ${error}`);
+          finish(token);
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          res.end("<p>Yandex Connector подключен. Можно закрыть вкладку и вернуться в терминал.</p>");
+          server.close();
           return;
         }
         if (url.pathname === "/yandex/oauth/token" && req.method === "POST") {
@@ -3506,12 +3550,7 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
           for await (const chunk of req) chunks.push(chunk);
           const payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
           if (payload.error) throw new Error(`Yandex OAuth error: ${payload.error}`);
-          if (!payload.token) throw new Error("Yandex OAuth token не получен.");
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            resolvePromise(String(payload.token));
-          }
+          finish(payload.token);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
           server.close();
@@ -3580,6 +3619,30 @@ function getYandexOAuthAppById(appId) {
   return getConfiguredYandexOAuthApps().find((app) => app.id === appId)
     || YANDEX_CONNECTOR_OAUTH_APPS.find((app) => app.id === appId)
     || null;
+}
+
+function getYandexConnectorConnectedAppIds(secrets = {}) {
+  const apps = new Set(Object.keys(secrets.yandex?.oauthApps || {}));
+  if (secrets.yandex?.oauthToken) apps.add("core");
+  if (secrets.cloud?.["yandex-disk"]?.token) apps.add("core");
+  return apps;
+}
+
+function isYandexConnectorFullyConnected(secrets = {}) {
+  if (process.env.YANDEX_OAUTH_TOKEN) return true;
+  const connected = getYandexConnectorConnectedAppIds(secrets);
+  const required = getConfiguredYandexOAuthApps().map((app) => app.id);
+  return required.length > 0 && required.every((id) => connected.has(id));
+}
+
+function getYandexConnectorSecretStatus(secrets = {}) {
+  if (process.env.YANDEX_OAUTH_TOKEN) return "env";
+  const connected = getYandexConnectorConnectedAppIds(secrets);
+  const required = getConfiguredYandexOAuthApps().map((app) => app.id);
+  if (required.length === 0) return connected.size ? "local" : "missing";
+  if (required.every((id) => connected.has(id))) return "ready";
+  if (connected.size > 0) return `partial (${[...connected].join(", ")})`;
+  return "missing";
 }
 
 async function setYandexConnectorToken(args = []) {
@@ -11402,7 +11465,7 @@ async function getOnboardComponentStatus() {
     browser: browser.installed === "yes",
     "yandex-geocoder": Boolean(yandexGeocoderKey),
     cloud: Object.keys(cloudSecrets).length > 0,
-    yandex: Boolean(secrets.yandex?.oauthToken || Object.keys(secrets.yandex?.oauthApps || {}).length || config.yandex?.enabledServices?.length),
+    yandex: isYandexConnectorFullyConnected(secrets),
   };
 }
 
