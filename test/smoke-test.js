@@ -47,8 +47,9 @@ assertIncludes(help, "iola master", "help");
 assertIncludes(help, "iola ask", "help");
 
 assertIncludes(cliSource, "force: Boolean(options.force)", "IOLA setup should not force model reinstall by default");
-assertIncludes(cliSource, "MAIN_OPENROUTER_AUTHORS", "OpenRouter model selection should group models by author");
-assertIncludes(cliSource, "modality !== \"text->text\"", "OpenRouter model selection should prefer text models");
+assertIncludes(cliSource, "MAIN_OPENROUTER_DEVELOPERS", "OpenRouter model selection should group models by developer");
+assertIncludes(cliSource, "isOpenRouterTextGenerationModel", "OpenRouter model selection should prefer text-generation models");
+assertIncludes(cliSource, "console.log(\"  0. Назад\")", "OpenRouter model selection should return to developer menu");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

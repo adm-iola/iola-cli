@@ -101,7 +101,7 @@ const FEATURES = {
   "mcp-management": { stage: "stable", defaultEnabled: true, description: "Команды управления MCP-интеграциями." },
   "web-search": { stage: "experimental", defaultEnabled: false, description: "Резерв под web-search режимы AI." },
 };
-const MAIN_OPENROUTER_AUTHORS = [
+const MAIN_OPENROUTER_DEVELOPERS = [
   ["openai", "OpenAI"],
   ["anthropic", "Anthropic"],
   ["google", "Google"],
@@ -4415,11 +4415,12 @@ function mapOpenRouterModel(model) {
   const id = String(model.id || "");
   const architecture = model.architecture || {};
   const created = Number(model.created || 0);
+  const developer = id.includes("/") ? id.split("/")[0] : "";
   return {
     id,
     provider: "openrouter",
     note: model.name || "",
-    author: id.includes("/") ? id.split("/")[0] : "",
+    developer,
     created,
     releaseDate: formatUnixDate(created),
     modality: architecture.modality || "",
@@ -4429,46 +4430,37 @@ function mapOpenRouterModel(model) {
   };
 }
 
-function isOpenRouterTextModel(model) {
+function isOpenRouterTextGenerationModel(model) {
   const inputs = model.inputModalities || [];
   const outputs = model.outputModalities || [];
   if (inputs.length > 0 && !inputs.includes("text")) return false;
   if (outputs.length > 0 && !outputs.includes("text")) return false;
-  const modality = String(model.modality || "").toLocaleLowerCase("en-US");
-  if (modality && modality !== "text->text") return false;
+  if (outputs.includes("image") || outputs.includes("audio") || outputs.includes("video")) return false;
   const id = String(model.id || "").toLocaleLowerCase("en-US");
   const note = String(model.note || "").toLocaleLowerCase("en-US");
-  return !/\b(vl|vision|image|video|audio|tts|embed|embedding|rerank|moderation)\b/.test(`${id} ${note}`);
+  return !/\b(image|video|audio|tts|embed|embedding|rerank|moderation|safeguard)\b/.test(`${id} ${note}`);
 }
 
-function buildOpenRouterAuthorChoices(models) {
-  const byAuthor = new Map();
+function buildOpenRouterDeveloperChoices(models) {
+  const byDeveloper = new Map();
   for (const model of models) {
-    if (!model.author) continue;
-    const current = byAuthor.get(model.author) || { count: 0, latestCreated: 0 };
+    if (!model.developer) continue;
+    const current = byDeveloper.get(model.developer) || { count: 0 };
     current.count += 1;
-    current.latestCreated = Math.max(current.latestCreated, Number(model.created || 0));
-    byAuthor.set(model.author, current);
+    byDeveloper.set(model.developer, current);
   }
 
-  return MAIN_OPENROUTER_AUTHORS
+  return MAIN_OPENROUTER_DEVELOPERS
     .map(([id, label]) => {
-      const stat = byAuthor.get(id);
+      const stat = byDeveloper.get(id);
       if (!stat) return null;
       return {
         id,
         label,
         count: stat.count,
-        latestReleaseDate: formatUnixDate(stat.latestCreated),
       };
     })
     .filter(Boolean);
-}
-
-function modelMatchesSearch(model, search) {
-  const needle = search.toLocaleLowerCase("ru-RU");
-  return [model.id, model.note, model.author]
-    .some((value) => String(value || "").toLocaleLowerCase("ru-RU").includes(needle));
 }
 
 function sortModelsByFreshness(left, right) {
@@ -4845,55 +4837,47 @@ async function chooseOpenRouterModel() {
     return "";
   }
 
-  const textModels = models.filter(isOpenRouterTextModel);
+  const textModels = models.filter(isOpenRouterTextGenerationModel);
   if (textModels.length === 0) {
     console.log("Текстовые модели OpenRouter не найдены.");
     return "";
   }
 
-  const authorChoices = buildOpenRouterAuthorChoices(textModels);
-  console.log("Выберите автора моделей OpenRouter:");
-  authorChoices.forEach((choice, index) => {
-    const date = choice.latestReleaseDate ? `, свежая: ${choice.latestReleaseDate}` : "";
-    console.log(`  ${index + 1}. ${choice.label} (${choice.count}${date})`);
-  });
-  const searchIndex = authorChoices.length + 1;
-  console.log(`  ${searchIndex}. Поиск по всем текстовым моделям`);
-  console.log("  0. Отмена");
+  while (true) {
+    const developerChoices = buildOpenRouterDeveloperChoices(textModels);
+    console.log("Выберите разработчика моделей OpenRouter:");
+    developerChoices.forEach((choice, index) => {
+      console.log(`  ${index + 1}. ${choice.label} (${choice.count})`);
+    });
+    console.log("  0. Отмена");
 
-  const authorAnswer = Number(await askText("Номер: "));
-  if (!authorAnswer) return "";
+    const developerAnswer = Number(await askText("Номер: "));
+    if (!developerAnswer) return "";
 
-  let filtered;
-  if (authorAnswer === searchIndex) {
-    const search = (await askText("Фильтр моделей: ")).trim();
-    if (!search) return "";
-    filtered = textModels.filter((model) => modelMatchesSearch(model, search));
-  } else {
-    const selectedAuthor = authorChoices[authorAnswer - 1];
-    if (!selectedAuthor) return "";
-    filtered = textModels.filter((model) => model.author === selectedAuthor.id);
+    const selectedDeveloper = developerChoices[developerAnswer - 1];
+    if (!selectedDeveloper) continue;
+    const filtered = textModels
+      .filter((model) => model.developer === selectedDeveloper.id)
+      .sort(sortModelsByFreshness)
+      .slice(0, 30);
+
+    if (filtered.length === 0) {
+      console.log("Модели не найдены.");
+      continue;
+    }
+
+    console.log("Выберите текстовую модель:");
+    filtered.forEach((model, index) => {
+      const date = model.releaseDate || "дата неизвестна";
+      const context = model.contextLength ? `, ctx ${formatCompactNumber(model.contextLength)}` : "";
+      console.log(`  ${index + 1}. ${model.id} (${date}${context}) - ${model.note || model.id}`);
+    });
+    console.log("  0. Назад");
+
+    const modelAnswer = Number(await askText("Номер: "));
+    if (!modelAnswer) continue;
+    return filtered[modelAnswer - 1]?.id || "";
   }
-
-  filtered = filtered
-    .sort(sortModelsByFreshness)
-    .slice(0, 30);
-
-  if (filtered.length === 0) {
-    console.log("Модели не найдены.");
-    return "";
-  }
-
-  console.log("Выберите текстовую модель:");
-  filtered.forEach((model, index) => {
-    const date = model.releaseDate || "дата неизвестна";
-    const context = model.contextLength ? `, ctx ${formatCompactNumber(model.contextLength)}` : "";
-    console.log(`  ${index + 1}. ${model.id} (${date}${context}) - ${model.note || model.id}`);
-  });
-  console.log("  0. Отмена");
-
-  const modelAnswer = Number(await askText("Номер: "));
-  return filtered[modelAnswer - 1]?.id || "";
 }
 
 async function chooseAndSaveApiModel(provider) {
