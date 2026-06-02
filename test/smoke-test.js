@@ -57,10 +57,15 @@ assertIncludes(cliSource, "isOpenAiTextGenerationModel", "OpenAI model selection
 assertIncludes(cliSource, "dedupeDatedOpenAiModels", "OpenAI model selection should hide dated duplicates when aliases exist");
 assertIncludes(cliSource, "chooseLocalModel", "Local model selection should support IOLA and Ollama models");
 assertIncludes(cliSource, "Другая Ollama-модель", "Local model selection should allow manual Ollama model names");
+assertIncludes(cliSource, "chooseYandexServicesMenu", "Yandex Connector should have a service selection menu");
+assertIncludes(cliSource, "Запрошены максимальные OAuth-права", "Yandex setup should request maximum connector permissions");
+assertIncludes(cliSource, "Выбрать активные функции можно командой /yandex", "Yandex setup should direct service selection to /yandex");
+assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");
 assertIncludes(commands, "iola mcp list|status|install|remove|serve [--stdio]", "commands");
+assertIncludes(commands, "iola yandex setup|menu|status|services|enable|disable|oauth-url|token", "commands");
 assertIncludes(commands, "iola delete", "commands");
 assertNotIncludes(commands, "iola uninstall", "commands");
 assertNotIncludes(commands, "Госуслуг", "commands");

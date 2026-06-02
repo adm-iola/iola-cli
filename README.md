@@ -188,11 +188,12 @@ iola cloud backup
 
 Инструкция: [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски).
 
-Yandex Connector объединяет пользовательские сервисы Яндекса в категории:
+Yandex Connector при подключении запрашивает максимальный набор OAuth-прав для пользовательских сервисов Яндекса. Какие функции CLI реально использует, выбирается отдельно:
 
 ```bash
 iola yandex services
 iola yandex setup
+iola yandex menu
 iola yandex status
 ```
 

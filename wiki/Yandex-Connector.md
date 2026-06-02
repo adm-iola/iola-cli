@@ -2,7 +2,7 @@
 
 `Yandex Connector` - единая точка подключения пользовательских сервисов Яндекса в `iola-cli`.
 
-Цель: пользователь один раз настраивает вход через Яндекс, а CLI хранит токен локально и включает только выбранные категории функций.
+Цель: пользователь один раз настраивает вход через Яндекс с максимальным набором OAuth-прав, а CLI хранит токен локально. Какие функции CLI реально использует, пользователь выбирает отдельно через `/yandex`.
 
 Секреты сохраняются только на компьютере пользователя в `~/.iola/secrets.json`. Они не отправляются на сервер IOLA и не попадают в `iola cloud backup`.
 
@@ -11,6 +11,7 @@
 ```bash
 iola yandex services
 iola yandex setup
+iola yandex menu
 iola yandex status
 iola yandex doctor
 iola yandex enable disk mail calendar
@@ -57,13 +58,13 @@ Backlog после первого контура:
    - `cloud_api:disk.read`;
    - `cloud_api:disk.write`;
    - `cloud_api:disk.info`.
-3. Запустите:
+3. Запустите подключение. Оно не спрашивает список сервисов, а готовит OAuth-ссылку с максимальным набором прав коннектора:
 
 ```bash
-iola yandex setup disk --client-id CLIENT_ID
+iola yandex setup --client-id CLIENT_ID
 ```
 
-4. Откройте ссылку авторизации, которую выведет CLI.
+4. Откройте ссылку авторизации, которую выведет CLI. В ней будут запрошены максимальные права для поддерживаемых пользовательских сервисов Яндекса.
 5. Скопируйте OAuth-токен.
 6. Сохраните токен:
 
@@ -71,7 +72,19 @@ iola yandex setup disk --client-id CLIENT_ID
 iola yandex token set
 ```
 
-7. Проверьте:
+7. Выберите, какие функции CLI реально использует:
+
+```bash
+iola yandex menu
+```
+
+В интерактивном CLI это же меню открывается slash-командой:
+
+```text
+/yandex
+```
+
+8. Проверьте:
 
 ```bash
 iola yandex doctor

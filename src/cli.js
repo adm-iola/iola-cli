@@ -348,6 +348,7 @@ const DEFAULT_AI_CONFIG = {
     },
   },
   yandex: {
+    authorizedServices: [],
     enabledServices: [],
     categories: {},
     oauth: {
@@ -440,6 +441,7 @@ const SLASH_COMMANDS = [
   { command: "/tools", description: "tools и toolsets" },
   { command: "/files status", description: "локальные файловые операции" },
   { command: "/cloud status", description: "облачные диски" },
+  { command: "/yandex", description: "выбор сервисов Yandex Connector" },
   { command: "/archive doctor", description: "архиватор" },
   { command: "/changes list", description: "подготовленные изменения" },
   { command: "/index status", description: "индекс документов" },
@@ -707,7 +709,7 @@ Usage:
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
   iola cloud setup|status|ls|find|upload|download|share|save|backup
-  iola yandex setup|status|services|enable|disable|oauth-url|token
+  iola yandex setup|menu|status|services|enable|disable|oauth-url|token
   iola archive doctor|list|test|extract|create|index
   iola changes list|show|apply|discard
   iola import file|folder
@@ -1446,6 +1448,7 @@ async function handleAgentLine(line, state) {
     skills: ["skills", args],
     files: ["files", args],
     archive: ["archive", args],
+    yandex: ["yandex", args.length ? args : ["menu"]],
     changes: ["changes", args],
     index: ["index", args],
     reports: ["reports", args],
@@ -2019,6 +2022,7 @@ async function doctor(args = []) {
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
       yandexGeocoderKey: (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) ? "env" : secrets.yandexGeocoder?.apiKey ? "local" : "missing",
       yandexConnector: (process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token) ? "local/env" : "missing",
+      yandexAuthorized: config.yandex?.authorizedServices?.join(", ") || "-",
       yandexServices: config.yandex?.enabledServices?.join(", ") || (secrets.cloud?.["yandex-disk"]?.token ? "disk (legacy cloud token)" : "-"),
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
     },
@@ -3200,8 +3204,13 @@ async function handleCloud(args) {
 }
 
 async function handleYandex(args) {
-  const [action = "status", target, ...rest] = args;
+  const [action = process.stdin.isTTY ? "menu" : "status", target, ...rest] = args;
   const options = parseOptions(rest);
+
+  if (action === "menu" || action === "choose" || action === "select") {
+    await chooseYandexServicesMenu();
+    return;
+  }
 
   if (action === "services" || action === "list") {
     printYandexServices();
@@ -3250,6 +3259,7 @@ async function handleYandex(args) {
 
   throw new Error(`Команды yandex:
   iola yandex setup
+  iola yandex menu
   iola yandex status|doctor
   iola yandex services
   iola yandex enable disk mail calendar
@@ -3284,17 +3294,10 @@ function printYandexServices(options = {}) {
 async function setupYandexConnector(args = []) {
   const options = parseOptions(args);
   const config = await loadConfig();
-  let services = normalizeYandexServiceList(options._);
-
-  if (process.stdin.isTTY && services.length === 0) {
-    console.log("Yandex Connector: выберите функции Яндекса.");
-    printYandexServices();
-    const answer = await askText("Сервисы через запятую [identity,disk]: ");
-    services = normalizeYandexServiceList(answer.trim() ? answer.split(/[,\s]+/) : ["identity", "disk"]);
-  }
-
-  if (services.length === 0) services = ["identity", "disk"];
-  await saveYandexEnabledServices(services);
+  const authorizedServices = getYandexOAuthCapableServiceIds();
+  const enabledServices = config.yandex?.enabledServices?.length ? config.yandex.enabledServices : ["identity", "disk"];
+  await saveYandexAuthorizedServices(authorizedServices);
+  await saveYandexEnabledServices(enabledServices);
 
   const clientId = options["client-id"] || config.yandex?.oauth?.clientId || (process.stdin.isTTY ? (await askText("Yandex OAuth Client ID [Enter - пропустить]: ")).trim() : "");
   if (clientId) {
@@ -3307,14 +3310,56 @@ async function setupYandexConnector(args = []) {
   }
 
   console.log("Yandex Connector настроен.");
-  console.log(`Включены сервисы: ${services.join(", ")}`);
+  console.log(`Запрошены максимальные OAuth-права: ${authorizedServices.join(", ")}`);
+  console.log(`Активные функции CLI: ${normalizeYandexServiceList(enabledServices).join(", ")}`);
+  console.log("Выбрать активные функции можно командой /yandex или iola yandex menu.");
   if (clientId) {
-    const url = buildYandexOAuthUrl({ clientId, services });
+    const url = buildYandexOAuthUrl({ clientId, services: authorizedServices });
     console.log("Откройте ссылку авторизации, получите OAuth-токен и сохраните его командой: iola yandex token set");
     console.log(url);
     if (options.open) await openUrl(url);
   } else {
     console.log("Client ID не задан. Создайте OAuth-приложение Яндекса и запустите: iola yandex oauth-url --client-id CLIENT_ID");
+  }
+}
+
+async function chooseYandexServicesMenu() {
+  if (!process.stdin.isTTY) {
+    await printYandexConnectorStatus();
+    return;
+  }
+  const config = await loadConfig();
+  const serviceIds = Object.keys(YANDEX_CONNECTOR_SERVICES);
+  const enabled = new Set(config.yandex?.enabledServices?.length ? config.yandex.enabledServices : ["identity", "disk"]);
+  console.log("Yandex Connector: выберите сервисы.");
+  serviceIds.forEach((id, index) => {
+    const service = YANDEX_CONNECTOR_SERVICES[id];
+    const marker = enabled.has(id) ? "✓" : " ";
+    console.log(`${index + 1}. [${marker}] ${service.title} (${id}, ${service.status}) - ${service.hint}`);
+  });
+  console.log("0. Отмена");
+  const defaults = serviceIds.map((id, index) => enabled.has(id) ? String(index + 1) : "").filter(Boolean);
+  const answer = (await askText(`Номера через запятую [${defaults.join(",") || "1,2"}]: `)).trim();
+  if (answer === "0") {
+    console.log("Выбор сервисов отменен.");
+    return;
+  }
+  const selectedNumbers = answer ? answer.split(/[,\s]+/).filter(Boolean) : (defaults.length ? defaults : ["1", "2"]);
+  const selected = selectedNumbers.map((item) => {
+    const index = Number(item) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= serviceIds.length) {
+      throw new Error(`Неизвестный номер сервиса: ${item}`);
+    }
+    return serviceIds[index];
+  });
+  await saveYandexEnabledServices(selected);
+  console.log(`Включены сервисы: ${normalizeYandexServiceList(selected).join(", ")}`);
+  const nextConfig = await loadConfig();
+  if (nextConfig.yandex?.oauth?.clientId) {
+    console.log("OAuth-ссылка с максимальными правами коннектора:");
+    console.log(await buildYandexOAuthUrlFromConfig([]));
+  } else {
+    console.log("Для авторизации создайте OAuth Client ID и выполните: iola yandex oauth-url --client-id CLIENT_ID");
   }
 }
 
@@ -3347,12 +3392,23 @@ async function saveYandexEnabledServices(services) {
   });
 }
 
+async function saveYandexAuthorizedServices(services) {
+  const config = await loadConfig();
+  const normalized = normalizeYandexServiceList(services.length ? services : getYandexOAuthCapableServiceIds());
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      authorizedServices: normalized,
+    },
+  });
+}
+
 async function buildYandexOAuthUrlFromConfig(rawArgs = []) {
   const options = parseOptions(rawArgs);
   const config = await loadConfig();
   const clientId = options["client-id"] || config.yandex?.oauth?.clientId;
   if (!clientId) throw new Error("Yandex OAuth Client ID не задан. Пример: iola yandex oauth-url disk --client-id CLIENT_ID");
-  const services = normalizeYandexServiceList(options._.length ? options._ : (config.yandex?.enabledServices || ["identity", "disk"]));
+  const services = normalizeYandexServiceList(options._.length ? options._ : (config.yandex?.authorizedServices?.length ? config.yandex.authorizedServices : getYandexOAuthCapableServiceIds()));
   return buildYandexOAuthUrl({ clientId, services });
 }
 
@@ -3375,6 +3431,12 @@ function getYandexScopesForServices(services) {
     for (const scope of raw.split(/\s+/).filter(Boolean)) scopes.add(scope);
   }
   return [...scopes].join(" ");
+}
+
+function getYandexOAuthCapableServiceIds() {
+  return Object.entries(YANDEX_CONNECTOR_SERVICES)
+    .filter(([, service]) => service.scope)
+    .map(([id]) => id);
 }
 
 async function setYandexConnectorToken(args = []) {
@@ -3406,6 +3468,7 @@ async function deleteYandexConnectorToken() {
 async function printYandexConnectorStatus(options = {}) {
   const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
   const enabled = config.yandex?.enabledServices || [];
+  const authorized = config.yandex?.authorizedServices?.length ? config.yandex.authorizedServices : [];
   const legacyDiskToken = Boolean(secrets.cloud?.["yandex-disk"]?.token && !secrets.yandex?.oauthToken);
   const token = process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token || "";
   const rows = Object.entries(YANDEX_CONNECTOR_SERVICES).map(([id, service]) => ({
@@ -3413,7 +3476,8 @@ async function printYandexConnectorStatus(options = {}) {
     enabled: enabled.includes(id) ? "yes" : (legacyDiskToken && id === "disk" ? "legacy" : "no"),
     category: service.category,
     status: service.status,
-    token: service.scope && (enabled.includes(id) || (legacyDiskToken && id === "disk")) ? (token ? "local/env" : "missing") : "-",
+    token: service.scope && (authorized.includes(id) || enabled.includes(id) || (legacyDiskToken && id === "disk")) ? (token ? "local/env" : "missing") : "-",
+    authorized: authorized.includes(id) ? "yes" : "-",
     title: service.title,
   }));
   printTable(rows, [
@@ -3421,6 +3485,7 @@ async function printYandexConnectorStatus(options = {}) {
     ["enabled", "Вкл"],
     ["category", "Категория"],
     ["status", "Статус"],
+    ["authorized", "Права"],
     ["token", "Токен"],
     ["title", "Сервис"],
   ]);
@@ -13218,6 +13283,9 @@ function validateConfig(config) {
   }
   for (const service of config.yandex?.enabledServices || []) {
     if (!YANDEX_CONNECTOR_SERVICES[service]) errors.push(`yandex.enabledServices содержит неизвестный сервис: ${service}`);
+  }
+  for (const service of config.yandex?.authorizedServices || []) {
+    if (!YANDEX_CONNECTOR_SERVICES[service]) errors.push(`yandex.authorizedServices содержит неизвестный сервис: ${service}`);
   }
   return errors;
 }
