@@ -81,8 +81,8 @@ if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
   throw new Error("package files should include the Yandex OAuth icon");
 }
 assertIncludes(postinstallSource, "process.hrtime.bigint()", "postinstall should use a monotonic timer");
-assertIncludes(postinstallSource, "без скачивания и распаковки npm-пакета", "postinstall timing should not imply full npm install time");
-assertIncludes(postinstallSource, "IOLA CLI готова за", "postinstall should print total setup duration");
+assertIncludes(postinstallSource, "это не полное время npm install", "postinstall timing should not imply full npm install time");
+assertIncludes(postinstallSource, "Настройка CLI после скачивания заняла", "postinstall should print setup-only duration");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

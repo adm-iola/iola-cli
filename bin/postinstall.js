@@ -35,15 +35,15 @@ const canAnimate = process.stdout.isTTY && process.env.CI !== "true";
 const setupStarted = process.hrtime.bigint();
 
 console.log("");
-console.log("IOLA CLI: настройка после установки npm-пакета");
-console.log("Время ниже считает только настройку CLI, без скачивания и распаковки npm-пакета.");
+console.log("IOLA CLI: настройка после скачивания npm-пакета");
+console.log("Важно: это не полное время npm install. Скачивание, распаковку и служебные действия npm этот скрипт измерить не может.");
 
 for (let index = 0; index < steps.length; index += 1) {
   const step = steps[index];
   await runStep(step, index + 1, steps.length);
 }
 
-console.log(`IOLA CLI готова за ${formatDuration(elapsedMs(setupStarted))}. Запуск: iola`);
+console.log(`Настройка CLI после скачивания заняла ${formatDuration(elapsedMs(setupStarted))}. Запуск: iola`);
 
 async function runStep(step, current, total) {
   const started = process.hrtime.bigint();
