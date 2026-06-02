@@ -3159,17 +3159,29 @@ async function yandexDiskList(remotePath, options = {}) {
 }
 
 async function yandexDiskFind(query, options = {}) {
-  const payload = await yandexDiskRequest("GET", "/resources/files", { query: { limit: Math.max(100, Number(options.limit || 50) * 5), fields: "items.name,items.path,items.size,items.type" } });
   const needle = normalizeGeoText(query);
-  return (payload.items || [])
-    .map((item) => ({
-      type: item.type === "dir" ? "dir" : "file",
-      name: item.name || path.basename(item.path || ""),
-      path: denormalizeYandexDiskPath(item.path || ""),
-      size: item.size || "-",
-    }))
+  const rows = await yandexDiskListRecursive(options.path || CLOUD_DEFAULT_REMOTE_DIR, { depth: Number(options.depth || 4), limit: Math.max(100, Number(options.limit || 50) * 5) });
+  return rows
     .filter((item) => normalizeGeoText(`${item.name} ${item.path}`).includes(needle))
     .slice(0, Number(options.limit || 50));
+}
+
+async function yandexDiskListRecursive(remotePath, options = {}) {
+  const depth = Number(options.depth || 4);
+  const limit = Number(options.limit || 200);
+  const rows = [];
+  await yandexDiskWalk(remotePath, rows, depth, limit);
+  return rows;
+}
+
+async function yandexDiskWalk(remotePath, rows, depth, limit) {
+  if (rows.length >= limit || depth < 0) return;
+  const items = await yandexDiskList(remotePath).catch(() => []);
+  for (const item of items) {
+    if (rows.length >= limit) break;
+    rows.push(item);
+    if (item.type === "dir") await yandexDiskWalk(item.path, rows, depth - 1, limit);
+  }
 }
 
 async function yandexDiskUpload(localPath, remotePath, options = {}) {
