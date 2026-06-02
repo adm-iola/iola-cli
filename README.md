@@ -141,6 +141,13 @@ CLI использует модель `iola-router:qwen3-1.7b-v4-q8` из GGUF-�
 
 Если выбранная Ollama-модель еще не скачана, CLI предложит выполнить `ollama pull`.
 
+API-ключи:
+
+- OpenAI Platform: регистрация `https://platform.openai.com/`, ключи `https://platform.openai.com/api-keys`;
+- OpenRouter: регистрация `https://openrouter.ai/`, ключи `https://openrouter.ai/settings/keys`.
+
+Ключи сохраняются локально командой `iola ai key set openai` или `iola ai key set openrouter`. Важно: оплата российскими банковскими картами для OpenAI Platform и OpenRouter может быть невозможна. Перед настройкой платных API проверьте доступный способ оплаты в личном кабинете сервиса.
+
 Ollama остается опциональным runtime:
 
 ```bash

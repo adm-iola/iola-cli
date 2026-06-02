@@ -20,19 +20,47 @@ iola ask "найди школы на Петрова"
 
 ## OpenAI
 
+Получение ключа OpenAI Platform:
+
+1. Зарегистрируйтесь или войдите в OpenAI Platform: `https://platform.openai.com/`.
+2. Откройте страницу API-ключей: `https://platform.openai.com/api-keys`.
+3. Выберите нужный project или создайте новый project.
+4. Нажмите `Create new secret key`.
+5. Скопируйте ключ сразу после создания. Повторно посмотреть полный ключ обычно нельзя.
+6. В CLI сохраните ключ:
+
 ```bash
 iola ai key set openai
 iola ai setup openai --model gpt-4.1-mini
 iola ask "найди школу 29" --profile openai
 ```
 
+Важно: OpenAI API Platform и ChatGPT Plus/Pro - разные продукты. Подписка ChatGPT не заменяет API-биллинг. Для работы API обычно нужно отдельно настроить billing в OpenAI Platform.
+
 ## OpenRouter
+
+Получение ключа OpenRouter:
+
+1. Зарегистрируйтесь или войдите в OpenRouter: `https://openrouter.ai/`.
+2. Откройте страницу ключей: `https://openrouter.ai/settings/keys`.
+3. Нажмите создание нового API key.
+4. Задайте имя ключа и при необходимости лимит расходов.
+5. Скопируйте ключ сразу после создания. Храните его как секрет.
+6. В CLI сохраните ключ:
 
 ```bash
 iola ai key set openrouter
 iola ai setup openrouter --model openai/gpt-4.1-mini
 iola ai models openrouter --search qwen
 ```
+
+OpenRouter удобен тем, что через один ключ можно выбирать модели разных разработчиков: OpenAI, Anthropic, Google, Qwen / Alibaba, DeepSeek, Meta / Llama, Mistral AI и других.
+
+## Оплата
+
+Важно: оплата российскими банковскими картами для OpenAI Platform и OpenRouter может быть невозможна. Перед настройкой платных API заранее проверьте доступный способ оплаты и пополнения баланса в личном кабинете выбранного сервиса.
+
+Ключи OpenAI/OpenRouter сохраняются локально на устройстве пользователя в `~/.iola/secrets.json`. CLI не публикует ключи в репозиторий и не записывает их в документацию.
 
 В интерактивном CLI модели удобнее выбирать через slash-команду:
 
