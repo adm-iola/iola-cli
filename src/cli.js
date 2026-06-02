@@ -2398,6 +2398,7 @@ async function handleUninstall(args = []) {
       description: "локальная папка .iola текущего проекта",
     });
   }
+  targets.push(...getIolaTempCleanupTargets());
   const npmPackage = "@iola_adm/iola-cli";
 
   const safeTargets = targets.map((target) => ({
@@ -2405,10 +2406,12 @@ async function handleUninstall(args = []) {
     path: path.resolve(target.path),
   }));
   const home = path.resolve(os.homedir());
+  const temp = path.resolve(os.tmpdir());
   for (const target of safeTargets) {
     const isUserConfig = target.path === path.resolve(CONFIG_DIR) && target.path.startsWith(home);
     const isProjectConfig = target.path === path.resolve(PROJECT_IOLA_DIR) && target.path.startsWith(path.resolve(process.cwd()));
-    if (!isUserConfig && !isProjectConfig) {
+    const isTemp = target.path.startsWith(temp + path.sep) && path.basename(target.path).startsWith("iola-");
+    if (!isUserConfig && !isProjectConfig && !isTemp) {
       throw new Error(`Небезопасный путь удаления: ${target.path}`);
     }
   }
@@ -2472,10 +2475,34 @@ async function handleUninstall(args = []) {
   return { deleted: true };
 }
 
+function getIolaTempCleanupTargets() {
+  const tempDir = os.tmpdir();
+  const names = [
+    "iola-cli-test",
+    "iola-model-check.txt",
+  ];
+  let dynamicNames = [];
+  try {
+    dynamicNames = readdirSync(tempDir)
+      .filter((name) => /^iola-(archive|codex|browser)-/u.test(name))
+      .slice(0, 100);
+  } catch {
+    dynamicNames = [];
+  }
+  return [...new Set([...names, ...dynamicNames])].map((name) => ({
+    label: "temp",
+    path: path.join(tempDir, name),
+    description: "временные файлы iola-cli",
+  }));
+}
+
 async function removeGlobalNpmPackage(npmPackage) {
   if (process.platform === "win32") {
     const command = quoteWindowsCommand(getNpmCommand(), ["remove", "-g", npmPackage]);
-    const script = `ping 127.0.0.1 -n 3 > nul & ${command}`;
+    const cleanupConfig = quoteWindowsCommand("rmdir", ["/s", "/q", CONFIG_DIR]);
+    const cleanupTempTest = quoteWindowsCommand("rmdir", ["/s", "/q", path.join(os.tmpdir(), "iola-cli-test")]);
+    const cleanupTempModel = quoteWindowsCommand("del", ["/f", "/q", path.join(os.tmpdir(), "iola-model-check.txt")]);
+    const script = `ping 127.0.0.1 -n 3 > nul & ${cleanupConfig} 2> nul & ${cleanupTempTest} 2> nul & ${cleanupTempModel} 2> nul & ${command}`;
     const child = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", script], {
       detached: true,
       stdio: "ignore",
