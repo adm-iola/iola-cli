@@ -6434,12 +6434,33 @@ async function listAiModels(provider) {
     ];
   }
 
+  return listCodexModels();
+}
+
+async function listCodexModels() {
   const version = await getCommandVersion("codex", ["--version"]);
+  const cacheFile = path.join(os.homedir(), ".codex", "models_cache.json");
+  try {
+    const cache = JSON.parse(await readFile(cacheFile, "utf8"));
+    const models = (cache.models || [])
+      .filter((model) => model?.slug && (model.visibility === "list" || model.visibility === undefined))
+      .sort((left, right) => Number(right.priority || 0) - Number(left.priority || 0))
+      .map((model) => ({
+        id: model.slug,
+        provider: "codex",
+        note: `${model.display_name || model.slug} - ${version}`,
+        priority: Number(model.priority || 0),
+        contextWindow: model.context_window || model.max_context_window || null,
+      }));
+    if (models.length > 0) return models;
+  } catch {
+    // Fallback below covers fresh installs before Codex creates models_cache.json.
+  }
   return [
     { id: "gpt-5.5", provider: "codex", note: version },
-    { id: "gpt-5", provider: "codex", note: version },
-    { id: "gpt-5-codex", provider: "codex", note: version },
-    { id: "gpt-5-mini", provider: "codex", note: version },
+    { id: "gpt-5.4", provider: "codex", note: version },
+    { id: "gpt-5.4-mini", provider: "codex", note: version },
+    { id: "gpt-5.3-codex-spark", provider: "codex", note: version },
   ];
 }
 
