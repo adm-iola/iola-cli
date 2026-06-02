@@ -10,6 +10,7 @@ import readline from "node:readline/promises";
 import { Readable } from "node:stream";
 import { stdin as input, stdout as output } from "node:process";
 import { DatabaseSync } from "node:sqlite";
+import tls from "node:tls";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync, inflateSync } from "node:zlib";
 
@@ -8803,18 +8804,23 @@ async function callGigaChat(config, messages) {
   }
 
   const token = await getGigaChatAccessToken(config, authKey);
-  const response = await fetch(`${String(config.baseUrl || "https://gigachat.devices.sberbank.ru/api/v1").replace(/\/+$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model || "GigaChat-2",
-      messages,
-      temperature: Number(config.temperature ?? 0.2),
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(`${String(config.baseUrl || "https://gigachat.devices.sberbank.ru/api/v1").replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model || "GigaChat-2",
+        messages,
+        temperature: Number(config.temperature ?? 0.2),
+      }),
+    });
+  } catch (error) {
+    throw new Error(formatProviderFetchError("GigaChat", error));
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -8826,17 +8832,23 @@ async function callGigaChat(config, messages) {
 }
 
 async function getGigaChatAccessToken(config, authKey) {
+  enableSystemCaForGigaChat();
   const secrets = await loadSecrets();
   const scope = process.env.GIGACHAT_SCOPE || secrets.gigachat?.scope || config.scope || "GIGACHAT_API_PERS";
-  const response = await fetch(config.authUrl || "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", {
-    method: "POST",
-    headers: {
-      authorization: `Basic ${authKey}`,
-      "content-type": "application/x-www-form-urlencoded",
-      RqUID: randomUUID(),
-    },
-    body: new URLSearchParams({ scope }).toString(),
-  });
+  let response;
+  try {
+    response = await fetch(config.authUrl || "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${authKey}`,
+        "content-type": "application/x-www-form-urlencoded",
+        RqUID: randomUUID(),
+      },
+      body: new URLSearchParams({ scope }).toString(),
+    });
+  } catch (error) {
+    throw new Error(formatProviderFetchError("GigaChat OAuth", error));
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -8846,6 +8858,37 @@ async function getGigaChatAccessToken(config, authKey) {
   const payload = await response.json();
   if (!payload.access_token) throw new Error("GigaChat не вернул access_token.");
   return payload.access_token;
+}
+
+let systemCaForGigaChatEnabled = false;
+
+function enableSystemCaForGigaChat() {
+  if (systemCaForGigaChatEnabled || process.env.GIGACHAT_DISABLE_SYSTEM_CA === "1") return;
+  systemCaForGigaChatEnabled = true;
+
+  try {
+    if (typeof tls.getCACertificates !== "function" || typeof tls.setDefaultCACertificates !== "function") return;
+    const certificates = [
+      ...tls.getCACertificates("system"),
+      ...tls.getCACertificates("bundled"),
+      ...tls.getCACertificates("extra"),
+    ];
+    if (certificates.length > 0) tls.setDefaultCACertificates([...new Set(certificates)]);
+  } catch {
+    // Older Node builds may not expose system CA management. The fetch error below
+    // will include the concrete TLS/network cause and the manual workaround.
+  }
+}
+
+function formatProviderFetchError(provider, error) {
+  const cause = error?.cause;
+  const causeCode = cause?.code ? `${cause.code}: ` : "";
+  const causeMessage = cause?.message || "";
+  const details = `${error?.message || "fetch failed"}${causeMessage ? ` (${causeCode}${causeMessage})` : ""}`;
+  if (/SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT|CERT_/i.test(`${cause?.code || ""} ${causeMessage}`)) {
+    return `${provider} network error: ${details}\nNode не доверяет цепочке сертификатов провайдера. CLI пробует использовать системные сертификаты ОС автоматически; если ошибка повторяется, обновите Node.js или запустите CLI с NODE_OPTIONS=--use-system-ca.`;
+  }
+  return `${provider} network error: ${details}`;
 }
 
 function getAiNetworkMode(config = {}) {
