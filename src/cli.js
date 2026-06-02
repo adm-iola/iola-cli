@@ -15,6 +15,8 @@ import { inflateRawSync, inflateSync } from "node:zlib";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
+const AI_RELAY_BASE_URL = process.env.IOLA_AI_RELAY_BASE_URL || `${API_BASE_URL}/ai/relay`;
+const AI_NETWORK_MODE = process.env.IOLA_AI_NETWORK_MODE || "";
 const MIN_NODE_VERSION = "22.5.0";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -121,6 +123,7 @@ const DEFAULT_AI_CONFIG = {
   api: {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
     mcpBaseUrl: "https://apiiola.yasg.ru",
+    aiRelayBaseUrl: "https://apiiola.yasg.ru/api/v1/ai/relay",
   },
   ai: {
     activeProfile: "local",
@@ -140,11 +143,13 @@ const DEFAULT_AI_CONFIG = {
         provider: "openai",
         model: "gpt-4.1-mini",
         baseUrl: "https://api.openai.com/v1",
+        networkMode: "gateway",
       },
       openrouter: {
         provider: "openrouter",
         model: "openai/gpt-4.1-mini",
         baseUrl: "https://openrouter.ai/api/v1",
+        networkMode: "gateway",
       },
       codex: {
         provider: "codex",
@@ -625,6 +630,8 @@ Usage:
 Environment:
   IOLA_API_BASE_URL   default: ${API_BASE_URL}
   IOLA_MCP_BASE_URL   default: ${MCP_BASE_URL}
+  IOLA_AI_RELAY_BASE_URL default: ${AI_RELAY_BASE_URL}
+  IOLA_AI_NETWORK_MODE direct|gateway|auto
 
 Requirements:
   Node.js >= ${MIN_NODE_VERSION}
@@ -4327,6 +4334,13 @@ async function listAiModels(provider) {
     if (!apiKey) {
       throw new Error("OpenAI API key не найден. Выполните iola ai key set openai.");
     }
+    const relayConfig = await getApiProviderNetworkConfig("openai");
+    if (getAiNetworkMode(relayConfig) === "gateway") {
+      const payload = await callAiRelayModels(relayConfig, apiKey, "OpenAI");
+      return (payload.data || [])
+        .map((model) => ({ id: model.id, provider: "openai", note: model.owned_by || "" }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    }
     const response = await fetch("https://api.openai.com/v1/models", {
       headers: { authorization: `Bearer ${apiKey}` },
     });
@@ -4342,6 +4356,18 @@ async function listAiModels(provider) {
   }
 
   if (provider === "openrouter") {
+    const apiKey = await getApiKey("openrouter");
+    const relayConfig = await getApiProviderNetworkConfig("openrouter");
+    if (apiKey && getAiNetworkMode(relayConfig) === "gateway") {
+      const payload = await callAiRelayModels(relayConfig, apiKey, "OpenRouter");
+      return (payload.data || [])
+        .map((model) => ({
+          id: model.id,
+          provider: "openrouter",
+          note: model.name || "",
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    }
     const response = await fetch("https://openrouter.ai/api/v1/models", {
       headers: { accept: "application/json" },
     });
@@ -4369,6 +4395,16 @@ async function listAiModels(provider) {
   ];
 }
 
+async function getApiProviderNetworkConfig(provider) {
+  const config = await loadConfig();
+  const profile = config.ai.profiles?.[provider] || DEFAULT_AI_CONFIG.ai.profiles[provider] || {};
+  return {
+    provider,
+    ...profile,
+    aiRelayBaseUrl: profile.aiRelayBaseUrl || config.api?.aiRelayBaseUrl || AI_RELAY_BASE_URL,
+  };
+}
+
 function getRecommendedOllamaModels(notePrefix = "recommended") {
   return [
     { id: IOLA_LOCAL_OLLAMA_MODEL, provider: "ollama", note: `${notePrefix} IOLA default low RAM` },
@@ -4389,7 +4425,9 @@ async function printAiProfiles() {
     provider: profile.provider,
     model: profile.model || "-",
     baseUrl: profile.baseUrl || "-",
-    mode: profile.provider === "codex" ? `sandbox=${profile.sandbox || "read-only"}, approval=${profile.approval || "never"}` : "-",
+    mode: profile.provider === "codex"
+      ? `sandbox=${profile.sandbox || "read-only"}, approval=${profile.approval || "never"}`
+      : (profile.provider === "openai" || profile.provider === "openrouter" ? `network=${getAiNetworkMode(profile)}` : "-"),
   }));
 
   printTable(rows, [
@@ -4511,6 +4549,12 @@ function buildProfileFromOptions(provider, options) {
 
   if (options["base-url"]) {
     profile.baseUrl = options["base-url"];
+  }
+  if (options["network-mode"]) {
+    profile.networkMode = validateAiNetworkMode(options["network-mode"]);
+  }
+  if (options["relay-url"]) {
+    profile.aiRelayBaseUrl = options["relay-url"];
   }
 
   if (provider === "iola") {
@@ -6473,6 +6517,8 @@ function resolveAiProfile(config, options = {}) {
     provider,
     model: options.model || activeProfile.model || config.ai.model,
     baseUrl: options["base-url"] || activeProfile.baseUrl || config.ai.baseUrl,
+    aiRelayBaseUrl: options["relay-url"] || activeProfile.aiRelayBaseUrl || config.api?.aiRelayBaseUrl || AI_RELAY_BASE_URL,
+    networkMode: options["network-mode"] || activeProfile.networkMode,
     repo: options.repo || activeProfile.repo,
     modelDir: options["model-dir"] || activeProfile.modelDir,
     temperature: options.temperature || activeProfile.temperature,
@@ -8090,6 +8136,23 @@ async function callOpenAiCompatible(config, messages, apiKey, providerName) {
     throw new Error(`${providerName} API key не найден. Выполните iola ai key set ${providerName === "OpenAI" ? "openai" : "openrouter"} или задайте ${providerName === "OpenAI" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
   }
 
+  const networkMode = getAiNetworkMode(config);
+  if (networkMode === "gateway") {
+    return callAiRelay(config, messages, apiKey, providerName);
+  }
+  if (networkMode === "auto") {
+    try {
+      return await callOpenAiDirect(config, messages, apiKey, providerName);
+    } catch (error) {
+      if (!isNetworkFallbackError(error)) throw error;
+      return callAiRelay(config, messages, apiKey, providerName);
+    }
+  }
+
+  return callOpenAiDirect(config, messages, apiKey, providerName);
+}
+
+async function callOpenAiDirect(config, messages, apiKey, providerName) {
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -8107,11 +8170,78 @@ async function callOpenAiCompatible(config, messages, apiKey, providerName) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`${providerName} request failed: ${response.status} ${response.statusText}\n${text}`);
+    throw new Error(`${providerName} request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, apiKey)}`);
   }
 
   const payload = await response.json();
   return payload.choices?.[0]?.message?.content || "";
+}
+
+async function callAiRelay(config, messages, apiKey, providerName) {
+  const relayBaseUrl = String(config.aiRelayBaseUrl || AI_RELAY_BASE_URL).replace(/\/+$/, "");
+  const response = await fetch(`${relayBaseUrl}/chat`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      provider: providerName === "OpenAI" ? "openai" : "openrouter",
+      api_key: apiKey,
+      model: config.model,
+      messages,
+      temperature: Number(config.temperature ?? 0.2),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${providerName} relay request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, apiKey)}`);
+  }
+
+  const payload = await response.json();
+  return payload.choices?.[0]?.message?.content || "";
+}
+
+async function callAiRelayModels(config, apiKey, providerName) {
+  const relayBaseUrl = String(config.aiRelayBaseUrl || AI_RELAY_BASE_URL).replace(/\/+$/, "");
+  const response = await fetch(`${relayBaseUrl}/models`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      provider: providerName === "OpenAI" ? "openai" : "openrouter",
+      api_key: apiKey,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${providerName} relay models request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text, apiKey)}`);
+  }
+
+  return response.json();
+}
+
+function getAiNetworkMode(config = {}) {
+  return validateAiNetworkMode(AI_NETWORK_MODE || config.networkMode || "gateway");
+}
+
+function validateAiNetworkMode(value) {
+  const mode = String(value || "").trim().toLocaleLowerCase("en-US");
+  if (mode === "direct" || mode === "gateway" || mode === "auto") return mode;
+  throw new Error("AI network mode должен быть direct, gateway или auto.");
+}
+
+function isNetworkFallbackError(error) {
+  const message = String(error?.message || "");
+  return /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|TLS|proxy|network/i.test(message);
+}
+
+function sanitizeSecretFromText(text, secret) {
+  const source = String(text || "");
+  if (!secret) return source;
+  return source.split(secret).join("[redacted]");
 }
 
 async function getApiKey(provider) {
@@ -10433,6 +10563,8 @@ function mergeConfig(base, override) {
 
 function sanitizeConfig(config) {
   const next = JSON.parse(JSON.stringify(config || {}));
+  next.api = next.api || {};
+  next.api.aiRelayBaseUrl = next.api.aiRelayBaseUrl || AI_RELAY_BASE_URL;
   if (next.permissions?.localTools && typeof next.permissions.localTools === "object") {
     for (const tool of Object.keys(next.permissions.localTools)) {
       if (!ALL_TOOL_ALIASES.includes(tool)) {
@@ -10458,6 +10590,11 @@ function sanitizeConfig(config) {
     next.ai.model = IOLA_LOCAL_MODEL;
     next.ai.baseUrl = next.ai.baseUrl || "http://127.0.0.1:11434";
   }
+  for (const profile of Object.values(next.ai?.profiles || {})) {
+    if (profile?.provider === "openai" || profile?.provider === "openrouter") {
+      profile.networkMode = profile.networkMode || "gateway";
+    }
+  }
   return next;
 }
 
@@ -10471,6 +10608,7 @@ function validateConfig(config) {
   for (const [name, profile] of Object.entries(config.ai?.profiles || {})) {
     if (!["iola", "ollama", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
     if (profile.provider !== "codex" && profile.provider !== "iola" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
+    if (profile.networkMode && !["direct", "gateway", "auto"].includes(profile.networkMode)) errors.push(`ai.profiles.${name}.networkMode должен быть direct, gateway или auto`);
   }
   for (const tool of Object.keys(config.permissions?.localTools || {})) {
     if (!ALL_TOOL_ALIASES.includes(tool)) errors.push(`permissions.localTools.${tool} неизвестен`);
