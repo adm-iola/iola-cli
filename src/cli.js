@@ -3315,8 +3315,13 @@ async function setupYandexConnector(args = []) {
   console.log("Выбрать активные функции можно командой /yandex или iola yandex menu.");
   if (clientId || oauthApps.length) {
     if (process.stdin.isTTY && !options["print-url"]) {
+      const secrets = await loadSecrets();
       console.log("Открываю браузер для входа в Яндекс. После авторизации токен сохранится автоматически.");
       for (const app of oauthApps.length ? oauthApps : [{ id: "custom", title: "Yandex Connector", clientId, services: authorizedServices }]) {
+        if (!options.force && hasYandexOAuthAppToken(secrets, app.id)) {
+          console.log(`Авторизация: ${app.title} уже подключена, пропускаю.`);
+          continue;
+        }
         console.log(`Авторизация: ${app.title}`);
         await runYandexBrowserOAuth({ appId: app.id, clientId: app.clientId, services: app.services, redirectUrl });
       }
@@ -3483,11 +3488,16 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
   return new Promise((resolvePromise, reject) => {
     let settled = false;
     const timeoutMs = 180000;
+    const debug = process.env.IOLA_YANDEX_OAUTH_DEBUG === "1";
+    const logDebug = (message) => {
+      if (debug) console.log(`[yandex-oauth] ${message}`);
+    };
     const finish = (token) => {
       if (!token) throw new Error("Yandex OAuth token не получен.");
       if (!settled) {
         settled = true;
         clearTimeout(timer);
+        logDebug("token received");
         resolvePromise(String(token));
       }
     };
@@ -3495,6 +3505,7 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
       try {
         const url = new URL(req.url || "/", redirectUrl);
         if (url.pathname === YANDEX_CONNECTOR_REDIRECT_PATH && req.method === "GET") {
+          logDebug(`GET ${url.pathname}${url.search || ""}`);
           const tokenFromQuery = url.searchParams.get("access_token") || url.searchParams.get("token");
           const errorFromQuery = url.searchParams.get("error") || "";
           if (errorFromQuery) throw new Error(`Yandex OAuth error: ${errorFromQuery}`);
@@ -3536,6 +3547,7 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
           return;
         }
         if (url.pathname === "/yandex/oauth/token" && req.method === "GET") {
+          logDebug(`GET ${url.pathname}${url.search || ""}`);
           const token = url.searchParams.get("token") || url.searchParams.get("access_token");
           const error = url.searchParams.get("error") || "";
           if (error) throw new Error(`Yandex OAuth error: ${error}`);
@@ -3549,11 +3561,18 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
           const chunks = [];
           for await (const chunk of req) chunks.push(chunk);
           const payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+          logDebug(`POST ${url.pathname}; token=${payload.token ? "yes" : "no"} error=${payload.error ? "yes" : "no"}`);
           if (payload.error) throw new Error(`Yandex OAuth error: ${payload.error}`);
-          finish(payload.token);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
-          server.close();
+          res.on("finish", () => {
+            try {
+              finish(payload.token);
+            } catch (error) {
+              if (!settled) reject(error);
+            }
+            server.close();
+          });
           return;
         }
         res.writeHead(404);
@@ -3586,6 +3605,7 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
     server.listen(YANDEX_CONNECTOR_REDIRECT_PORT, YANDEX_CONNECTOR_REDIRECT_HOST, async () => {
       const authUrl = buildYandexOAuthUrl({ clientId, services, redirectUrl });
       console.log(`Если браузер не открылся, откройте ссылку вручную: ${authUrl}`);
+      console.log("Ожидаю возврат токена из браузера...");
       try {
         await openUrl(authUrl);
       } catch (error) {
@@ -3626,6 +3646,13 @@ function getYandexConnectorConnectedAppIds(secrets = {}) {
   if (secrets.yandex?.oauthToken) apps.add("core");
   if (secrets.cloud?.["yandex-disk"]?.token) apps.add("core");
   return apps;
+}
+
+function hasYandexOAuthAppToken(secrets = {}, appId = "core") {
+  if (process.env.YANDEX_OAUTH_TOKEN) return true;
+  if (secrets.yandex?.oauthApps?.[appId]?.token) return true;
+  if (appId === "core" && (secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token)) return true;
+  return false;
 }
 
 function isYandexConnectorFullyConnected(secrets = {}) {
@@ -11510,7 +11537,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append" || arg === "--preserve-active" || arg === "--open" || arg === "--print-url") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--force" || arg === "--append" || arg === "--preserve-active" || arg === "--open" || arg === "--print-url") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;

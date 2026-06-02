@@ -70,7 +70,10 @@ assertIncludes(cliSource, "IOLA_YANDEX_OAUTH_CLIENT_ID", "Yandex setup should us
 assertIncludes(cliSource, "IOLA_YANDEX_ORGANIZER_OAUTH_CLIENT_ID", "Yandex setup should support the organizer OAuth app group");
 assertIncludes(cliSource, "addressbook:all", "Yandex contacts should use the addressbook OAuth scope");
 assertIncludes(cliSource, "Автоматический прием OAuth-токена не сработал", "Yandex OAuth should provide manual token fallback");
+assertIncludes(cliSource, "уже подключена, пропускаю", "Yandex setup should skip already connected OAuth app groups");
+assertIncludes(cliSource, "IOLA_YANDEX_OAUTH_DEBUG", "Yandex OAuth callback should have debug logging");
 assertIncludes(cliSource, "partial (", "Yandex connector status should report partial connections");
+assertIncludes(cliSource, "hasYandexOAuthAppToken", "Yandex setup should detect tokens per OAuth app");
 assertIncludes(cliSource, "isYandexConnectorFullyConnected", "Yandex master status should require all OAuth app tokens");
 assertIncludes(cliSource, "--app", "Yandex token command should persist tokens by OAuth app group");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
