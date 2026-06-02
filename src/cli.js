@@ -40,6 +40,115 @@ const LOCAL_CONFIG_FILE = path.join(PROJECT_IOLA_DIR, "local.json");
 const BROWSER_RUNTIME_DIR = path.join(CONFIG_DIR, "browser-runtime");
 const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "playwright", "package.json");
 const CLOUD_DEFAULT_REMOTE_DIR = "/IOLA";
+const YANDEX_OAUTH_AUTHORIZE_URL = "https://oauth.yandex.ru/authorize";
+const YANDEX_OAUTH_REDIRECT_URL = "https://oauth.yandex.ru/verification_code";
+const YANDEX_CONNECTOR_SERVICES = {
+  identity: {
+    title: "Yandex ID",
+    category: "identity",
+    scope: "login:info login:email",
+    status: "ready",
+    hint: "профиль, логин и email пользователя",
+  },
+  disk: {
+    title: "Яндекс Диск",
+    category: "cloud-storage",
+    scope: "cloud_api:disk.read cloud_api:disk.write cloud_api:disk.info",
+    status: "ready",
+    hint: "файлы, папка /IOLA, загрузка, скачивание, публичные ссылки",
+  },
+  mail: {
+    title: "Яндекс Почта",
+    category: "mail",
+    scope: "mail:imap_full mail:smtp",
+    status: "research",
+    hint: "чтение/поиск писем и отправка только после подтверждения",
+  },
+  calendar: {
+    title: "Яндекс Календарь",
+    category: "calendar",
+    scope: "calendar:all",
+    status: "research",
+    hint: "события и напоминания, протокол требует отдельной проверки",
+  },
+  contacts: {
+    title: "Яндекс Контакты",
+    category: "contacts",
+    scope: "carddav",
+    status: "research",
+    hint: "контакты через CardDAV/360, требует проверки",
+  },
+  wiki: {
+    title: "Yandex Wiki",
+    category: "workspace",
+    scope: "wiki:read wiki:write",
+    status: "research",
+    hint: "страницы wiki, больше полезно организациям",
+  },
+  tracker: {
+    title: "Yandex Tracker",
+    category: "workspace",
+    scope: "tracker:read tracker:write",
+    status: "research",
+    hint: "задачи и обращения, больше полезно организациям",
+  },
+  forms: {
+    title: "Yandex Forms",
+    category: "forms",
+    scope: "forms:read forms:write",
+    status: "research",
+    hint: "формы и опросы, API надо подтвердить",
+  },
+  docs: {
+    title: "Яндекс Документы / 360",
+    category: "documents",
+    scope: "cloud_api:disk.read cloud_api:disk.write",
+    status: "research",
+    hint: "обычно работает через файлы на Диске",
+  },
+  telemost: {
+    title: "Яндекс Телемост",
+    category: "meetings",
+    scope: "",
+    status: "research",
+    hint: "создание встреч через публичный API надо подтвердить",
+  },
+  cloud: {
+    title: "Yandex Cloud",
+    category: "cloud-platform",
+    scope: "",
+    status: "separate",
+    hint: "YandexGPT, Geocoder, SpeechKit, Vision, IAM и folder ID",
+  },
+  maps: {
+    title: "Яндекс Карты",
+    category: "maps",
+    scope: "",
+    status: "separate",
+    hint: "геокодер, маршруты и ссылки на карты через отдельный API key",
+  },
+  taxi: {
+    title: "Яндекс Go / Такси",
+    category: "mobility",
+    scope: "",
+    status: "backlog",
+    hint: "только подготовка маршрута/deep link, без заказа и оплаты",
+  },
+  market: {
+    title: "Яндекс Маркет",
+    category: "shopping",
+    scope: "",
+    status: "backlog",
+    hint: "только поиск и список покупок, без корзины и оплаты",
+  },
+  delivery: {
+    title: "Яндекс Доставка",
+    category: "delivery",
+    scope: "",
+    status: "backlog",
+    hint: "только подготовка заявки/ссылки, без оформления и оплаты",
+  },
+};
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open", "get_current_date"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
@@ -238,6 +347,14 @@ const DEFAULT_AI_CONFIG = {
       "mailru-cloud": { root: CLOUD_DEFAULT_REMOTE_DIR },
     },
   },
+  yandex: {
+    enabledServices: [],
+    categories: {},
+    oauth: {
+      clientId: "",
+      redirectUrl: YANDEX_OAUTH_REDIRECT_URL,
+    },
+  },
   daemon: {
     host: "127.0.0.1",
     port: DAEMON_PORT,
@@ -399,6 +516,7 @@ const COMMANDS = new Map([
   ["tools", handleTools],
   ["files", handleFiles],
   ["cloud", handleCloud],
+  ["yandex", handleYandex],
   ["archive", handleArchive],
   ["changes", handleChanges],
   ["import", handleImport],
@@ -548,6 +666,7 @@ async function showHelp() {
   iola ai setup                настройка AI-профиля
   iola browser status          браузерный runtime
   iola cloud status            облачные диски
+  iola yandex status           Yandex Connector
   iola mcp status              MCP-подключение
   iola doctor                  диагностика
   iola wiki                    документация
@@ -588,6 +707,7 @@ Usage:
   iola tools list|toolsets|enable|disable|profile
   iola files status|mode|approvals|tree|read|search|write|patch
   iola cloud setup|status|ls|find|upload|download|share|save|backup
+  iola yandex setup|status|services|enable|disable|oauth-url|token
   iola archive doctor|list|test|extract|create|index
   iola changes list|show|apply|discard
   iola import file|folder
@@ -1898,6 +2018,8 @@ async function doctor(args = []) {
       openaiKey: process.env.OPENAI_API_KEY ? "env" : secrets.openai?.apiKey ? "local" : "missing",
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
       yandexGeocoderKey: (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) ? "env" : secrets.yandexGeocoder?.apiKey ? "local" : "missing",
+      yandexConnector: (process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token) ? "local/env" : "missing",
+      yandexServices: config.yandex?.enabledServices?.join(", ") || (secrets.cloud?.["yandex-disk"]?.token ? "disk (legacy cloud token)" : "-"),
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
     },
     skills: {
@@ -3020,6 +3142,296 @@ async function handleCloud(args) {
   iola cloud share /IOLA/local.txt
   iola cloud save --text "Текст" --path /IOLA/notes/note.txt
   iola cloud backup`);
+}
+
+async function handleYandex(args) {
+  const [action = "status", target, ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "services" || action === "list") {
+    printYandexServices();
+    return;
+  }
+
+  if (action === "status" || action === "doctor") {
+    await printYandexConnectorStatus({ check: action === "doctor" || options.check });
+    return;
+  }
+
+  if (action === "setup") {
+    await setupYandexConnector([target, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (action === "enable" || action === "disable") {
+    const services = [target, ...rest].filter((item) => item && !String(item).startsWith("--"));
+    if (services.length === 0) throw new Error("Укажите сервисы. Пример: iola yandex enable disk mail calendar");
+    await updateYandexEnabledServices(services, action === "enable");
+    return;
+  }
+
+  if (action === "oauth-url" || action === "url") {
+    const url = await buildYandexOAuthUrlFromConfig([target, ...rest].filter(Boolean));
+    console.log(url);
+    if (options.open) await openUrl(url);
+    return;
+  }
+
+  if (action === "token") {
+    if (target === "set") {
+      await setYandexConnectorToken(rest);
+      return;
+    }
+    if (target === "delete") {
+      await deleteYandexConnectorToken();
+      return;
+    }
+  }
+
+  if (action === "backlog") {
+    printYandexServices({ status: "backlog" });
+    return;
+  }
+
+  throw new Error(`Команды yandex:
+  iola yandex setup
+  iola yandex status|doctor
+  iola yandex services
+  iola yandex enable disk mail calendar
+  iola yandex disable mail
+  iola yandex oauth-url [disk mail calendar] [--client-id ID] [--open]
+  iola yandex token set
+  iola yandex token delete
+  iola yandex backlog`);
+}
+
+function printYandexServices(options = {}) {
+  const rows = Object.entries(YANDEX_CONNECTOR_SERVICES)
+    .filter(([, service]) => !options.status || service.status === options.status)
+    .map(([id, service]) => ({
+      id,
+      title: service.title,
+      category: service.category,
+      status: service.status,
+      scope: service.scope || "-",
+      hint: service.hint,
+    }));
+  printTable(rows, [
+    ["id", "ID"],
+    ["title", "Сервис"],
+    ["category", "Категория"],
+    ["status", "Статус"],
+    ["scope", "Scope"],
+    ["hint", "Суть"],
+  ]);
+}
+
+async function setupYandexConnector(args = []) {
+  const options = parseOptions(args);
+  const config = await loadConfig();
+  let services = normalizeYandexServiceList(options._);
+
+  if (process.stdin.isTTY && services.length === 0) {
+    console.log("Yandex Connector: выберите функции Яндекса.");
+    printYandexServices();
+    const answer = await askText("Сервисы через запятую [identity,disk]: ");
+    services = normalizeYandexServiceList(answer.trim() ? answer.split(/[,\s]+/) : ["identity", "disk"]);
+  }
+
+  if (services.length === 0) services = ["identity", "disk"];
+  await saveYandexEnabledServices(services);
+
+  const clientId = options["client-id"] || config.yandex?.oauth?.clientId || (process.stdin.isTTY ? (await askText("Yandex OAuth Client ID [Enter - пропустить]: ")).trim() : "");
+  if (clientId) {
+    await saveConfig({
+      yandex: {
+        ...(config.yandex || {}),
+        oauth: { ...(config.yandex?.oauth || {}), clientId, redirectUrl: YANDEX_OAUTH_REDIRECT_URL },
+      },
+    });
+  }
+
+  console.log("Yandex Connector настроен.");
+  console.log(`Включены сервисы: ${services.join(", ")}`);
+  if (clientId) {
+    const url = buildYandexOAuthUrl({ clientId, services });
+    console.log("Откройте ссылку авторизации, получите OAuth-токен и сохраните его командой: iola yandex token set");
+    console.log(url);
+    if (options.open) await openUrl(url);
+  } else {
+    console.log("Client ID не задан. Создайте OAuth-приложение Яндекса и запустите: iola yandex oauth-url --client-id CLIENT_ID");
+  }
+}
+
+async function updateYandexEnabledServices(rawServices, enabled) {
+  const config = await loadConfig();
+  const current = new Set(config.yandex?.enabledServices || []);
+  for (const service of normalizeYandexServiceList(rawServices)) {
+    if (enabled) current.add(service);
+    else current.delete(service);
+  }
+  await saveYandexEnabledServices([...current]);
+  console.log(`Yandex services: ${[...current].join(", ") || "-"}`);
+}
+
+async function saveYandexEnabledServices(services) {
+  const config = await loadConfig();
+  const normalized = normalizeYandexServiceList(services);
+  if (normalized.length > 0 && !normalized.includes("identity")) normalized.unshift("identity");
+  const categories = {};
+  for (const id of normalized) {
+    const meta = YANDEX_CONNECTOR_SERVICES[id];
+    if (meta) categories[meta.category] = [...new Set([...(categories[meta.category] || []), id])];
+  }
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      enabledServices: normalized,
+      categories,
+    },
+  });
+}
+
+async function buildYandexOAuthUrlFromConfig(rawArgs = []) {
+  const options = parseOptions(rawArgs);
+  const config = await loadConfig();
+  const clientId = options["client-id"] || config.yandex?.oauth?.clientId;
+  if (!clientId) throw new Error("Yandex OAuth Client ID не задан. Пример: iola yandex oauth-url disk --client-id CLIENT_ID");
+  const services = normalizeYandexServiceList(options._.length ? options._ : (config.yandex?.enabledServices || ["identity", "disk"]));
+  return buildYandexOAuthUrl({ clientId, services });
+}
+
+function buildYandexOAuthUrl({ clientId, services }) {
+  const scopes = getYandexScopesForServices(services);
+  const url = new URL(YANDEX_OAUTH_AUTHORIZE_URL);
+  url.searchParams.set("response_type", "token");
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", YANDEX_OAUTH_REDIRECT_URL);
+  if (scopes) url.searchParams.set("scope", scopes);
+  return url.toString();
+}
+
+function getYandexScopesForServices(services) {
+  const scopes = new Set();
+  const normalized = normalizeYandexServiceList(services);
+  if (normalized.length > 0 && !normalized.includes("identity")) normalized.unshift("identity");
+  for (const id of normalized) {
+    const raw = YANDEX_CONNECTOR_SERVICES[id]?.scope || "";
+    for (const scope of raw.split(/\s+/).filter(Boolean)) scopes.add(scope);
+  }
+  return [...scopes].join(" ");
+}
+
+async function setYandexConnectorToken(args = []) {
+  const options = parseOptions(args);
+  const token = options.token || (process.stdin.isTTY ? (await askText("Yandex OAuth token: ")).trim() : "");
+  if (!token) throw new Error("OAuth token обязателен.");
+  const secrets = await loadSecrets();
+  secrets.yandex = secrets.yandex || {};
+  secrets.yandex.oauthToken = token;
+  secrets.yandex.updatedAt = new Date().toISOString();
+  secrets.cloud = secrets.cloud || {};
+  secrets.cloud["yandex-disk"] = { token };
+  await saveSecrets(secrets);
+  const config = await loadConfig();
+  await saveConfig({ cloud: { ...(config.cloud || {}), activeProvider: "yandex-disk" } });
+  console.log(`Yandex OAuth token сохранен локально: ${SECRETS_FILE}`);
+  console.log("Токен также подключен к cloud provider yandex-disk.");
+}
+
+async function deleteYandexConnectorToken() {
+  const secrets = await loadSecrets();
+  delete secrets.yandex;
+  if (secrets.cloud?.["yandex-disk"]) delete secrets.cloud["yandex-disk"];
+  if (secrets.cloud && Object.keys(secrets.cloud).length === 0) delete secrets.cloud;
+  await saveSecrets(secrets);
+  console.log("Yandex Connector token удален. Токен Яндекс Диска в cloud тоже удален.");
+}
+
+async function printYandexConnectorStatus(options = {}) {
+  const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
+  const enabled = config.yandex?.enabledServices || [];
+  const legacyDiskToken = Boolean(secrets.cloud?.["yandex-disk"]?.token && !secrets.yandex?.oauthToken);
+  const token = process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token || "";
+  const rows = Object.entries(YANDEX_CONNECTOR_SERVICES).map(([id, service]) => ({
+    id,
+    enabled: enabled.includes(id) ? "yes" : (legacyDiskToken && id === "disk" ? "legacy" : "no"),
+    category: service.category,
+    status: service.status,
+    token: service.scope && (enabled.includes(id) || (legacyDiskToken && id === "disk")) ? (token ? "local/env" : "missing") : "-",
+    title: service.title,
+  }));
+  printTable(rows, [
+    ["id", "ID"],
+    ["enabled", "Вкл"],
+    ["category", "Категория"],
+    ["status", "Статус"],
+    ["token", "Токен"],
+    ["title", "Сервис"],
+  ]);
+  if (options.check && token) {
+    const profile = await yandexUserInfo(token).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+    console.log("");
+    if (profile.error) console.log(`Yandex ID check: ${profile.error}`);
+    else printKeyValue({
+      login: profile.login || "-",
+      displayName: profile.display_name || profile.real_name || "-",
+      defaultEmail: profile.default_email || "-",
+    });
+  }
+}
+
+async function yandexUserInfo(token) {
+  const response = await fetch("https://login.yandex.ru/info?format=json", {
+    headers: { Authorization: `OAuth ${token}` },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Yandex ID недоступен: ${response.status} ${text.slice(0, 200)}`);
+  }
+  return response.json();
+}
+
+function normalizeYandexServiceList(values) {
+  const aliases = {
+    id: "identity",
+    login: "identity",
+    "профиль": "identity",
+    "диск": "disk",
+    "яндекс-диск": "disk",
+    yandexdisk: "disk",
+    "yandex-disk": "disk",
+    "почта": "mail",
+    "календарь": "calendar",
+    "контакты": "contacts",
+    "вики": "wiki",
+    "трекер": "tracker",
+    "формы": "forms",
+    "документы": "docs",
+    "телемост": "telemost",
+    "облако": "cloud",
+    "карты": "maps",
+    "такси": "taxi",
+    "маркет": "market",
+    "доставка": "delivery",
+    all: "all",
+    "все": "all",
+  };
+  const result = [];
+  for (const raw of values.flatMap((item) => String(item || "").split(","))) {
+    const normalized = raw.trim().toLocaleLowerCase("ru-RU");
+    if (!normalized) continue;
+    const id = aliases[normalized] || normalized;
+    if (id === "all") {
+      result.push(...Object.keys(YANDEX_CONNECTOR_SERVICES));
+      continue;
+    }
+    if (!YANDEX_CONNECTOR_SERVICES[id]) {
+      throw new Error(`Неизвестный сервис Яндекса: ${raw}. Список: iola yandex services`);
+    }
+    result.push(id);
+  }
+  return [...new Set(result)];
 }
 
 async function setupCloudProvider(providerValue, options = {}) {
@@ -10582,6 +10994,9 @@ async function onboard(args = []) {
       else console.log("Настройка облачного диска пропущена.");
     }
   }
+  if (components.includes("yandex")) {
+    await setupYandexConnector([]);
+  }
   if (components.includes("codex")) {
     await installCodexIfMissing();
     await aiSetup(["codex"]);
@@ -10632,6 +11047,7 @@ async function chooseOnboardComponents(status = null) {
       13: "ollama",
       14: "yandex-geocoder",
       15: "cloud",
+      16: "yandex",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -10644,7 +11060,7 @@ function isOnboardExitAnswer(answer) {
 }
 
 async function getOnboardComponentStatus() {
-  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey, cloudSecrets] = await Promise.all([
+  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey, secrets] = await Promise.all([
     loadConfig(),
     getAiReadiness(),
     getBrowserStatus(),
@@ -10652,8 +11068,9 @@ async function getOnboardComponentStatus() {
     getCommandVersion("codex", ["--version"]),
     getOllamaVersion(),
     getYandexGeocoderKey(),
-    loadSecrets().then((secrets) => secrets.cloud || {}),
+    loadSecrets(),
   ]);
+  const cloudSecrets = secrets.cloud || {};
   const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
   const policyReady = (config.toolsets?.enabled || []).includes("analyst");
   return {
@@ -10672,6 +11089,7 @@ async function getOnboardComponentStatus() {
     browser: browser.installed === "yes",
     "yandex-geocoder": Boolean(yandexGeocoderKey),
     cloud: Object.keys(cloudSecrets).length > 0,
+    yandex: Boolean(secrets.yandex?.oauthToken || config.yandex?.enabledServices?.length),
   };
 }
 
@@ -10692,6 +11110,7 @@ function onboardComponentRows(status) {
     ["13", "ollama", "Ollama", "опциональный локальный runtime"],
     ["14", "yandex-geocoder", "Yandex Geocoder API", "ключ геокодера сохранен или есть в env"],
     ["15", "cloud", "Облачный диск", "Яндекс Диск или Облако Mail.ru"],
+    ["16", "yandex", "Yandex Connector", "единый вход и категории сервисов Яндекса"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -10706,7 +11125,7 @@ function defaultOnboardSelection(status) {
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "yandex-geocoder", 15: "cloud" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "yandex-geocoder", 15: "cloud", 16: "yandex" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -10715,12 +11134,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append" || arg === "--preserve-active") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append" || arg === "--preserve-active" || arg === "--open") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -12618,6 +13037,18 @@ function mergeConfig(base, override) {
         ...(override.cloud?.providers || {}),
       },
     },
+    yandex: {
+      ...base.yandex,
+      ...(override.yandex || {}),
+      oauth: {
+        ...(base.yandex?.oauth || {}),
+        ...(override.yandex?.oauth || {}),
+      },
+      categories: {
+        ...(base.yandex?.categories || {}),
+        ...(override.yandex?.categories || {}),
+      },
+    },
     memory: {
       ...base.memory,
       ...(override.memory || {}),
@@ -12730,6 +13161,9 @@ function validateConfig(config) {
   if (config.cloud?.activeProvider && !["yandex-disk", "mailru-cloud"].includes(config.cloud.activeProvider)) {
     errors.push(`cloud.activeProvider неизвестен: ${config.cloud.activeProvider}`);
   }
+  for (const service of config.yandex?.enabledServices || []) {
+    if (!YANDEX_CONNECTOR_SERVICES[service]) errors.push(`yandex.enabledServices содержит неизвестный сервис: ${service}`);
+  }
   return errors;
 }
 
@@ -12744,6 +13178,7 @@ function configSchema() {
       toolsets: { available: Object.keys(TOOLSETS) },
       files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },
       cloud: { providers: ["yandex-disk", "mailru-cloud"], root: CLOUD_DEFAULT_REMOTE_DIR },
+      yandex: { services: Object.keys(YANDEX_CONNECTOR_SERVICES), statuses: ["ready", "research", "separate", "backlog"] },
       skills: { enabled: "array of skill names" },
       daemon: { host: "127.0.0.1", port: DAEMON_PORT },
     },

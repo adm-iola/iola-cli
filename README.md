@@ -188,6 +188,18 @@ iola cloud backup
 
 Инструкция: [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски).
 
+Yandex Connector объединяет пользовательские сервисы Яндекса в категории:
+
+```bash
+iola yandex services
+iola yandex setup
+iola yandex status
+```
+
+Первый контур: Yandex ID и Яндекс Диск. Почта, календарь, контакты, Wiki, Tracker, Forms и документы 360 заложены как категории для проверки. Такси, Маркет и Доставка записаны в backlog только как сценарии подготовки ссылки/маршрута/списка без заказа и оплаты.
+
+Инструкция: [Yandex Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Connector).
+
 Зарубежные API-ключи:
 
 - OpenAI Platform: регистрация `https://platform.openai.com/`, ключи `https://platform.openai.com/api-keys`;
@@ -215,6 +227,7 @@ iola version --check
 - [Мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Мастер-настройки)
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
 - [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key)
+- [Yandex Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Connector)
 - [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски)
 - [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
@@ -236,6 +249,7 @@ iola version --check
 - поиск и выгрузка открытых данных;
 - локальная SQLite-БД, история, сессии и FTS-поиск;
 - AI-профили для IOLA local, Ollama, YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
+- Yandex Connector: единая точка подключения пользовательских сервисов Яндекса с локальным хранением OAuth-токена;
 - локальный tool-agent для модели IOLA с tools `search_data`, `search_entities`, `resolve_entity_field`, `get_card`, `export_report`, `file_read`, `browser_open`;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - личные облачные диски: Яндекс Диск и Облако Mail.ru для сохранения отчетов, backup и документов;
