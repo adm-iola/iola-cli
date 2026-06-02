@@ -4795,8 +4795,8 @@ async function chooseModelTarget() {
 
 async function openModelTargetMenu(target) {
   if (target === "local") {
-    const model = await chooseAiModel("iola");
-    if (model) await switchModelTarget("local", model);
+    const selection = await chooseLocalModel();
+    if (selection?.model) await switchModelTarget(selection.provider, selection.model);
     return;
   }
 
@@ -4843,6 +4843,37 @@ async function getDefaultApiProviderForModelSwitch() {
   if (activeProfile?.provider === "openai" || activeProfile?.provider === "openrouter") return activeProfile.provider;
   const apiProfile = Object.values(config.ai.profiles || {}).find((profile) => profile.provider === "openai" || profile.provider === "openrouter");
   return apiProfile?.provider || "openai";
+}
+
+async function chooseLocalModel() {
+  const models = await listAiModels("ollama");
+  const choices = [
+    { id: IOLA_LOCAL_MODEL, provider: "iola", label: `${IOLA_LOCAL_MODEL} - IOLA local router` },
+    ...models
+      .filter((model) => model.id !== IOLA_LOCAL_MODEL)
+      .map((model) => ({
+        id: model.id,
+        provider: "ollama",
+        label: `${model.id}${model.note ? ` - ${model.note}` : ""}`,
+      })),
+    { id: "__manual__", provider: "ollama", label: "Другая Ollama-модель: ввести имя вручную" },
+  ].filter((item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index);
+
+  console.log("Выберите локальную модель:");
+  choices.forEach((choice, index) => console.log(`  ${index + 1}. ${choice.label}`));
+  console.log("  0. Отмена");
+
+  const answer = Number(await askText("Номер: "));
+  const selected = choices[answer - 1];
+  if (!selected) return null;
+
+  if (selected.id === "__manual__") {
+    const model = (await askText("Имя Ollama-модели, например qwen3:4b: ")).trim();
+    if (!model) return null;
+    return { provider: "ollama", model };
+  }
+
+  return { provider: selected.provider, model: selected.id };
 }
 
 async function chooseAiModel(provider) {
@@ -4988,7 +5019,9 @@ async function switchModelTarget(target, model) {
     if (!ready) return;
   }
   const profileName = provider === "ollama" || provider === "iola" ? "local" : provider;
-  const currentProfile = config.ai.profiles?.[profileName] || buildProfileFromOptions(provider, { model });
+  const currentProfile = (provider === "ollama" || provider === "iola")
+    ? buildProfileFromOptions(provider, { model })
+    : (config.ai.profiles?.[profileName] || buildProfileFromOptions(provider, { model }));
   const profile = {
     ...currentProfile,
     provider,

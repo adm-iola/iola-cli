@@ -55,6 +55,8 @@ assertIncludes(cliSource, "\\x1b[1m$1\\x1b[22m", "AI answer renderer should supp
 assertIncludes(cliSource, "ensureApiKeyForModelSelection", "API model selection should prompt for missing provider keys");
 assertIncludes(cliSource, "isOpenAiTextGenerationModel", "OpenAI model selection should filter technical and legacy models");
 assertIncludes(cliSource, "dedupeDatedOpenAiModels", "OpenAI model selection should hide dated duplicates when aliases exist");
+assertIncludes(cliSource, "chooseLocalModel", "Local model selection should support IOLA and Ollama models");
+assertIncludes(cliSource, "Другая Ollama-модель", "Local model selection should allow manual Ollama model names");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");
