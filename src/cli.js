@@ -4747,6 +4747,15 @@ async function chooseAiModel(provider) {
   return filtered[answer - 1]?.id || "";
 }
 
+async function chooseAndSaveApiModel(provider) {
+  const model = await chooseAiModel(provider);
+  if (!model) {
+    console.log("Модель не выбрана. Оставлена модель по умолчанию.");
+    return;
+  }
+  await switchModelTarget(provider, model);
+}
+
 async function switchModelTarget(target, model) {
   const config = await loadConfig();
   const provider = target === "local" ? "iola" : target;
@@ -4816,6 +4825,8 @@ async function isOllamaModelInstalled(model, loadedConfig = null) {
 
 async function askText(question) {
   if (!process.stdin.isTTY) return "";
+  if (input.isRaw) input.setRawMode(false);
+  input.resume();
   const rl = readline.createInterface({ input, output });
   try {
     return await rl.question(question);
@@ -4850,22 +4861,16 @@ async function setAiKey(provider) {
   }
 
   const envName = provider === "openai" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY";
-  const rl = readline.createInterface({ input, output });
+  const key = (await askText(`Введите ${envName}: `)).trim();
 
-  try {
-    const key = (await rl.question(`Введите ${envName}: `)).trim();
-
-    if (!key) {
-      throw new Error("Ключ пустой, сохранение отменено.");
-    }
-
-    const secrets = await loadSecrets();
-    secrets[provider] = { apiKey: key };
-    await saveSecrets(secrets);
-    console.log(`Ключ ${provider} сохранен локально: ${SECRETS_FILE}`);
-  } finally {
-    rl.close();
+  if (!key) {
+    throw new Error("Ключ пустой, сохранение отменено.");
   }
+
+  const secrets = await loadSecrets();
+  secrets[provider] = { apiKey: key };
+  await saveSecrets(secrets);
+  console.log(`Ключ ${provider} сохранен локально: ${SECRETS_FILE}`);
 }
 
 async function printAiKeyStatus() {
@@ -6147,19 +6152,14 @@ async function chooseAiProvider() {
   console.log("4. Codex/MCP");
   console.log("5. Ollama");
 
-  const rl = readline.createInterface({ input, output });
-  try {
-    const answer = (await rl.question("Введите номер [1]: ")).trim() || "1";
-    return {
-      1: "iola",
-      2: "openai",
-      3: "openrouter",
-      4: "codex",
-      5: "ollama",
-    }[answer] || "iola";
-  } finally {
-    rl.close();
-  }
+  const answer = (await askText("Введите номер [1]: ")).trim() || "1";
+  return {
+    1: "iola",
+    2: "openai",
+    3: "openrouter",
+    4: "codex",
+    5: "ollama",
+  }[answer] || "iola";
 }
 
 async function setupOllama(args) {
@@ -8502,11 +8502,17 @@ async function onboard(args = []) {
   }
   if (components.includes("openai")) {
     await aiSetup(["openai"]);
-    if (process.stdin.isTTY) await setAiKey("openai");
+    if (process.stdin.isTTY) {
+      await setAiKey("openai");
+      await chooseAndSaveApiModel("openai");
+    }
   }
   if (components.includes("openrouter")) {
     await aiSetup(["openrouter"]);
-    if (process.stdin.isTTY) await setAiKey("openrouter");
+    if (process.stdin.isTTY) {
+      await setAiKey("openrouter");
+      await chooseAndSaveApiModel("openrouter");
+    }
   }
   if (components.includes("codex")) {
     await installCodexIfMissing();
