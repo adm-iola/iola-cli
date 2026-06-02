@@ -2948,6 +2948,14 @@ async function handleCloud(args) {
     return;
   }
 
+  if (action === "mkdir" || action === "create-folder") {
+    const provider = await getCloudProvider(options.provider);
+    const remotePath = target || `${cloudRootForProvider(provider)}/Новая папка`;
+    const result = await cloudCreateFolder(provider, remotePath);
+    printKeyValue(result);
+    return;
+  }
+
   if (action === "upload") {
     if (!target) throw new Error('Пример: iola cloud upload report.md /IOLA/reports/report.md');
     const provider = await getCloudProvider(options.provider);
@@ -3004,6 +3012,7 @@ async function handleCloud(args) {
   iola cloud status|doctor
   iola cloud use yandex-disk
   iola cloud ls /IOLA
+  iola cloud mkdir /IOLA/Фото
   iola cloud find "справка" --path /IOLA
   iola cloud upload local.txt /IOLA/local.txt
   iola cloud download /IOLA/local.txt ./local.txt
@@ -3112,6 +3121,18 @@ async function cloudFind(provider, query, options = {}) {
   if (provider === "mailru-cloud") {
     const rows = await mailruCloudList(options.path || CLOUD_DEFAULT_REMOTE_DIR);
     return rows.filter((row) => normalizeGeoText(`${row.name} ${row.path}`).includes(normalizeGeoText(query))).slice(0, Number(options.limit || 50));
+  }
+  throw new Error(`Провайдер не поддерживается: ${provider}`);
+}
+
+async function cloudCreateFolder(provider, remotePath) {
+  if (provider === "yandex-disk") {
+    await ensureYandexDiskDir(remotePath, { allowExisting: true });
+    return { provider, path: normalizeYandexDiskPath(remotePath), status: "created-or-exists" };
+  }
+  if (provider === "mailru-cloud") {
+    await ensureMailruCloudDir(remotePath);
+    return { provider, path: remotePath, status: "created-or-exists" };
   }
   throw new Error(`Провайдер не поддерживается: ${provider}`);
 }
@@ -7873,6 +7894,20 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
+  const cloudAnswer = await buildCloudDirectAnswer(question);
+  if (cloudAnswer) {
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: cloudAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, cloudAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: cloudAnswer.length, sessionId, direct: true, cloud: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, cloudAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(cloudAnswer);
+    return cloudAnswer;
+  }
   const geoAnswer = await buildGeoDirectAnswer(question);
   if (geoAnswer) {
     if (historyEnabled) {
@@ -7971,6 +8006,119 @@ async function buildDirectDataAnswer(question, dataContext) {
     ...lines,
     `Источник: слой ${item.layer}, ${name}, ИНН ${item.inn || "-"}.`,
   ].join("\n");
+}
+
+async function buildCloudDirectAnswer(question) {
+  if (!isCloudQuestion(question)) return "";
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  try {
+    const provider = await getCloudProvider();
+    if (/(созда|сдела|добав).{0,30}(папк|директор)/iu.test(normalized) || /(папк|директор).{0,30}(созда|сдела|добав)/iu.test(normalized)) {
+      const folderName = extractCloudFolderName(question) || "Новая папка";
+      const remotePath = normalizeCloudUserPath(folderName, provider);
+      const result = await cloudCreateFolder(provider, remotePath);
+      return `Папка создана или уже была на облачном диске: ${result.path}`;
+    }
+
+    if (/(покажи|список|что.+лежит|файлы|папки)/iu.test(normalized)) {
+      const remotePath = extractCloudPath(question) || cloudRootForProvider(provider);
+      const rows = await cloudList(provider, normalizeCloudUserPath(remotePath, provider));
+      if (rows.length === 0) return `В папке ${normalizeCloudUserPath(remotePath, provider)} нет данных.`;
+      return [
+        `Облачный диск ${provider}, папка ${normalizeCloudUserPath(remotePath, provider)}:`,
+        ...rows.slice(0, 20).map((row, index) => `${index + 1}. ${row.type === "dir" ? "папка" : "файл"} ${row.name} — ${row.path}`),
+      ].join("\n");
+    }
+
+    if (/(найди|поиск|где лежит)/iu.test(normalized)) {
+      const query = cleanupCloudQuery(question);
+      const rows = await cloudFind(provider, query, { path: cloudRootForProvider(provider), limit: 10 });
+      if (rows.length === 0) return `На облачном диске не нашел: ${query}`;
+      return [
+        `Нашел на облачном диске ${provider}:`,
+        ...rows.map((row, index) => `${index + 1}. ${row.name} — ${row.path}`),
+      ].join("\n");
+    }
+
+    if (/(ссылк|поделись|опубликуй)/iu.test(normalized)) {
+      const remotePath = extractCloudPath(question);
+      if (!remotePath) return "Укажите путь к файлу на облачном диске, например: /IOLA/reports/report.md";
+      const result = await cloudShare(provider, normalizeCloudUserPath(remotePath, provider));
+      return `Публичная ссылка: ${result.publicUrl}`;
+    }
+
+    if (/(сохрани|запиши).{0,40}(на яндекс диске|в облак|на диск)/iu.test(normalized)) {
+      const text = cleanupCloudSaveText(question);
+      if (!text) return "Что сохранить на облачный диск?";
+      const remotePath = `${cloudRootForProvider(provider)}/notes/iola-${timestampForFile()}.txt`;
+      const tempPath = path.join(CONFIG_DIR, `cloud-save-${Date.now()}.txt`);
+      await mkdir(CONFIG_DIR, { recursive: true });
+      await writeFile(tempPath, text, "utf8");
+      try {
+        await cloudUpload(provider, tempPath, remotePath, { overwrite: true });
+      } finally {
+        await rm(tempPath, { force: true }).catch(() => {});
+      }
+      return `Сохранил текст на облачный диск: ${remotePath}`;
+    }
+  } catch (error) {
+    return `Не смог выполнить облачный запрос: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return "";
+}
+
+function isCloudQuestion(question) {
+  return /(яндекс.?диск|yandex.?disk|облак|облачн|на диск|с диска|в диск|cloud|mail\.?ru|публичн.*ссылк|поделиться.*файл)/iu.test(String(question || ""));
+}
+
+function normalizeCloudUserPath(value, provider = "yandex-disk") {
+  const root = cloudRootForProvider(provider);
+  let text = String(value || "").trim().replace(/\\/g, "/");
+  text = text.replace(/^["'«»]+|["'«»]+$/gu, "").trim();
+  if (!text) return root;
+  if (text.startsWith("/")) return text;
+  if (normalizeGeoText(text).startsWith(normalizeGeoText(root).replace(/^\//u, ""))) return `/${text.replace(/^\/+/u, "")}`;
+  return `${root.replace(/\/+$/u, "")}/${text.replace(/^\/+/u, "")}`;
+}
+
+function extractCloudFolderName(question) {
+  const text = String(question || "").trim();
+  const match = text.match(/(?:папк[ауи]?|директор(?:ию|ия|ии)?)\s+["'«]?([^"'».,!?]+)["'»]?/iu)
+    || text.match(/(?:названи(?:ем|е)|имя)\s+["'«]?([^"'».,!?]+)["'»]?/iu);
+  if (!match?.[1]) return "";
+  return cleanupCloudObjectName(match[1]);
+}
+
+function extractCloudPath(question) {
+  const text = String(question || "").trim();
+  const pathMatch = text.match(/(?:^|\s)(\/IOLA\/[^\s]+|\/[^\s]+)/iu);
+  if (pathMatch?.[1]) return pathMatch[1];
+  const quoted = text.match(/["«]([^"»]+)["»]/u);
+  if (quoted?.[1]) return quoted[1];
+  const afterFolder = text.match(/(?:папк[аеуы]?|файл[ае]?)\s+([^,.!?]+)/iu);
+  return afterFolder?.[1] ? cleanupCloudObjectName(afterFolder[1]) : "";
+}
+
+function cleanupCloudObjectName(value) {
+  return String(value || "")
+    .replace(/\b(?:на|в|у меня|яндекс.?диск(?:е)?|диск(?:е)?|облак(?:е|о)?|создай|сделай|добавь|покажи)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanupCloudQuery(question) {
+  return String(question || "")
+    .replace(/\b(?:найди|поиск|где лежит|на|в|яндекс.?диск(?:е)?|облак(?:е|о)?|диск(?:е)?|файл|документ)\b/giu, " ")
+    .replace(/[?.!]+$/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanupCloudSaveText(question) {
+  return String(question || "")
+    .replace(/^.*?(?:сохрани|запиши)\s+/iu, "")
+    .replace(/\s+(?:на яндекс диске|в облак[ео]|на диск).*$/iu, "")
+    .trim();
 }
 
 function detectDirectDataFields(normalizedQuestion) {
@@ -8255,6 +8403,11 @@ async function localToolAsk(question, providerConfig, options) {
   if (casualAnswer) {
     if (!options.quiet) console.log(casualAnswer);
     return casualAnswer;
+  }
+  const cloudAnswer = await buildCloudDirectAnswer(question);
+  if (cloudAnswer) {
+    if (!options.quiet) console.log(cloudAnswer);
+    return cloudAnswer;
   }
   const geoAnswer = await buildGeoDirectAnswer(question);
   if (geoAnswer) {
@@ -10809,8 +10962,10 @@ function selectSkillsForPrompt(config, question = "", options = {}) {
   if (enabled.has("local-model")) selected.add("local-model");
   if (enabled.has("open-data") && shouldUseDataContext(question, options)) selected.add("open-data");
   if (enabled.has("geo") && isGeoQuestion(normalized)) selected.add("geo");
+  const cloudQuestion = isCloudQuestion(normalized);
+  if (enabled.has("personal-docs") && cloudQuestion) selected.add("personal-docs");
   if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
-  if (enabled.has("local-files") && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
+  if (enabled.has("local-files") && !cloudQuestion && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
   if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");
   return selected;
 }

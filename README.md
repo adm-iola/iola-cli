@@ -179,6 +179,7 @@ iola geo services "Йошкар-Ола, улица Петрова, 15"
 iola cloud setup yandex-disk
 iola cloud setup mailru-cloud
 iola cloud status
+iola cloud mkdir /IOLA/Фото
 iola cloud find "справка" --path /IOLA
 iola cloud upload report.md /IOLA/reports/report.md
 iola cloud share /IOLA/reports/report.md
