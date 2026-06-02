@@ -9588,7 +9588,7 @@ async function buildYandexDirectAnswer(question, history = []) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   const previousAssistantText = [...(history || [])].reverse().find((item) => item.role === "assistant")?.content || "";
   const mailContext = /Яндекс Почта|Письмо #|\bUID\b|#\d{3,}/iu.test(previousAssistantText);
-  if (!/(яндекс|yandex|почт|письм|календар|контакт|телемост)/iu.test(normalized) && !(/^\s*\d{3,}\s*$/u.test(question) && mailContext)) return "";
+  if (!isYandexServiceQuestion(normalized) && !(/^\s*\d{3,}\s*$/u.test(question) && mailContext)) return "";
   try {
     if (/^\s*\d{3,}\s*$/u.test(question) && mailContext) {
       const uid = extractYandexMailUid(question);
@@ -9597,7 +9597,7 @@ async function buildYandexDirectAnswer(question, history = []) {
       return formatYandexMailRead(row);
     }
 
-    if (/(аккаунт|профил|логин|кто подключен)/iu.test(normalized) && /(яндекс|yandex)/iu.test(normalized)) {
+    if (isYandexIdentityQuestion(normalized)) {
       const profile = await getYandexIdentityProfile();
       return [
         "Подключен Yandex ID:",
@@ -9656,6 +9656,16 @@ async function buildYandexDirectAnswer(question, history = []) {
     return `Не смог выполнить запрос к сервисам Яндекса: ${error instanceof Error ? error.message : String(error)}`;
   }
   return "";
+}
+
+function isYandexServiceQuestion(normalized) {
+  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост)/iu.test(String(normalized || ""));
+}
+
+function isYandexIdentityQuestion(normalized) {
+  const text = String(normalized || "");
+  return /(аккаунт|профил|логин|кто подключен|какой.*подключен|email|e-mail)/iu.test(text)
+    && /(яндекс|яндес|язндекс|язндекс|яндкс|yandex)/iu.test(text);
 }
 
 function cleanupYandexQuery(question) {

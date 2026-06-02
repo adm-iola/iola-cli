@@ -76,6 +76,8 @@ assertIncludes(cliSource, "partial (", "Yandex connector status should report pa
 assertIncludes(cliSource, "hasYandexOAuthAppToken", "Yandex setup should detect tokens per OAuth app");
 assertIncludes(cliSource, "isYandexConnectorFullyConnected", "Yandex master status should require all OAuth app tokens");
 assertIncludes(cliSource, "--app", "Yandex token command should persist tokens by OAuth app group");
+assertIncludes(cliSource, "isYandexIdentityQuestion", "Yandex ID questions should be handled directly");
+assertIncludes(cliSource, "язндекс", "Yandex direct router should tolerate common typos");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
   throw new Error("package files should include the Yandex OAuth icon");
