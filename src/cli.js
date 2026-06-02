@@ -701,6 +701,7 @@ async function startAgent() {
   setTerminalTitle(`iola - ${path.basename(process.cwd()) || process.cwd()}`);
   await showBanner();
   await ensureAgentAiReady();
+  await printActiveAiModelLine();
   console.log("Интерактивный режим. Введите /help для списка команд, /master чтобы запустить мастер настройки, /exit для выхода.");
   await runHooks("SessionStart", { mode: "agent" });
 
@@ -712,6 +713,16 @@ async function startAgent() {
 
   await startAgentReadline();
   await runHooks("SessionEnd", { mode: "agent" });
+}
+
+async function printActiveAiModelLine() {
+  const config = await loadConfig();
+  const name = getActiveProfileName(config);
+  const profile = config.ai.profiles?.[name] || {
+    provider: config.ai.provider,
+    model: config.ai.model,
+  };
+  console.log(`Активная модель: ${name} (${profile.provider || "-"}, ${profile.model || "-"})`);
 }
 
 async function ensureAgentAiReady() {
@@ -4852,15 +4863,36 @@ function normalizeModelMenuTarget(value = "") {
 }
 
 async function chooseModelTarget() {
+  const active = await getActiveAiSummary();
   console.log("Выберите AI-подключение:");
-  console.log("  1. Локальные модели");
-  console.log("  2. Российские AI (YandexGPT/GigaChat)");
-  console.log("  3. API (OpenAI/OpenRouter)");
-  console.log("  4. Codex CLI");
+  console.log(`  1. Локальные модели${active.group === "local" ? " [выбрано]" : ""}`);
+  console.log(`  2. Российские AI (YandexGPT/GigaChat)${active.group === "russian" ? " [выбрано]" : ""}`);
+  console.log(`  3. API (OpenAI/OpenRouter)${active.group === "api" ? " [выбрано]" : ""}`);
+  console.log(`  4. Codex CLI${active.group === "codex" ? " [выбрано]" : ""}`);
   console.log("  0. Отмена");
 
   const answer = await askText("Номер: ");
   return { 1: "local", 2: "russian", 3: "api", 4: "codex" }[answer.trim()] || "";
+}
+
+async function getActiveAiSummary() {
+  const config = await loadConfig();
+  const name = getActiveProfileName(config);
+  const profile = config.ai.profiles?.[name] || {
+    provider: config.ai.provider,
+    model: config.ai.model,
+  };
+  const provider = profile.provider || "";
+  const group = provider === "iola" || provider === "ollama"
+    ? "local"
+    : provider === "yandexgpt" || provider === "gigachat"
+      ? "russian"
+      : provider === "openai" || provider === "openrouter"
+        ? "api"
+        : provider === "codex"
+          ? "codex"
+          : "";
+  return { name, provider, model: profile.model || "", group };
 }
 
 async function openModelTargetMenu(target) {
@@ -4904,9 +4936,10 @@ async function openModelTargetMenu(target) {
 
 async function chooseApiProvider() {
   const config = await loadConfig();
+  const active = await getActiveAiSummary();
   const apiProfiles = Object.entries(config.ai.profiles || {})
     .filter(([, profile]) => profile.provider === "openai" || profile.provider === "openrouter")
-    .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})` }));
+    .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})${active.provider === profile.provider ? " [выбрано]" : ""}` }));
   const choices = [
     ...apiProfiles,
     { id: "openai", label: "OpenAI API" },
@@ -4923,9 +4956,10 @@ async function chooseApiProvider() {
 
 async function chooseRussianProvider() {
   const config = await loadConfig();
+  const active = await getActiveAiSummary();
   const russianProfiles = Object.entries(config.ai.profiles || {})
     .filter(([, profile]) => profile.provider === "yandexgpt" || profile.provider === "gigachat")
-    .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})` }));
+    .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})${active.provider === profile.provider ? " [выбрано]" : ""}` }));
   const choices = [
     ...russianProfiles,
     { id: "yandexgpt", label: "YandexGPT API" },
@@ -4949,15 +4983,16 @@ async function getDefaultApiProviderForModelSwitch() {
 }
 
 async function chooseLocalModel() {
+  const active = await getActiveAiSummary();
   const models = await listAiModels("ollama");
   const choices = [
-    { id: IOLA_LOCAL_MODEL, provider: "iola", label: `${IOLA_LOCAL_MODEL} - IOLA local router` },
+    { id: IOLA_LOCAL_MODEL, provider: "iola", label: `${IOLA_LOCAL_MODEL} - IOLA local router${active.provider === "iola" && active.model === IOLA_LOCAL_MODEL ? " [выбрано]" : ""}` },
     ...models
       .filter((model) => model.id !== IOLA_LOCAL_MODEL)
       .map((model) => ({
         id: model.id,
         provider: "ollama",
-        label: `${model.id}${model.note ? ` - ${model.note}` : ""}`,
+        label: `${model.id}${model.note ? ` - ${model.note}` : ""}${active.provider === "ollama" && active.model === model.id ? " [выбрано]" : ""}`,
       })),
     { id: "__manual__", provider: "ollama", label: "Другая Ollama-модель: ввести имя вручную" },
   ].filter((item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index);
@@ -4980,6 +5015,7 @@ async function chooseLocalModel() {
 }
 
 async function chooseAiModel(provider) {
+  const active = await getActiveAiSummary();
   if (provider === "openrouter") {
     return chooseOpenRouterModel();
   }
@@ -5025,7 +5061,8 @@ async function chooseAiModel(provider) {
   console.log("Выберите модель:");
   filtered.forEach((model, index) => {
     const date = model.releaseDate ? ` (${model.releaseDate})` : "";
-    console.log(`  ${index + 1}. ${model.id}${date}${model.note ? ` - ${model.note}` : ""}`);
+    const selected = active.provider === provider && active.model === model.id ? " [выбрано]" : "";
+    console.log(`  ${index + 1}. ${model.id}${date}${model.note ? ` - ${model.note}` : ""}${selected}`);
   });
   console.log("  0. Отмена");
 
@@ -5034,6 +5071,7 @@ async function chooseAiModel(provider) {
 }
 
 async function chooseOpenRouterModel() {
+  const active = await getActiveAiSummary();
   const ready = await ensureApiKeyForModelSelection("openrouter");
   if (!ready) return "";
 
@@ -5078,7 +5116,8 @@ async function chooseOpenRouterModel() {
     filtered.forEach((model, index) => {
       const date = model.releaseDate || "дата неизвестна";
       const context = model.contextLength ? `, ctx ${formatCompactNumber(model.contextLength)}` : "";
-      console.log(`  ${index + 1}. ${model.id} (${date}${context}) - ${model.note || model.id}`);
+      const selected = active.provider === "openrouter" && active.model === model.id ? " [выбрано]" : "";
+      console.log(`  ${index + 1}. ${model.id} (${date}${context}) - ${model.note || model.id}${selected}`);
     });
     console.log("  0. Назад");
 
