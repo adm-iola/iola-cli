@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binPath = resolve(rootDir, "bin", "iola.js");
 const packageJson = JSON.parse(await readFile(resolve(rootDir, "package.json"), "utf8"));
+const cliSource = await readFile(resolve(rootDir, "src", "cli.js"), "utf8");
 
 function runCli(args) {
   return new Promise((resolvePromise, reject) => {
@@ -44,6 +45,8 @@ if (version !== packageJson.version) {
 const help = await runCli(["--help"]);
 assertIncludes(help, "iola master", "help");
 assertIncludes(help, "iola ask", "help");
+
+assertIncludes(cliSource, "force: Boolean(options.force)", "IOLA setup should not force model reinstall by default");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

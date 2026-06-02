@@ -611,7 +611,7 @@ Usage:
   iola ai models iola|ollama|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
-  iola ai setup iola [--yes]
+  iola ai setup iola [--yes] [--force]
   iola ai setup ollama [--yes] [--model MODEL]
   iola health [--json]
   iola layers [--json]
@@ -2053,7 +2053,7 @@ async function handleAi(args) {
   iola ai models iola|ollama|openai|openrouter|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
-  iola ai setup iola [--yes]
+  iola ai setup iola [--yes] [--force]
   iola ai setup ollama [--yes] [--model MODEL]
   iola ai setup openai [--model MODEL]
   iola ai setup openrouter [--model MODEL]
@@ -6239,7 +6239,7 @@ async function setupIolaLocal(args) {
       ggufFile,
       modelDir,
       model,
-      force: true,
+      force: Boolean(options.force),
       quiet: Boolean(options.quiet),
     });
   } catch (error) {
