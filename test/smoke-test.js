@@ -7,6 +7,7 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const binPath = resolve(rootDir, "bin", "iola.js");
 const packageJson = JSON.parse(await readFile(resolve(rootDir, "package.json"), "utf8"));
 const cliSource = await readFile(resolve(rootDir, "src", "cli.js"), "utf8");
+const postinstallSource = await readFile(resolve(rootDir, "bin", "postinstall.js"), "utf8");
 
 function runCli(args) {
   return new Promise((resolvePromise, reject) => {
@@ -76,6 +77,9 @@ assertNotIncludes(cliSource, "Сервисы через запятую [identity
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
   throw new Error("package files should include the Yandex OAuth icon");
 }
+assertIncludes(postinstallSource, "process.hrtime.bigint()", "postinstall should use a monotonic timer");
+assertIncludes(postinstallSource, "без скачивания и распаковки npm-пакета", "postinstall timing should not imply full npm install time");
+assertIncludes(postinstallSource, "IOLA CLI готова за", "postinstall should print total setup duration");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

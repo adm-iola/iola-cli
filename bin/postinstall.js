@@ -32,25 +32,27 @@ const steps = [
 ];
 
 const canAnimate = process.stdout.isTTY && process.env.CI !== "true";
+const setupStarted = process.hrtime.bigint();
 
 console.log("");
-console.log("IOLA CLI: настройка после установки");
+console.log("IOLA CLI: настройка после установки npm-пакета");
+console.log("Время ниже считает только настройку CLI, без скачивания и распаковки npm-пакета.");
 
 for (let index = 0; index < steps.length; index += 1) {
   const step = steps[index];
   await runStep(step, index + 1, steps.length);
 }
 
-console.log("IOLA CLI готова. Запуск: iola");
+console.log(`IOLA CLI готова за ${formatDuration(elapsedMs(setupStarted))}. Запуск: iola`);
 
 async function runStep(step, current, total) {
-  const started = Date.now();
+  const started = process.hrtime.bigint();
   let frame = 0;
   let lastOutput = "";
   const prefix = `[${current}/${total}] ${step.title}`;
   const render = () => {
     if (!canAnimate) return;
-    const seconds = Math.max(1, Math.round((Date.now() - started) / 1000));
+    const seconds = Math.max(1, Math.floor(elapsedMs(started) / 1000));
     process.stdout.write(`\r${frames[frame]} ${prefix}... ${seconds}s`);
     frame = (frame + 1) % frames.length;
   };
@@ -75,9 +77,9 @@ async function runStep(step, current, total) {
   }
 
   if (canAnimate) {
-    process.stdout.write(`\r✓ ${prefix} готово за ${formatDuration(Date.now() - started)}\n`);
+    process.stdout.write(`\r✓ ${prefix} готово за ${formatDuration(elapsedMs(started))}\n`);
   } else {
-    console.log(`✓ ${prefix} готово за ${formatDuration(Date.now() - started)}`);
+    console.log(`✓ ${prefix} готово за ${formatDuration(elapsedMs(started))}`);
   }
 }
 
@@ -114,9 +116,15 @@ function run(command, args, onOutput) {
   });
 }
 
+function elapsedMs(started) {
+  return Number(process.hrtime.bigint() - started) / 1_000_000;
+}
+
 function formatDuration(ms) {
-  const seconds = Math.max(1, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const seconds = Math.floor(totalSeconds);
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   return `${minutes}m ${rest}s`;
