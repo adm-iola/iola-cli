@@ -164,10 +164,14 @@ const YANDEX_TOOLS = [
   "yandex_disk_unshare",
   "yandex_disk_delete",
   "yandex_mail_status",
+  "yandex_mail_folders",
   "yandex_mail_list",
   "yandex_mail_search",
   "yandex_mail_read",
   "yandex_mail_send",
+  "yandex_mail_reply",
+  "yandex_mail_delete",
+  "yandex_mail_mark",
   "yandex_calendar_status",
   "yandex_calendar_create_event",
   "yandex_calendar_list",
@@ -3949,10 +3953,14 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_disk_unshare") return yandexDiskUnshare(args.remotePath || args.path);
   if (tool === "yandex_disk_delete") return yandexDiskDelete(args.remotePath || args.path, args);
   if (tool === "yandex_mail_status") return yandexMailStatus();
-  if (tool === "yandex_mail_list") return yandexMailList({ mailbox: args.mailbox || "INBOX", limit: args.limit || 10, unread: Boolean(args.unread) });
-  if (tool === "yandex_mail_search") return yandexMailSearch(args.query || "", { mailbox: args.mailbox || "INBOX", limit: args.limit || 20 });
-  if (tool === "yandex_mail_read") return yandexMailRead(args.uid || args.id, { mailbox: args.mailbox || "INBOX" });
+  if (tool === "yandex_mail_folders") return yandexMailFolders();
+  if (tool === "yandex_mail_list") return yandexMailList({ mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), limit: args.limit || 10, unread: Boolean(args.unread) });
+  if (tool === "yandex_mail_search") return yandexMailSearch(args.query || "", { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), limit: args.limit || 20 });
+  if (tool === "yandex_mail_read") return yandexMailRead(args.uid || args.id, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: args.markSeen !== false });
   if (tool === "yandex_mail_send") return yandexMailSend(args);
+  if (tool === "yandex_mail_reply") return yandexMailReply(args);
+  if (tool === "yandex_mail_delete") return yandexMailDelete(args.uid || args.id, { ...args, mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX") });
+  if (tool === "yandex_mail_mark") return yandexMailMark(args.uid || args.id, args.seen !== false && args.unread !== true, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX") });
   if (tool === "yandex_calendar_status") return yandexCalendarStatus();
   if (tool === "yandex_calendar_create_event") return yandexCalendarCreateEvent(args);
   if (tool === "yandex_calendar_list") return yandexCalendarList(args);
@@ -3983,6 +3991,62 @@ async function yandexMailStatus() {
   } finally {
     await imapClose(session);
   }
+}
+
+async function yandexMailFolders() {
+  const { token, email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, token);
+    const text = await imapCommand(session, 'LIST "" "*"');
+    return parseImapListMailboxes(text);
+  } finally {
+    await imapClose(session);
+  }
+}
+
+async function resolveYandexMailbox(value = "INBOX") {
+  const requested = String(value || "INBOX").trim();
+  if (!requested || /^inbox$/iu.test(requested)) return "INBOX";
+  if (!isYandexMailboxAlias(requested)) return requested;
+  const folders = await yandexMailFolders();
+  const target = normalizeYandexMailboxAlias(requested);
+  const found = findYandexMailbox(folders, target);
+  if (found?.name) return found.name;
+  throw new Error(`Папка Яндекс Почты не найдена: ${requested}. Проверьте список папок командой: покажи папки почты.`);
+}
+
+function isYandexMailboxAlias(value) {
+  return /^(sent|send|sentmail|отправ|исход|draft|drafts|чернов|spam|junk|спам|trash|bin|корзин|удален|удалён)$/iu.test(String(value || "").trim());
+}
+
+function normalizeYandexMailboxAlias(value) {
+  const text = String(value || "").toLocaleLowerCase("ru-RU");
+  if (/(sent|send|sentmail|отправ|исход)/iu.test(text)) return "sent";
+  if (/(draft|drafts|чернов)/iu.test(text)) return "drafts";
+  if (/(spam|junk|спам)/iu.test(text)) return "spam";
+  if (/(trash|bin|корзин|удален|удалён)/iu.test(text)) return "trash";
+  return "inbox";
+}
+
+function findYandexMailbox(folders, target) {
+  const special = {
+    sent: "\\Sent",
+    drafts: "\\Drafts",
+    spam: "\\Junk",
+    trash: "\\Trash",
+  }[target];
+  if (special) {
+    const bySpecial = folders.find((folder) => folder.flags.some((flag) => flag.toLocaleLowerCase("en-US") === special.toLocaleLowerCase("en-US")));
+    if (bySpecial) return bySpecial;
+  }
+  const patterns = {
+    sent: /(sent|отправ|исход)/iu,
+    drafts: /(draft|чернов)/iu,
+    spam: /(spam|junk|спам)/iu,
+    trash: /(trash|bin|корзин|удален|удалён)/iu,
+  }[target];
+  return folders.find((folder) => patterns?.test(folder.name) || patterns?.test(folder.displayName || ""));
 }
 
 async function yandexMailList(options = {}) {
@@ -4031,11 +4095,69 @@ async function yandexMailRead(uid, options = {}) {
     await imapAuthenticate(session, email, token);
     await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
     const bodyAccessor = options.markSeen === false ? "BODY.PEEK[TEXT]" : "BODY[TEXT]";
-    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] ${bodyAccessor})`, { timeout: 60000 });
+    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT MESSAGE-ID REFERENCES)] ${bodyAccessor})`, { timeout: 60000 });
     return parseImapFetchSummaries(fetch, { full: true })[0] || { uid, status: "not-found" };
   } finally {
     await imapClose(session);
   }
+}
+
+async function yandexMailMark(uid, seen = true, options = {}) {
+  if (!uid) throw new Error("UID письма обязателен.");
+  const { token, email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, token);
+    const mailbox = options.mailbox || "INBOX";
+    await imapCommand(session, `SELECT ${quoteImapMailbox(mailbox)}`);
+    const command = seen ? "+FLAGS.SILENT" : "-FLAGS.SILENT";
+    await imapCommand(session, `UID STORE ${Number(uid)} ${command} (\\Seen)`);
+    return { uid: Number(uid), mailbox, status: seen ? "seen" : "unseen" };
+  } finally {
+    await imapClose(session);
+  }
+}
+
+async function yandexMailDelete(uid, options = {}) {
+  if (!options.confirm) throw new Error("Для удаления письма нужен аргумент confirm=true.");
+  if (!uid) throw new Error("UID письма обязателен.");
+  const folders = await yandexMailFolders();
+  const trash = options.trashMailbox || findYandexMailbox(folders, "trash")?.name;
+  if (!trash) throw new Error("Не нашел папку корзины в Яндекс Почте. Безопасное удаление невозможно.");
+  const { token, email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, token);
+    const mailbox = options.mailbox || "INBOX";
+    await imapCommand(session, `SELECT ${quoteImapMailbox(mailbox)}`);
+    await imapCommand(session, `UID MOVE ${Number(uid)} ${quoteImapMailbox(trash)}`, { timeout: 60000 });
+    return { uid: Number(uid), from: mailbox, to: trash, status: "moved-to-trash" };
+  } finally {
+    await imapClose(session);
+  }
+}
+
+async function yandexMailReply(args = {}) {
+  if (!args.confirm) throw new Error("Для ответа на письмо нужен аргумент confirm=true.");
+  const uid = args.uid || args.id;
+  const text = args.text || args.body || args.message || "";
+  if (!uid) throw new Error("UID письма обязателен.");
+  if (!String(text).trim()) throw new Error("Текст ответа пустой.");
+  const mailbox = await resolveYandexMailbox(args.mailbox || args.folder || "INBOX");
+  const original = await yandexMailRead(uid, { mailbox, markSeen: true, includeMessageId: true });
+  if (!original || original.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const to = [extractEmailAddress(original.from)].filter(Boolean);
+  if (!to.length) throw new Error("Не удалось определить получателя ответа из поля From.");
+  const subject = /^re:/iu.test(original.subject || "") ? original.subject : `Re: ${original.subject || "(без темы)"}`;
+  const result = await yandexMailSend({
+    to,
+    subject,
+    text,
+    confirm: true,
+    inReplyTo: original.messageId || "",
+    references: original.references || original.messageId || "",
+  });
+  return { ...result, replyToUid: Number(uid), originalFrom: original.from };
 }
 
 async function yandexMailSend(args = {}) {
@@ -4053,7 +4175,7 @@ async function yandexMailSend(args = {}) {
     await smtpCommand(session, `MAIL FROM:<${email}>`);
     for (const recipient of to) await smtpCommand(session, `RCPT TO:<${recipient}>`);
     await smtpCommand(session, "DATA", { expect: /^354/u });
-    await smtpCommand(session, `${dotStuffSmtpData(buildMimeMessage({ from: email, to, subject, text }))}\r\n.`);
+    await smtpCommand(session, `${dotStuffSmtpData(buildMimeMessage({ from: email, to, subject, text, inReplyTo: args.inReplyTo, references: args.references }))}\r\n.`);
     await smtpCommand(session, "QUIT").catch(() => {});
     return { from: email, to, subject, status: "sent" };
   } finally {
@@ -4065,7 +4187,7 @@ function buildXoauth2(email, token) {
   return Buffer.from(`user=${email}\x01auth=Bearer ${token}\x01\x01`).toString("base64");
 }
 
-function buildMimeMessage({ from, to, subject, text }) {
+function buildMimeMessage({ from, to, subject, text, inReplyTo = "", references = "" }) {
   const encodedSubject = Buffer.from(subject, "utf8").toString("base64");
   const messageIdDomain = String(from || "").split("@")[1] || "localhost";
   const messageId = `${randomUUID()}@${messageIdDomain}`;
@@ -4076,13 +4198,15 @@ function buildMimeMessage({ from, to, subject, text }) {
     `Subject: =?UTF-8?B?${encodedSubject}?=`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${messageId}>`,
+    inReplyTo ? `In-Reply-To: ${inReplyTo}` : "",
+    references ? `References: ${references}` : "",
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
     "Content-Transfer-Encoding: base64",
     "X-Mailer: IOLA CLI",
     "",
     Buffer.from(text.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64").replace(/.{1,76}/g, "$&\r\n").trim(),
-  ].join("\r\n");
+  ].filter((line) => line !== "").join("\r\n");
 }
 
 function dotStuffSmtpData(message) {
@@ -4172,7 +4296,7 @@ async function imapClose(session) {
 }
 
 function quoteImapMailbox(value) {
-  return `"${String(value || "INBOX").replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+  return `"${encodeImapModifiedUtf7(String(value || "INBOX")).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
 }
 
 function parseImapSelect(text) {
@@ -4188,6 +4312,55 @@ function parseImapSearchUids(text) {
     .flatMap((match) => match[1].trim().split(/\s+/).map(Number).filter(Boolean));
 }
 
+function parseImapListMailboxes(text) {
+  return String(text || "")
+    .split(/\r?\n/u)
+    .map((line) => {
+      const match = line.match(/^\* LIST \(([^)]*)\) (?:"([^"]*)"|NIL) (?:"((?:\\"|[^"])*)"|(.+))$/iu);
+      if (!match) return null;
+      const flags = [...match[1].matchAll(/\\[^\s)]+/gu)].map((item) => item[0]);
+      const delimiter = match[2] || "";
+      const rawName = (match[3] || match[4] || "").trim();
+      const name = decodeImapModifiedUtf7(rawName.replace(/\\"/g, "\""));
+      return {
+        name,
+        displayName: name,
+        delimiter,
+        flags,
+        special: flags.find((flag) => /\\(?:Inbox|Sent|Drafts|Junk|Trash)/iu.test(flag)) || "",
+      };
+    })
+    .filter(Boolean);
+}
+
+function decodeImapModifiedUtf7(value) {
+  return String(value || "").replace(/&([^-]*)-/gu, (_, data) => {
+    if (!data) return "&";
+    const base64 = data.replace(/,/g, "/");
+    try {
+      const buffer = Buffer.from(base64, "base64");
+      let decoded = "";
+      for (let index = 0; index + 1 < buffer.length; index += 2) {
+        decoded += String.fromCharCode(buffer.readUInt16BE(index));
+      }
+      return decoded;
+    } catch {
+      return `&${data}-`;
+    }
+  });
+}
+
+function encodeImapModifiedUtf7(value) {
+  return String(value || "").replace(/&/gu, "&-").replace(/[^\x20-\x7e]+/gu, (chunk) => {
+    const bytes = [];
+    for (const char of chunk) {
+      const code = char.charCodeAt(0);
+      bytes.push((code >> 8) & 0xff, code & 0xff);
+    }
+    return `&${Buffer.from(bytes).toString("base64").replace(/\//g, ",").replace(/=+$/u, "")}-`;
+  });
+}
+
 function parseImapFetchSummaries(text, options = {}) {
   const rows = [];
   const chunks = String(text || "").split(/\n(?=\* \d+ FETCH)/u);
@@ -4199,7 +4372,15 @@ function parseImapFetchSummaries(text, options = {}) {
     const from = headers.from || "";
     const date = headers.date || "";
     const body = options.full ? stripMailBody(chunk) : stripMailBody(chunk).slice(0, 800);
-    rows.push({ uid, date, from, subject, snippet: body.replace(/\s+/g, " ").trim().slice(0, options.full ? 12000 : 500) });
+    rows.push({
+      uid,
+      date,
+      from,
+      subject,
+      messageId: headers.messageId || "",
+      references: headers.references || "",
+      snippet: body.replace(/\s+/g, " ").trim().slice(0, options.full ? 12000 : 500),
+    });
   }
   return rows;
 }
@@ -4214,7 +4395,16 @@ function parseMailHeaders(value) {
     date: headerValue("Date"),
     from: headerValue("From"),
     subject: headerValue("Subject"),
+    messageId: headerValue("Message-ID"),
+    references: headerValue("References"),
   };
+}
+
+function extractEmailAddress(value) {
+  const text = String(value || "").trim();
+  return text.match(/<([^<>@\s]+@[^<>@\s]+)>/u)?.[1]
+    || text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu)?.[0]
+    || "";
 }
 
 function decodeMimeHeader(value) {
@@ -9638,12 +9828,38 @@ async function buildYandexDirectAnswer(question, history = []) {
       ].join("\n");
     }
 
-    if (/(почт|письм|email|e-mail)/iu.test(normalized)) {
+    if (mailFollowup || /(почт|письм|email|e-mail|спам|чернов|отправлен|исходящ|корзин)/iu.test(normalized)) {
+      if (/(папк|ящик|mailbox|folder)/iu.test(normalized) && /(покажи|список|какие|есть)/iu.test(normalized)) {
+        const folders = await yandexMailFolders();
+        if (!folders.length) return "Папки Яндекс Почты не найдены.";
+        return ["Папки Яндекс Почты:", ...folders.map((folder, index) => `${index + 1}. ${folder.name}${folder.special ? ` (${folder.special})` : ""}`)].join("\n");
+      }
       if (/(статус|проверь|работает|доступ)/iu.test(normalized)) {
         const result = await yandexMailStatus();
         return `Яндекс Почта подключена: ${result.email}. Входящие: ${result.inbox?.exists ?? "-"}.`;
       }
-      if (/(отправ|напиши|пошли)/iu.test(normalized)) {
+      if (/(ответь|ответить|напиши\s+ответ)/iu.test(normalized)) {
+        const reply = parseYandexMailReplyRequest(question, previousAssistantText);
+        if (!reply.uid || !reply.text) return "Для ответа укажите письмо и текст. Пример: ответь на письмо #2382 текст: спасибо, получил.";
+        const result = await yandexMailReply({ ...reply, confirm: true });
+        return `Ответ отправлен на письмо #${result.replyToUid}: ${result.to.join(", ")}. Тема: ${result.subject}.`;
+      }
+      if (/(удали|удалить|перемести\s+в\s+корзин)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Какое письмо удалить? Укажите номер из списка или UID, например: удали письмо #2382.";
+        const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
+        const result = await yandexMailDelete(uid, { mailbox, confirm: true });
+        return `Письмо #${result.uid} перемещено в корзину: ${result.to}.`;
+      }
+      if (/(пометь|отметь|сделай)/iu.test(normalized) && /(прочитан|непрочитан)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Какое письмо пометить? Укажите номер из списка или UID.";
+        const seen = !/непрочитан/iu.test(normalized);
+        const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
+        const result = await yandexMailMark(uid, seen, { mailbox });
+        return `Письмо #${result.uid} помечено как ${seen ? "прочитанное" : "непрочитанное"}.`;
+      }
+      if (/(отправь|отправить|напиши|пошли)/iu.test(normalized) && !/(отправлен|исходящ)/iu.test(normalized)) {
         const draft = parseYandexMailSendRequest(question);
         if (!draft.to.length || !draft.text) {
           return "Для отправки письма укажите получателя и текст. Пример: отправь письмо user@example.com тема: Привет текст: Проверка.";
@@ -9652,9 +9868,10 @@ async function buildYandexDirectAnswer(question, history = []) {
         return `Письмо отправлено: ${result.to.join(", ")}. Тема: ${result.subject}.`;
       }
       if (/(сколько|количеств|есть\s+ли)/iu.test(normalized) && /непрочитан/iu.test(normalized)) {
-        const count = await yandexMailCount({ unread: true });
+        const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
+        const count = await yandexMailCount({ mailbox, unread: true });
         if (!count) return "Непрочитанных писем нет.";
-        const latest = await yandexMailList({ limit: 1, unread: true });
+        const latest = await yandexMailList({ mailbox, limit: 1, unread: true });
         return [
           `Непрочитанных писем: ${count}.`,
           latest[0] ? `Самое свежее: ${formatYandexMailSummary(latest[0])}` : "",
@@ -9664,13 +9881,14 @@ async function buildYandexDirectAnswer(question, history = []) {
         const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText)
           || await getLatestYandexMailUid({ unread: /непрочитан/iu.test(normalized) });
         if (!uid) return "Писем для чтения не найдено.";
-        const row = await yandexMailRead(uid);
+        const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX") });
         if (!row || row.status === "not-found") return `Письмо #${uid} не найдено.`;
         return formatYandexMailRead(row);
       }
+      const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
       const rows = /(найди|поиск)/iu.test(normalized)
-        ? await yandexMailSearch(cleanupYandexQuery(question), { limit: 10 })
-        : await yandexMailList({ limit: 10, unread: /непрочитан/iu.test(normalized) });
+        ? await yandexMailSearch(cleanupYandexQuery(question), { mailbox, limit: 10 })
+        : await yandexMailList({ mailbox, limit: 10, unread: /непрочитан/iu.test(normalized) });
       if (!rows.length) return "Писем по запросу не найдено.";
       return ["Яндекс Почта:", ...rows.map((row, index) => `${index + 1}. ${formatYandexMailSummary(row)}`)].join("\n");
     }
@@ -9700,7 +9918,7 @@ async function buildYandexDirectAnswer(question, history = []) {
 }
 
 function isYandexServiceQuestion(normalized) {
-  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост)/iu.test(String(normalized || ""));
+  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост|спам|чернов|отправлен|исходящ|корзин)/iu.test(String(normalized || ""));
 }
 
 function isYandexIdentityQuestion(normalized) {
@@ -9712,7 +9930,8 @@ function isYandexIdentityQuestion(normalized) {
 function isYandexMailFollowupQuestion(normalized, question) {
   return isYandexMailReadRequest(normalized)
     || isYandexMailSelectionQuestion(question)
-    || /(самое\s+свеж|последн|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(normalized || ""));
+    || /(ответь|ответить|напиши\s+ответ|удали|удалить|перемести\s+в\s+корзин|пометь|отметь|сделай)/iu.test(String(normalized || ""))
+    || /(самое\s+свеж|последн|получи|получить|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(normalized || ""));
 }
 
 function cleanupYandexQuery(question) {
@@ -9723,6 +9942,16 @@ function cleanupYandexQuery(question) {
     .filter((token) => token && !stop.test(token))
     .join(" ")
     .trim();
+}
+
+function extractYandexMailboxName(question) {
+  const text = String(question || "").toLocaleLowerCase("ru-RU");
+  if (/(спам|spam|junk)/iu.test(text)) return "spam";
+  if (/(чернов|draft)/iu.test(text)) return "drafts";
+  if (/(отправлен|исходящ|sent)/iu.test(text)) return "sent";
+  if (/(корзин|удален|удалён|trash|bin)/iu.test(text)) return "trash";
+  const explicit = String(question || "").match(/(?:папк[аиуы]?|mailbox|folder)\s+["'«]?([^"'».,!?]+)["'»]?/iu)?.[1];
+  return explicit ? explicit.trim() : "";
 }
 
 function extractYandexMailUid(question) {
@@ -9743,7 +9972,12 @@ function resolveYandexMailUidFromQuestion(question, previousAssistantText = "") 
     const uid = extractYandexMailUidByOrdinal(previousAssistantText, Number(ordinal));
     if (uid) return uid;
   }
-  if (/(самое\s+свеж|последн|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(question || ""))) {
+  const actionOrdinal = String(question || "").match(/(?:удали|удалить|пометь|отметь|сделай|ответь|ответить)\s+#?(\d{1,3})\.?(?!\d)/iu)?.[1];
+  if (actionOrdinal) {
+    const uid = extractYandexMailUidByOrdinal(previousAssistantText, Number(actionOrdinal));
+    if (uid) return uid;
+  }
+  if (/(самое\s+свеж|последн|получи|получить|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(question || ""))) {
     return extractFirstYandexMailUid(previousAssistantText);
   }
   return 0;
@@ -9764,8 +9998,20 @@ function extractFirstYandexMailUid(text) {
 }
 
 function isYandexMailReadRequest(normalizedQuestion) {
-  return /(^|\s)(прочитай|прочти|открой|раскрой|прочитаем)(\s|$)/iu.test(normalizedQuestion)
+  return /(^|\s)(прочитай|прочти|открой|раскрой|прочитаем|получи|получить)(\s|$)/iu.test(normalizedQuestion)
     || /(покажи\s+содерж|о чем|о чём|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(normalizedQuestion);
+}
+
+function parseYandexMailReplyRequest(question, previousAssistantText = "") {
+  const text = String(question || "").replace(/\s+/g, " ").trim();
+  const uid = resolveYandexMailUidFromQuestion(text, previousAssistantText);
+  const bodyMatch = text.match(/(?:текст|body|сообщение)\s*:\s*(.*)$/iu)
+    || text.match(/(?:ответь|ответить|напиши\s+ответ)(?:\s+на\s+письмо\s+#?\d+|\s+#?\d+)?\s*:?\s*(.*)$/iu);
+  return {
+    uid,
+    text: (bodyMatch?.[1] || "").trim(),
+    mailbox: extractYandexMailboxName(question) || "INBOX",
+  };
 }
 
 async function getLatestYandexMailUid(options = {}) {
@@ -10414,8 +10660,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
-    "Yandex tools: yandex_identity_me {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_save_text {path,text}, yandex_mail_list {limit,unread}, yandex_mail_search {query}, yandex_mail_read {uid}, yandex_calendar_list {start,end}, yandex_contacts_search {query}.",
-    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_delete, yandex_mail_send, yandex_calendar_create_event, yandex_telemost_create_event.",
+    "Yandex tools: yandex_identity_me {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_save_text {path,text}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_calendar_list {start,end}, yandex_contacts_search {query}.",
+    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_delete, yandex_mail_send, yandex_mail_reply, yandex_mail_delete, yandex_calendar_create_event, yandex_telemost_create_event.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
@@ -10484,9 +10730,16 @@ function inferToolPlan(question, options = {}) {
     if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_disk_find", args: { query: question, path: CLOUD_DEFAULT_REMOTE_DIR, limit: 20 } }] };
     return { steps: [{ tool: "yandex_disk_ls", args: { path: CLOUD_DEFAULT_REMOTE_DIR } }] };
   }
-  if (/(почт|письм|email|e-mail)/iu.test(normalized)) {
-    if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_search", args: { query: question, limit: 20 } }] };
-    return { steps: [{ tool: "yandex_mail_list", args: { limit: 10, unread: /непрочитан/iu.test(normalized) } }] };
+  if (/(почт|письм|email|e-mail|спам|чернов|отправлен|исходящ|корзин)/iu.test(normalized)) {
+    const mailbox = extractYandexMailboxName(question) || "INBOX";
+    const uid = extractYandexMailUid(question);
+    if (/(папк|ящик|mailbox|folder)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_folders", args: {} }] };
+    if (/(ответь|ответить|напиши\s+ответ)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_reply", args: { uid, mailbox, text: parseYandexMailReplyRequest(question).text, confirm: true } }] };
+    if (/(удали|удалить|перемести\s+в\s+корзин)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_delete", args: { uid, mailbox, confirm: true } }] };
+    if (/(пометь|отметь|сделай)/iu.test(normalized) && /(прочитан|непрочитан)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_mark", args: { uid, mailbox, seen: !/непрочитан/iu.test(normalized) } }] };
+    if (/(прочитай|прочти|открой|раскрой|получи|получить)/iu.test(normalized) && uid) return { steps: [{ tool: "yandex_mail_read", args: { uid, mailbox } }] };
+    if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_search", args: { mailbox, query: question, limit: 20 } }] };
+    return { steps: [{ tool: "yandex_mail_list", args: { mailbox, limit: 10, unread: /непрочитан/iu.test(normalized) } }] };
   }
   if (/(календар|событи|встреч|телемост)/iu.test(normalized)) {
     return { steps: [{ tool: normalized.includes("телемост") ? "yandex_telemost_create_event" : "yandex_calendar_list", args: { limit: 20 } }] };
@@ -11050,6 +11303,10 @@ function formatToolResult(result, options) {
     if (row.provider === "yandex-disk" && row.publicUrl) return `Публичная ссылка: ${row.publicUrl}`;
     if (row.provider === "yandex-disk" && row.remote) return `Яндекс Диск: ${row.status || "ok"} ${row.remote}`;
     if (row.uid && (row.subject || row.from)) return `Письмо #${row.uid}: ${row.subject || "(без темы)"}${row.from ? `, от ${row.from}` : ""}`;
+    if (row.status === "moved-to-trash") return `Письмо #${row.uid} перемещено в корзину: ${row.to}`;
+    if (row.status === "seen" || row.status === "unseen") return `Письмо #${row.uid}: ${row.status === "seen" ? "прочитано" : "непрочитано"}`;
+    if (row.status === "sent" && row.to) return `Письмо отправлено: ${Array.isArray(row.to) ? row.to.join(", ") : row.to}. Тема: ${row.subject || "-"}`;
+    if (row.special || row.delimiter) return `Папка почты: ${row.name}${row.special ? ` (${row.special})` : ""}`;
     if (row.login || row.defaultEmail) return `Yandex ID: ${row.displayName || row.login || "-"}${row.defaultEmail ? `, ${row.defaultEmail}` : ""}`;
     if (row.title && (row.start || row.end)) return `${row.title}: ${row.start || "-"}${row.end ? ` - ${row.end}` : ""}`;
     if (row.email || row.phone) return formatYandexContact(row);
