@@ -151,7 +151,32 @@ const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open", "get_current_date"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
-const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS];
+const YANDEX_TOOLS = [
+  "yandex_identity_me",
+  "yandex_disk_info",
+  "yandex_disk_ls",
+  "yandex_disk_mkdir",
+  "yandex_disk_find",
+  "yandex_disk_save_text",
+  "yandex_disk_upload",
+  "yandex_disk_download",
+  "yandex_disk_share",
+  "yandex_disk_unshare",
+  "yandex_disk_delete",
+  "yandex_mail_status",
+  "yandex_mail_list",
+  "yandex_mail_search",
+  "yandex_mail_read",
+  "yandex_mail_send",
+  "yandex_calendar_status",
+  "yandex_calendar_create_event",
+  "yandex_calendar_list",
+  "yandex_contacts_status",
+  "yandex_contacts_list",
+  "yandex_contacts_search",
+  "yandex_telemost_create_event",
+];
+const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
@@ -175,6 +200,13 @@ const TOOLSETS = {
   ai: {
     description: "Внешние AI-провайдеры и Codex CLI.",
     permissions: { externalAi: true, codex: true },
+  },
+  yandex: {
+    description: "Сервисы Яндекса через Yandex Connector: ID, Диск, Почта, Календарь, Контакты.",
+    permissions: {
+      externalApi: true,
+      localTools: Object.fromEntries(YANDEX_TOOLS.map((tool) => [tool, true])),
+    },
   },
   "local-files-read": {
     description: "Чтение файлов, дерево папок и поиск внутри workspace.",
@@ -306,6 +338,29 @@ const DEFAULT_AI_CONFIG = {
       export_report: true,
       file_read: false,
       browser_open: true,
+      yandex_identity_me: true,
+      yandex_disk_info: true,
+      yandex_disk_ls: true,
+      yandex_disk_mkdir: true,
+      yandex_disk_find: true,
+      yandex_disk_save_text: true,
+      yandex_disk_upload: false,
+      yandex_disk_download: false,
+      yandex_disk_share: false,
+      yandex_disk_unshare: false,
+      yandex_disk_delete: false,
+      yandex_mail_status: true,
+      yandex_mail_list: true,
+      yandex_mail_search: true,
+      yandex_mail_read: true,
+      yandex_mail_send: false,
+      yandex_calendar_status: true,
+      yandex_calendar_create_event: false,
+      yandex_calendar_list: true,
+      yandex_contacts_status: true,
+      yandex_contacts_list: true,
+      yandex_contacts_search: true,
+      yandex_telemost_create_event: false,
       files_tree: false,
       files_read: false,
       files_search: false,
@@ -322,7 +377,7 @@ const DEFAULT_AI_CONFIG = {
     codex: true,
   },
   toolsets: {
-    enabled: ["data-read", "reports", "sync", "ai"],
+    enabled: ["data-read", "reports", "sync", "ai", "yandex"],
   },
   files: {
     mode: "locked",
@@ -336,7 +391,7 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["education", "open-data", "geo", "personal-docs", "reports", "local-model", "local-files", "browser-agent"],
+    enabled: ["education", "open-data", "geo", "personal-docs", "reports", "local-model", "local-files", "browser-agent", "yandex-services"],
   },
   cloud: {
     activeProvider: "",
@@ -3795,6 +3850,563 @@ async function yandexUserInfo(token) {
   return response.json();
 }
 
+async function getYandexOAuthToken(appId = "core") {
+  if (process.env.YANDEX_OAUTH_TOKEN) return process.env.YANDEX_OAUTH_TOKEN;
+  const secrets = await loadSecrets();
+  return secrets.yandex?.oauthApps?.[appId]?.token
+    || (appId === "core" ? secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token : "")
+    || "";
+}
+
+async function requireYandexOAuthToken(appId = "core", service = "Yandex Connector") {
+  const token = await getYandexOAuthToken(appId);
+  if (!token) throw new Error(`${service} не подключен. Запустите: iola yandex setup`);
+  return token;
+}
+
+async function getYandexIdentityProfile() {
+  const token = await requireYandexOAuthToken("core", "Yandex ID");
+  const profile = await yandexUserInfo(token);
+  return {
+    login: profile.login || "",
+    displayName: profile.display_name || profile.real_name || "",
+    defaultEmail: profile.default_email || profile.default_email_alias || "",
+    emails: profile.emails || [],
+  };
+}
+
+async function yandexDiskInfo() {
+  const payload = await yandexDiskRequest("GET", "/", { query: { fields: "total_space,used_space,trash_size,system_folders" } });
+  return {
+    provider: "yandex-disk",
+    totalSpace: payload.total_space || 0,
+    usedSpace: payload.used_space || 0,
+    trashSize: payload.trash_size || 0,
+  };
+}
+
+async function yandexDiskSaveText(text, remotePath) {
+  if (!text) throw new Error("Текст для сохранения пустой.");
+  const target = remotePath || `${CLOUD_DEFAULT_REMOTE_DIR}/notes/iola-${timestampForFile()}.txt`;
+  const tempPath = path.join(CONFIG_DIR, `yandex-save-${Date.now()}.txt`);
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(tempPath, text, "utf8");
+  try {
+    return await yandexDiskUpload(tempPath, target, { overwrite: true });
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+async function yandexDiskUnshare(remotePath) {
+  await yandexDiskRequest("PUT", "/resources/unpublish", { query: { path: normalizeYandexDiskPath(remotePath) } });
+  return { provider: "yandex-disk", remote: remotePath, status: "unpublished" };
+}
+
+async function yandexDiskDelete(remotePath, options = {}) {
+  if (!options.confirm) throw new Error("Для удаления с Яндекс Диска нужен аргумент confirm=true.");
+  await yandexDiskRequest("DELETE", "/resources", { query: { path: normalizeYandexDiskPath(remotePath), permanently: Boolean(options.permanently) } });
+  return { provider: "yandex-disk", remote: remotePath, status: options.permanently ? "deleted-permanently" : "moved-to-trash" };
+}
+
+async function executeYandexTool(tool, args = {}) {
+  if (tool === "yandex_identity_me") return getYandexIdentityProfile();
+  if (tool === "yandex_disk_info") return yandexDiskInfo();
+  if (tool === "yandex_disk_ls") return yandexDiskList(args.path || args.remotePath || CLOUD_DEFAULT_REMOTE_DIR, { allowMissingRoot: true });
+  if (tool === "yandex_disk_mkdir") return cloudCreateFolder("yandex-disk", args.path || args.remotePath || `${CLOUD_DEFAULT_REMOTE_DIR}/Новая папка`);
+  if (tool === "yandex_disk_find") return yandexDiskFind(args.query || args.name || "", { path: args.path || CLOUD_DEFAULT_REMOTE_DIR, depth: args.depth || 4, limit: args.limit || 20 });
+  if (tool === "yandex_disk_save_text") return yandexDiskSaveText(args.text || args.content || "", args.path || args.remotePath);
+  if (tool === "yandex_disk_upload") return yandexDiskUpload(args.localPath || args.file || args.path, args.remotePath || args.remote || `${CLOUD_DEFAULT_REMOTE_DIR}/${path.basename(args.localPath || args.file || "file.txt")}`, { overwrite: args.overwrite !== false });
+  if (tool === "yandex_disk_download") return yandexDiskDownload(args.remotePath || args.path, args.outputPath || args.output || path.basename(args.remotePath || args.path || "download"));
+  if (tool === "yandex_disk_share") {
+    if (!args.confirm) throw new Error("Для публикации ссылки нужен аргумент confirm=true.");
+    return yandexDiskShare(args.remotePath || args.path);
+  }
+  if (tool === "yandex_disk_unshare") return yandexDiskUnshare(args.remotePath || args.path);
+  if (tool === "yandex_disk_delete") return yandexDiskDelete(args.remotePath || args.path, args);
+  if (tool === "yandex_mail_status") return yandexMailStatus();
+  if (tool === "yandex_mail_list") return yandexMailList({ mailbox: args.mailbox || "INBOX", limit: args.limit || 10, unread: Boolean(args.unread) });
+  if (tool === "yandex_mail_search") return yandexMailSearch(args.query || "", { mailbox: args.mailbox || "INBOX", limit: args.limit || 20 });
+  if (tool === "yandex_mail_read") return yandexMailRead(args.uid || args.id, { mailbox: args.mailbox || "INBOX" });
+  if (tool === "yandex_mail_send") return yandexMailSend(args);
+  if (tool === "yandex_calendar_status") return yandexCalendarStatus();
+  if (tool === "yandex_calendar_create_event") return yandexCalendarCreateEvent(args);
+  if (tool === "yandex_calendar_list") return yandexCalendarList(args);
+  if (tool === "yandex_contacts_status") return yandexContactsStatus();
+  if (tool === "yandex_contacts_list") return yandexContactsList(args);
+  if (tool === "yandex_contacts_search") return yandexContactsSearch(args.query || "", args);
+  if (tool === "yandex_telemost_create_event") return yandexTelemostCreateEvent(args);
+  throw new Error(`Yandex tool неизвестен: ${tool}`);
+}
+
+async function yandexMailCredentials() {
+  const [token, profile] = await Promise.all([
+    requireYandexOAuthToken("core", "Яндекс Почта"),
+    getYandexIdentityProfile(),
+  ]);
+  const email = profile.defaultEmail || profile.emails?.[0] || (profile.login ? `${profile.login}@yandex.ru` : "");
+  if (!email) throw new Error("Не удалось определить email Яндекс Почты.");
+  return { token, email };
+}
+
+async function yandexMailStatus() {
+  const { email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, await requireYandexOAuthToken("core", "Яндекс Почта"));
+    const inbox = await imapCommand(session, "SELECT INBOX");
+    return { email, status: "ok", inbox: parseImapSelect(inbox) };
+  } finally {
+    await imapClose(session);
+  }
+}
+
+async function yandexMailList(options = {}) {
+  const { token, email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, token);
+    await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
+    const criterion = options.unread ? "UNSEEN" : "ALL";
+    const search = await imapCommand(session, `UID SEARCH ${criterion}`);
+    const uids = parseImapSearchUids(search).slice(-Number(options.limit || 10));
+    if (!uids.length) return [];
+    const fetch = await imapCommand(session, `UID FETCH ${uids.join(",")} (UID FLAGS ENVELOPE RFC822.SIZE BODY.PEEK[TEXT]<0.800>)`, { timeout: 45000 });
+    return parseImapFetchSummaries(fetch);
+  } finally {
+    await imapClose(session);
+  }
+}
+
+async function yandexMailSearch(query, options = {}) {
+  const normalized = normalizeGeoText(query);
+  if (!normalized) return yandexMailList(options);
+  const rows = await yandexMailList({ ...options, limit: Math.max(50, Number(options.limit || 20) * 3) });
+  return rows.filter((row) => normalizeGeoText(`${row.from} ${row.subject} ${row.snippet}`).includes(normalized)).slice(0, Number(options.limit || 20));
+}
+
+async function yandexMailRead(uid, options = {}) {
+  if (!uid) throw new Error("UID письма обязателен.");
+  const { token, email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, token);
+    await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
+    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS ENVELOPE RFC822.SIZE BODY.PEEK[])`, { timeout: 60000 });
+    return parseImapFetchSummaries(fetch, { full: true })[0] || { uid, status: "not-found" };
+  } finally {
+    await imapClose(session);
+  }
+}
+
+async function yandexMailSend(args = {}) {
+  if (!args.confirm) throw new Error("Для отправки письма нужен аргумент confirm=true.");
+  const to = Array.isArray(args.to) ? args.to : String(args.to || "").split(/[;,]/).map((item) => item.trim()).filter(Boolean);
+  if (!to.length) throw new Error("Получатель письма не указан.");
+  const subject = args.subject || "Сообщение от IOLA CLI";
+  const text = args.text || args.body || "";
+  if (!text.trim()) throw new Error("Текст письма пустой.");
+  const { token, email } = await yandexMailCredentials();
+  const session = await smtpConnect();
+  try {
+    await smtpCommand(session, `EHLO ${os.hostname() || "iola.local"}`);
+    await smtpCommand(session, `AUTH XOAUTH2 ${buildXoauth2(email, token)}`);
+    await smtpCommand(session, `MAIL FROM:<${email}>`);
+    for (const recipient of to) await smtpCommand(session, `RCPT TO:<${recipient}>`);
+    await smtpCommand(session, "DATA", { expect: /^354/u });
+    await smtpCommand(session, `${buildMimeMessage({ from: email, to, subject, text })}\r\n.`);
+    await smtpCommand(session, "QUIT").catch(() => {});
+    return { from: email, to, subject, status: "sent" };
+  } finally {
+    session.socket.destroy();
+  }
+}
+
+function buildXoauth2(email, token) {
+  return Buffer.from(`user=${email}\x01auth=Bearer ${token}\x01\x01`).toString("base64");
+}
+
+function buildMimeMessage({ from, to, subject, text }) {
+  const encodedSubject = Buffer.from(subject, "utf8").toString("base64");
+  return [
+    `From: ${from}`,
+    `To: ${to.join(", ")}`,
+    `Subject: =?UTF-8?B?${encodedSubject}?=`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(text.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64").replace(/.{1,76}/g, "$&\r\n").trim(),
+  ].join("\r\n");
+}
+
+function imapConnect() {
+  return tlsLineSession("imap.yandex.ru", 993, "* OK");
+}
+
+function smtpConnect() {
+  return tlsLineSession("smtp.yandex.ru", 465, /^220/u);
+}
+
+function tlsLineSession(host, port, greetingPattern) {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({ host, port, servername: host, timeout: 30000 }, () => {});
+    const session = { socket, buffer: "", lines: [], tag: 0 };
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`${host}:${port} connection timeout`));
+    }, 30000);
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      session.buffer += chunk;
+      const parts = session.buffer.split(/\r?\n/);
+      session.buffer = parts.pop() || "";
+      session.lines.push(...parts.filter(Boolean));
+      const text = session.lines.join("\n");
+      const ok = typeof greetingPattern === "string" ? text.includes(greetingPattern) : greetingPattern.test(text);
+      if (ok) {
+        clearTimeout(timer);
+        resolve(session);
+      }
+    });
+    socket.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function imapAuthenticate(session, email, token) {
+  await imapCommand(session, `AUTHENTICATE XOAUTH2 ${buildXoauth2(email, token)}`, { sensitive: token });
+}
+
+function imapCommand(session, command, options = {}) {
+  const tag = `A${++session.tag}`;
+  session.lines = [];
+  return sendTaggedCommand(session, `${tag} ${command}`, new RegExp(`^${tag} (OK|NO|BAD)`, "imu"), {
+    timeout: options.timeout || 30000,
+    sensitive: options.sensitive,
+    ok: new RegExp(`^${tag} OK`, "imu"),
+  });
+}
+
+function smtpCommand(session, command, options = {}) {
+  session.lines = [];
+  return sendTaggedCommand(session, command, options.expect || /^[235]|\n[235]/u, {
+    timeout: options.timeout || 30000,
+    ok: options.expect || /^[235]|\n[235]/u,
+  });
+}
+
+function sendTaggedCommand(session, command, donePattern, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Yandex mail command timeout")), options.timeout || 30000);
+    const onData = () => {
+      const text = session.lines.join("\n");
+      if (!donePattern.test(text)) return;
+      clearTimeout(timer);
+      session.socket.off("data", onData);
+      if (options.ok && !options.ok.test(text)) {
+        reject(new Error(sanitizeSecretFromText(`Yandex mail command failed: ${text}`, options.sensitive)));
+      } else {
+        resolve(text);
+      }
+    };
+    session.socket.on("data", onData);
+    session.socket.write(`${command}\r\n`);
+  });
+}
+
+async function imapClose(session) {
+  await imapCommand(session, "LOGOUT").catch(() => {});
+  session.socket.destroy();
+}
+
+function quoteImapMailbox(value) {
+  return `"${String(value || "INBOX").replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+}
+
+function parseImapSelect(text) {
+  return {
+    exists: Number(text.match(/\* (\d+) EXISTS/iu)?.[1] || 0),
+    recent: Number(text.match(/\* (\d+) RECENT/iu)?.[1] || 0),
+    unseen: Number(text.match(/UNSEEN (\d+)/iu)?.[1] || 0),
+  };
+}
+
+function parseImapSearchUids(text) {
+  return [...String(text).matchAll(/\* SEARCH ([\d\s]+)/giu)]
+    .flatMap((match) => match[1].trim().split(/\s+/).map(Number).filter(Boolean));
+}
+
+function parseImapFetchSummaries(text, options = {}) {
+  const rows = [];
+  const chunks = String(text || "").split(/\n(?=\* \d+ FETCH)/u);
+  for (const chunk of chunks) {
+    const uid = Number(chunk.match(/UID (\d+)/iu)?.[1] || 0);
+    if (!uid) continue;
+    const subject = decodeMimeHeader(chunk.match(/ENVELOPE \([^\n]*?"([^"]*)"/iu)?.[1] || chunk.match(/Subject:\s*([^\r\n]+)/iu)?.[1] || "");
+    const from = decodeMimeHeader(chunk.match(/From:\s*([^\r\n]+)/iu)?.[1] || chunk.match(/NIL NIL "([^"]*)" "([^"]*)"/iu)?.slice(1, 3).filter(Boolean).join("@") || "");
+    const date = chunk.match(/INTERNALDATE "([^"]+)"/iu)?.[1] || chunk.match(/Date:\s*([^\r\n]+)/iu)?.[1] || "";
+    const body = options.full ? stripMailBody(chunk) : stripMailBody(chunk).slice(0, 800);
+    rows.push({ uid, date, from, subject, snippet: body.replace(/\s+/g, " ").trim().slice(0, options.full ? 12000 : 500) });
+  }
+  return rows;
+}
+
+function decodeMimeHeader(value) {
+  return String(value || "").replace(/=\?UTF-8\?B\?([^?]+)\?=/giu, (_, data) => Buffer.from(data, "base64").toString("utf8"));
+}
+
+function stripMailBody(value) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .split(/\n\)/u)[0]
+    .replace(/^[\s\S]*?\n\n/u, "")
+    .replace(/[^\S\n]+/g, " ")
+    .trim();
+}
+
+async function yandexDavRequest(url, token, options = {}) {
+  const response = await fetch(url, {
+    method: options.method || "GET",
+    headers: {
+      Authorization: `OAuth ${token}`,
+      ...(options.xml ? { "content-type": "application/xml; charset=utf-8" } : {}),
+      ...(options.ics ? { "content-type": "text/calendar; charset=utf-8" } : {}),
+      ...(options.headers || {}),
+    },
+    body: options.body,
+    signal: AbortSignal.timeout(Number(options.timeout || 30000)),
+  });
+  const text = await response.text().catch(() => "");
+  if (!response.ok && response.status !== 207) {
+    throw new Error(`Yandex DAV request failed: ${response.status} ${response.statusText}\n${sanitizeSecretFromText(text.slice(0, 1000), token)}`);
+  }
+  return text;
+}
+
+async function yandexCalendarStatus() {
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
+  const url = await yandexCalendarBaseUrl(token);
+  const text = await yandexDavRequest(url, token, { method: "PROPFIND", headers: { Depth: "0" }, xml: true, body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/></d:prop></d:propfind>" });
+  return { status: "ok", url, displayName: stripXmlTags(text.match(/<[^:>]*:?displayname[^>]*>([\s\S]*?)<\/[^:>]*:?displayname>/iu)?.[1] || "") || "calendar" };
+}
+
+async function yandexCalendarCreateEvent(args = {}) {
+  if (!args.confirm) throw new Error("Для создания события в календаре нужен аргумент confirm=true.");
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
+  const baseUrl = await yandexCalendarBaseUrl(token);
+  const uid = `${randomUUID()}@iola-cli`;
+  const start = toIcsDate(args.start || args.date || new Date(Date.now() + 3600000).toISOString());
+  const end = toIcsDate(args.end || new Date(Date.now() + 7200000).toISOString());
+  const summary = args.title || args.summary || "Событие IOLA";
+  const description = args.description || "";
+  const ics = buildIcsEvent({ uid, start, end, summary, description, location: args.location || "" });
+  const url = `${baseUrl}${encodeURIComponent(uid)}.ics`;
+  await yandexDavRequest(url, token, { method: "PUT", ics: true, body: ics, timeout: 45000 });
+  return { status: "created", uid, title: summary, start: args.start || args.date || "", url };
+}
+
+async function yandexCalendarList(args = {}) {
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
+  const baseUrl = await yandexCalendarBaseUrl(token);
+  const start = toIcsDate(args.start || new Date().toISOString());
+  const end = toIcsDate(args.end || new Date(Date.now() + 14 * 86400000).toISOString());
+  const body = `<?xml version="1.0"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${start}" end="${end}"/></c:comp-filter></c:comp-filter></c:filter>
+</c:calendar-query>`;
+  const text = await yandexDavRequest(baseUrl, token, { method: "REPORT", headers: { Depth: "1" }, xml: true, body, timeout: 45000 });
+  return parseIcsEvents(text).slice(0, Number(args.limit || 20));
+}
+
+async function yandexCalendarBaseUrl(token) {
+  const root = "https://caldav.yandex.ru/";
+  const principalXml = await yandexDavRequest(root, token, {
+    method: "PROPFIND",
+    headers: { Depth: "0" },
+    xml: true,
+    body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:current-user-principal/></d:prop></d:propfind>",
+  });
+  const principalHref = extractDavHref(principalXml, "current-user-principal");
+  if (!principalHref) throw new Error("Яндекс Календарь не вернул current-user-principal.");
+  const homeXml = await yandexDavRequest(new URL(principalHref, root).toString(), token, {
+    method: "PROPFIND",
+    headers: { Depth: "0" },
+    xml: true,
+    body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\"><d:prop><c:calendar-home-set/></d:prop></d:propfind>",
+  });
+  const homeHref = extractDavHref(homeXml, "calendar-home-set");
+  if (!homeHref) throw new Error("Яндекс Календарь не вернул calendar-home-set.");
+  const listXml = await yandexDavRequest(new URL(homeHref, root).toString(), token, {
+    method: "PROPFIND",
+    headers: { Depth: "1" },
+    xml: true,
+    body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>",
+  });
+  const calendarHref = extractCalendarCollectionHref(listXml);
+  if (!calendarHref) throw new Error("В Яндекс Календаре не найдена календарная коллекция.");
+  return new URL(calendarHref, root).toString();
+}
+
+async function yandexContactsStatus() {
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Контакты");
+  const url = await yandexContactsBaseUrl(token);
+  const text = await yandexDavRequest(url, token, { method: "PROPFIND", headers: { Depth: "0" }, xml: true, body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/></d:prop></d:propfind>" });
+  return { status: "ok", url, displayName: stripXmlTags(text.match(/<[^:>]*:?displayname[^>]*>([\s\S]*?)<\/[^:>]*:?displayname>/iu)?.[1] || "") || "contacts" };
+}
+
+async function yandexContactsList(args = {}) {
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Контакты");
+  const url = await yandexContactsBaseUrl(token);
+  const body = "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getetag/><d:getcontenttype/></d:prop></d:propfind>";
+  const text = await yandexDavRequest(url, token, { method: "PROPFIND", headers: { Depth: "1" }, xml: true, body, timeout: 45000 });
+  const hrefs = extractVcardHrefs(text).slice(0, Number(args.limit || 50));
+  const rows = [];
+  for (const href of hrefs) {
+    const card = await yandexDavRequest(new URL(href, "https://carddav.yandex.ru/").toString(), token, { method: "GET", timeout: 30000 }).catch(() => "");
+    rows.push(...parseVCards(card));
+  }
+  return rows.slice(0, Number(args.limit || 50));
+}
+
+async function yandexContactsSearch(query, args = {}) {
+  const normalized = normalizeGeoText(query);
+  const rows = await yandexContactsList({ limit: Math.max(100, Number(args.limit || 20) * 4) });
+  if (!normalized) return rows.slice(0, Number(args.limit || 20));
+  return rows.filter((row) => normalizeGeoText(`${row.name} ${row.email} ${row.phone}`).includes(normalized)).slice(0, Number(args.limit || 20));
+}
+
+async function yandexContactsBaseUrl(token) {
+  const root = "https://carddav.yandex.ru/";
+  const principalXml = await yandexDavRequest(root, token, {
+    method: "PROPFIND",
+    headers: { Depth: "0" },
+    xml: true,
+    body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:current-user-principal/></d:prop></d:propfind>",
+  });
+  const principalHref = extractDavHref(principalXml, "current-user-principal");
+  if (!principalHref) throw new Error("Яндекс Контакты не вернули current-user-principal.");
+  const homeXml = await yandexDavRequest(new URL(principalHref, root).toString(), token, {
+    method: "PROPFIND",
+    headers: { Depth: "0" },
+    xml: true,
+    body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\" xmlns:card=\"urn:ietf:params:xml:ns:carddav\"><d:prop><card:addressbook-home-set/></d:prop></d:propfind>",
+  });
+  const homeHref = extractDavHref(homeXml, "addressbook-home-set");
+  if (!homeHref) throw new Error("Яндекс Контакты не вернули addressbook-home-set.");
+  const listXml = await yandexDavRequest(new URL(homeHref, root).toString(), token, {
+    method: "PROPFIND",
+    headers: { Depth: "1" },
+    xml: true,
+    body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>",
+  });
+  const addressBookHref = extractAddressBookCollectionHref(listXml);
+  if (!addressBookHref) throw new Error("В Яндекс Контактах не найдена адресная книга.");
+  return new URL(addressBookHref, root).toString();
+}
+
+async function yandexTelemostCreateEvent(args = {}) {
+  const description = [
+    args.description || "",
+    "",
+    "Телемост: создайте ссылку в Яндекс Календаре, если интерфейс календаря предложит видеовстречу.",
+  ].join("\n").trim();
+  return yandexCalendarCreateEvent({ ...args, description });
+}
+
+function buildIcsEvent({ uid, start, end, summary, description, location }) {
+  const escape = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//IOLA CLI//Yandex Calendar//RU",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${toIcsDate(new Date().toISOString())}`,
+    `DTSTART:${start}`,
+    `DTEND:${end}`,
+    `SUMMARY:${escape(summary)}`,
+    description ? `DESCRIPTION:${escape(description)}` : "",
+    location ? `LOCATION:${escape(location)}` : "",
+    "END:VEVENT",
+    "END:VCALENDAR",
+    "",
+  ].filter(Boolean).join("\r\n");
+}
+
+function toIcsDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error(`Некорректная дата: ${value}`);
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/u, "Z");
+}
+
+function parseIcsEvents(xmlOrIcs) {
+  const decoded = decodeXml(stripXmlTags(xmlOrIcs));
+  return decoded.split("BEGIN:VEVENT").slice(1).map((chunk) => ({
+    uid: chunk.match(/\nUID:([^\n\r]+)/u)?.[1] || "",
+    title: chunk.match(/\nSUMMARY:([^\n\r]+)/u)?.[1] || "",
+    start: chunk.match(/\nDTSTART[^:]*:([^\n\r]+)/u)?.[1] || "",
+    end: chunk.match(/\nDTEND[^:]*:([^\n\r]+)/u)?.[1] || "",
+    location: chunk.match(/\nLOCATION:([^\n\r]+)/u)?.[1] || "",
+  })).filter((item) => item.uid || item.title);
+}
+
+function extractDavHref(xml, propertyName) {
+  const pattern = new RegExp(`<[^:>]*:?${propertyName}[^>]*>[\\s\\S]*?<[^:>]*:?href[^>]*>([\\s\\S]*?)<\\/[^:>]*:?href>`, "iu");
+  const value = String(xml || "").match(pattern)?.[1] || "";
+  return decodeXml(stripXmlTags(value)).trim();
+}
+
+function extractCalendarCollectionHref(xml) {
+  const responses = String(xml || "").split(/<[^:>]*:?response[^>]*>/iu).slice(1);
+  for (const response of responses) {
+    if (!/<[^:>]*:?calendar(?:\s|>|\/)/iu.test(response)) continue;
+    const href = decodeXml(stripXmlTags(response.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/iu)?.[1] || "")).trim();
+    if (href && !/\/(?:inbox|outbox)\//iu.test(href)) return href;
+  }
+  return "";
+}
+
+function extractAddressBookCollectionHref(xml) {
+  const responses = String(xml || "").split(/<[^:>]*:?response[^>]*>/iu).slice(1);
+  for (const response of responses) {
+    if (!/<[^:>]*:?addressbook(?:\s|>|\/)/iu.test(response)) continue;
+    const href = decodeXml(stripXmlTags(response.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/iu)?.[1] || "")).trim();
+    if (href) return href;
+  }
+  return "";
+}
+
+function extractVcardHrefs(xml) {
+  const responses = String(xml || "").split(/<[^:>]*:?response[^>]*>/iu).slice(1);
+  const rows = [];
+  for (const response of responses) {
+    if (!/text\/x-vcard|text\/vcard/iu.test(response)) continue;
+    const href = decodeXml(stripXmlTags(response.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/iu)?.[1] || "")).trim();
+    if (href) rows.push(href);
+  }
+  return rows;
+}
+
+function parseVCards(xmlOrCards) {
+  const decoded = decodeXml(stripXmlTags(xmlOrCards)).replace(/\r/g, "");
+  return decoded.split("BEGIN:VCARD").slice(1).map((chunk) => {
+    const email = chunk.match(/^EMAIL[^:]*:([^\n]+)/mu)?.[1] || "";
+    const phone = chunk.match(/^TEL[^:]*:([^\n]+)/mu)?.[1] || "";
+    const name = cleanVcardName(chunk.match(/^FN:([^\n]+)/mu)?.[1] || chunk.match(/^N:([^\n]+)/mu)?.[1] || "", email);
+    return { name, email, phone };
+  }).filter((item) => item.name || item.email || item.phone);
+}
+
+function cleanVcardName(value, fallback = "") {
+  const text = String(value || "").replace(/;/g, " ").replace(/\s+/g, " ").trim();
+  if (!text || /^[\s;]+$/u.test(String(value || ""))) return fallback || "";
+  return text;
+}
+
 function normalizeYandexServiceList(values) {
   const aliases = {
     id: "identity",
@@ -4871,6 +5483,11 @@ async function handlePermissions(args) {
         permission: `localTools.${tool}`,
         value: permissions.localTools?.[tool] === true ? "allow" : "deny",
         scope: "file-tool",
+      })),
+      ...YANDEX_TOOLS.map((tool) => ({
+        permission: `localTools.${tool}`,
+        value: permissions.localTools?.[tool] === true ? "allow" : "deny",
+        scope: "yandex-tool",
       })),
       { permission: "readFiles", value: permissions.readFiles === true ? "allow" : "deny", scope: "filesystem" },
       { permission: "editFiles", value: permissions.editFiles === true ? "allow" : "deny", scope: "filesystem" },
@@ -8717,6 +9334,20 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
+  const yandexAnswer = await buildYandexDirectAnswer(question);
+  if (yandexAnswer) {
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: yandexAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, yandexAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: yandexAnswer.length, sessionId, direct: true, yandex: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, yandexAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(yandexAnswer);
+    return yandexAnswer;
+  }
   const cloudAnswer = await buildCloudDirectAnswer(question);
   if (cloudAnswer) {
     if (historyEnabled) {
@@ -8829,6 +9460,66 @@ async function buildDirectDataAnswer(question, dataContext) {
     ...lines,
     `Источник: слой ${item.layer}, ${name}, ИНН ${item.inn || "-"}.`,
   ].join("\n");
+}
+
+async function buildYandexDirectAnswer(question) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (!/(яндекс|yandex|почт|письм|календар|контакт|телемост)/iu.test(normalized)) return "";
+  try {
+    if (/(аккаунт|профил|логин|кто подключен)/iu.test(normalized) && /(яндекс|yandex)/iu.test(normalized)) {
+      const profile = await getYandexIdentityProfile();
+      return [
+        "Подключен Yandex ID:",
+        `Логин: ${profile.login || "-"}`,
+        `Имя: ${profile.displayName || "-"}`,
+        `Email: ${profile.defaultEmail || "-"}`,
+      ].join("\n");
+    }
+
+    if (/(почт|письм|email|e-mail)/iu.test(normalized)) {
+      if (/(статус|проверь|работает|доступ)/iu.test(normalized)) {
+        const result = await yandexMailStatus();
+        return `Яндекс Почта подключена: ${result.email}. Входящие: ${result.inbox?.exists ?? "-"}.`;
+      }
+      const rows = /(найди|поиск)/iu.test(normalized)
+        ? await yandexMailSearch(cleanupYandexQuery(question), { limit: 10 })
+        : await yandexMailList({ limit: 10, unread: /непрочитан/iu.test(normalized) });
+      if (!rows.length) return "Писем по запросу не найдено.";
+      return ["Яндекс Почта:", ...rows.map((row, index) => `${index + 1}. #${row.uid} ${row.subject || "(без темы)"}${row.from ? `, от ${row.from}` : ""}`)].join("\n");
+    }
+
+    if (/(календар|событи)/iu.test(normalized) && !/(создай|добавь|запланируй)/iu.test(normalized)) {
+      const rows = await yandexCalendarList({ limit: 10 });
+      if (!rows.length) return "В ближайшие дни событий в Яндекс Календаре не найдено.";
+      return ["Яндекс Календарь:", ...rows.map((row, index) => `${index + 1}. ${row.title || "(без названия)"} — ${row.start || "-"}`)].join("\n");
+    }
+
+    if (/(контакт|адресн)/iu.test(normalized)) {
+      if (/(статус|проверь|работает|доступ)/iu.test(normalized)) {
+        const result = await yandexContactsStatus();
+        return `Яндекс Контакты подключены: ${result.displayName || result.url}.`;
+      }
+      const query = cleanupYandexQuery(question);
+      const rows = /(найди|поиск)/iu.test(normalized) && query
+        ? await yandexContactsSearch(query, { limit: 10 })
+        : await yandexContactsList({ limit: 20 });
+      if (!rows.length) return "Контакты по запросу не найдены.";
+      return ["Яндекс Контакты:", ...rows.map((row, index) => `${index + 1}. ${formatYandexContact(row)}`)].join("\n");
+    }
+  } catch (error) {
+    return `Не смог выполнить запрос к сервисам Яндекса: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return "";
+}
+
+function cleanupYandexQuery(question) {
+  const stop = /^(?:в|на|у|из|для|по|яндекс|yandex|найди|поиск|покажи|посмотри|проверь|почт\p{L}*|письм\p{L}*|календар\p{L}*|контакт\p{L}*)$/iu;
+  return String(question || "")
+    .replace(/[?.!]+$/u, "")
+    .split(/[^\p{L}\p{N}@._+-]+/gu)
+    .filter((token) => token && !stop.test(token))
+    .join(" ")
+    .trim();
 }
 
 async function buildCloudDirectAnswer(question) {
@@ -9227,6 +9918,11 @@ async function localToolAsk(question, providerConfig, options) {
     if (!options.quiet) console.log(casualAnswer);
     return casualAnswer;
   }
+  const yandexAnswer = await buildYandexDirectAnswer(question);
+  if (yandexAnswer) {
+    if (!options.quiet) console.log(yandexAnswer);
+    return yandexAnswer;
+  }
   const cloudAnswer = await buildCloudDirectAnswer(question);
   if (cloudAnswer) {
     if (!options.quiet) console.log(cloudAnswer);
@@ -9435,6 +10131,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
+    "Yandex tools: yandex_identity_me {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_save_text {path,text}, yandex_mail_list {limit,unread}, yandex_mail_search {query}, yandex_mail_read {uid}, yandex_calendar_list {start,end}, yandex_contacts_search {query}.",
+    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_delete, yandex_mail_send, yandex_calendar_create_event, yandex_telemost_create_event.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
@@ -9492,6 +10190,27 @@ function parseJsonObject(text) {
 
 function inferToolPlan(question, options = {}) {
   const normalized = question.toLocaleLowerCase("ru-RU");
+  if (/(яндекс|yandex)/iu.test(normalized) && /(аккаунт|профил|логин|почт[аы]|email|e-mail|кто подключен)/iu.test(normalized)) {
+    return { steps: [{ tool: "yandex_identity_me", args: {} }] };
+  }
+  if (/(яндекс|диск|облак)/iu.test(normalized)) {
+    if (/(создай|сделай).{0,30}папк/iu.test(normalized)) {
+      const folder = question.match(/папк[ауи]?\s+["«]?([^"»\n]+)["»]?/iu)?.[1]?.trim() || "Новая папка";
+      return { steps: [{ tool: "yandex_disk_mkdir", args: { path: `${CLOUD_DEFAULT_REMOTE_DIR}/${folder}` } }] };
+    }
+    if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_disk_find", args: { query: question, path: CLOUD_DEFAULT_REMOTE_DIR, limit: 20 } }] };
+    return { steps: [{ tool: "yandex_disk_ls", args: { path: CLOUD_DEFAULT_REMOTE_DIR } }] };
+  }
+  if (/(почт|письм|email|e-mail)/iu.test(normalized)) {
+    if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_search", args: { query: question, limit: 20 } }] };
+    return { steps: [{ tool: "yandex_mail_list", args: { limit: 10, unread: /непрочитан/iu.test(normalized) } }] };
+  }
+  if (/(календар|событи|встреч|телемост)/iu.test(normalized)) {
+    return { steps: [{ tool: normalized.includes("телемост") ? "yandex_telemost_create_event" : "yandex_calendar_list", args: { limit: 20 } }] };
+  }
+  if (/(контакт|адресн)/iu.test(normalized)) {
+    return { steps: [{ tool: "yandex_contacts_search", args: { query: question, limit: 20 } }] };
+  }
   const dataset = normalized.includes("сад") ? "kindergartens" : normalized.includes("школ") || normalized.includes("лицей") ? "schools" : "all";
   const steps = [];
   if (normalized.includes("без телефона")) {
@@ -9845,7 +10564,10 @@ function formatToolExecutionError(error, plan) {
 }
 
 function availableToolNames(options = {}) {
-  const names = new Set(LOCAL_TOOLS);
+  const names = new Set([...LOCAL_TOOLS, ...YANDEX_TOOLS]);
+  if (options.files) {
+    for (const tool of FILE_TOOLS) names.add(tool);
+  }
   for (const tool of getLocalMcpToolNames()) names.add(tool);
   return [...names];
 }
@@ -9905,6 +10627,11 @@ async function executeToolPlan(plan, options = {}) {
         outputs.push({ tool: step.tool, rows: 1 });
       } else if (step.tool === "get_current_date") {
         current = [getCurrentDateInfo()];
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (YANDEX_TOOLS.includes(step.tool)) {
+        await assertPermission("externalApi");
+        const result = await executeYandexTool(step.tool, step.args || {});
+        current = Array.isArray(result) ? result : [result];
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (String(step.tool || "").startsWith("mcp:")) {
         const result = await callConfiguredMcpTool(step.tool, step.args || {});
@@ -10037,8 +10764,19 @@ function formatToolResult(result, options) {
       return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
     }
     if (row.date && row.time) return `Сегодня ${row.date}, ${row.time}.`;
+    if (row.provider === "yandex-disk" && row.publicUrl) return `Публичная ссылка: ${row.publicUrl}`;
+    if (row.provider === "yandex-disk" && row.remote) return `Яндекс Диск: ${row.status || "ok"} ${row.remote}`;
+    if (row.uid && (row.subject || row.from)) return `Письмо #${row.uid}: ${row.subject || "(без темы)"}${row.from ? `, от ${row.from}` : ""}`;
+    if (row.login || row.defaultEmail) return `Yandex ID: ${row.displayName || row.login || "-"}${row.defaultEmail ? `, ${row.defaultEmail}` : ""}`;
+    if (row.title && (row.start || row.end)) return `${row.title}: ${row.start || "-"}${row.end ? ` - ${row.end}` : ""}`;
+    if (row.email || row.phone) return formatYandexContact(row);
     return `${row.name || row.check || row.inn || "строка"}: ${row.address || row.phone || row.email || row.website || row.count || ""}`;
   }).join("\n");
+}
+
+function formatYandexContact(row) {
+  const name = row.name && row.name !== row.email ? row.name : "";
+  return [name || row.email || "Контакт", name && row.email ? row.email : "", row.phone || ""].filter(Boolean).join(", ");
 }
 
 function applyRuntimeConfig(target, value) {
@@ -11794,6 +12532,7 @@ function selectSkillsForPrompt(config, question = "", options = {}) {
   if (enabled.has("geo") && isGeoQuestion(normalized)) selected.add("geo");
   const cloudQuestion = isCloudQuestion(normalized);
   if (enabled.has("personal-docs") && cloudQuestion) selected.add("personal-docs");
+  if (enabled.has("yandex-services") && /(яндекс|диск|почт|письм|календар|контакт|телемост|облако)/iu.test(normalized)) selected.add("yandex-services");
   if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
   if (enabled.has("local-files") && !cloudQuestion && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
   if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");
@@ -13522,6 +14261,12 @@ function sanitizeConfig(config) {
   }
   if (Array.isArray(next.yandex?.authorizedServices)) {
     next.yandex.authorizedServices = next.yandex.authorizedServices.filter((service) => Boolean(YANDEX_CONNECTOR_SERVICES[service]));
+  }
+  if (Array.isArray(next.yandex?.enabledServices) && next.yandex.enabledServices.length > 0) {
+    next.toolsets = next.toolsets || {};
+    next.toolsets.enabled = [...new Set([...(next.toolsets.enabled || []), "yandex"])];
+    next.skills = next.skills || {};
+    next.skills.enabled = [...new Set([...(next.skills.enabled || []), "yandex-services"])];
   }
   const localProfile = next.ai?.profiles?.local;
   if (localProfile?.provider === "iola") {
