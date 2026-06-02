@@ -81,6 +81,8 @@ assertIncludes(cliSource, "язндекс", "Yandex direct router should tolerat
 assertIncludes(cliSource, "yandexMailCount", "Yandex mail should answer unread count questions directly");
 assertIncludes(cliSource, "resolveYandexMailUidFromQuestion", "Yandex mail follow-ups should resolve selected message UID");
 assertIncludes(cliSource, "extractYandexMailUidByOrdinal", "Yandex mail follow-ups should support numbered selections");
+assertIncludes(cliSource, "BODY[TEXT]", "Yandex mail read should mark opened messages as seen");
+assertIncludes(cliSource, "markSeen === false", "Yandex mail read should keep an explicit no-mark fallback");
 assertIncludes(cliSource, "buildCasualDirectAnswer(question)", "Casual greetings should bypass external AI providers");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {

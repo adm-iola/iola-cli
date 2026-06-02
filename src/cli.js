@@ -4030,7 +4030,8 @@ async function yandexMailRead(uid, options = {}) {
   try {
     await imapAuthenticate(session, email, token);
     await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
-    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] BODY.PEEK[TEXT])`, { timeout: 60000 });
+    const bodyAccessor = options.markSeen === false ? "BODY.PEEK[TEXT]" : "BODY[TEXT]";
+    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] ${bodyAccessor})`, { timeout: 60000 });
     return parseImapFetchSummaries(fetch, { full: true })[0] || { uid, status: "not-found" };
   } finally {
     await imapClose(session);
