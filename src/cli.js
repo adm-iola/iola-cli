@@ -1524,7 +1524,7 @@ function flushPendingAgentOutput(state) {
   const text = state.pendingOutput;
   state.pendingOutput = "";
   if (!text) return;
-  console.log(text);
+  printAiAnswer(text);
 }
 
 function colorSlashSelection(row) {
@@ -1535,6 +1535,26 @@ function colorSlashSelection(row) {
 function colorMuted(row) {
   if (!output.isTTY || process.env.NO_COLOR === "1") return row;
   return `\x1b[38;5;245m${row}\x1b[0m`;
+}
+
+function printAiAnswer(text) {
+  output.write(`${renderTerminalMarkdown(text)}\n`);
+}
+
+function renderTerminalMarkdown(text) {
+  const source = String(text || "");
+  if (!output.isTTY || process.env.NO_COLOR === "1") return source;
+  return source
+    .split(/(```[\s\S]*?```)/g)
+    .map((part) => part.startsWith("```") ? part : renderInlineMarkdown(part))
+    .join("");
+}
+
+function renderInlineMarkdown(text) {
+  return String(text || "")
+    .replace(/\*\*([^*\n][\s\S]*?[^*\n])\*\*/g, "\x1b[1m$1\x1b[22m")
+    .replace(/__([^_\n][\s\S]*?[^_\n])__/g, "\x1b[1m$1\x1b[22m")
+    .replace(/`([^`\n]+)`/g, "\x1b[36m$1\x1b[39m");
 }
 
 function setTerminalTitle(title) {
@@ -6496,7 +6516,7 @@ async function aiAsk(args, context = {}) {
     return answer;
   }
 
-  if (!options.quiet) console.log(answer);
+  if (!options.quiet) printAiAnswer(answer);
   return answer;
 }
 
@@ -6723,7 +6743,7 @@ async function localToolAsk(question, providerConfig, options) {
   if (options.format === "json" || options.schema === "json") {
     printJson({ answer, plan: validated, result });
   } else {
-    if (!options.quiet) console.log(answer);
+    if (!options.quiet) printAiAnswer(answer);
   }
   return answer;
 }

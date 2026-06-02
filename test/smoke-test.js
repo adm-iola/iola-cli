@@ -50,6 +50,8 @@ assertIncludes(cliSource, "force: Boolean(options.force)", "IOLA setup should no
 assertIncludes(cliSource, "MAIN_OPENROUTER_DEVELOPERS", "OpenRouter model selection should group models by developer");
 assertIncludes(cliSource, "isOpenRouterTextGenerationModel", "OpenRouter model selection should prefer text-generation models");
 assertIncludes(cliSource, "console.log(\"  0. Назад\")", "OpenRouter model selection should return to developer menu");
+assertIncludes(cliSource, "renderTerminalMarkdown", "AI answers should render inline markdown in the terminal");
+assertIncludes(cliSource, "\\x1b[1m$1\\x1b[22m", "AI answer renderer should support bold markdown");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");
