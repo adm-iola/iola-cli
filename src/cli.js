@@ -3364,11 +3364,15 @@ async function chooseYandexServicesMenu() {
   const config = await loadConfig();
   const serviceIds = Object.keys(YANDEX_CONNECTOR_SERVICES);
   const enabled = new Set(config.yandex?.enabledServices?.length ? config.yandex.enabledServices : ["identity", "disk"]);
-  console.log("Yandex Connector: выберите сервисы.");
+  const authState = await getYandexServiceAuthState();
+  console.log("Функции Яндекса.");
+  console.log("Выберите номера функций через запятую:");
   serviceIds.forEach((id, index) => {
     const service = YANDEX_CONNECTOR_SERVICES[id];
     const marker = enabled.has(id) ? "✓" : " ";
-    console.log(`${index + 1}. [${marker}] ${service.title} (${id}, ${service.status}) - ${service.hint}`);
+    const auth = authState.byService[id];
+    const authLabel = auth?.hasToken ? "подключено" : (auth?.authorized ? "нужен вход" : "нет прав");
+    console.log(`${index + 1}. [${marker}] ${service.title} - ${service.hint} (${service.status}, ${authLabel})`);
   });
   console.log("0. Отмена");
   const defaults = serviceIds.map((id, index) => enabled.has(id) ? String(index + 1) : "").filter(Boolean);
@@ -3387,13 +3391,10 @@ async function chooseYandexServicesMenu() {
   });
   await saveYandexEnabledServices(selected);
   console.log(`Включены сервисы: ${normalizeYandexServiceList(selected).join(", ")}`);
-  const nextConfig = await loadConfig();
-  if (nextConfig.yandex?.oauth?.clientId) {
-    console.log("OAuth-ссылка с максимальными правами коннектора:");
-    console.log(await buildYandexOAuthUrlFromConfig([]));
-  } else {
-    console.log("Для авторизации создайте OAuth Client ID и выполните: iola yandex oauth-url --client-id CLIENT_ID");
-  }
+  const missingAuth = selected.filter((id) => !authState.byService[id]?.authorized);
+  const missingToken = selected.filter((id) => authState.byService[id]?.authorized && !authState.byService[id]?.hasToken);
+  if (missingAuth.length) console.log(`Нет OAuth-прав в текущей сборке: ${missingAuth.join(", ")}. Для них нужно отдельное OAuth-приложение Яндекса.`);
+  if (missingToken.length) console.log(`Нужно пройти вход Яндекса для: ${missingToken.join(", ")}. Запустите iola yandex setup.`);
 }
 
 async function updateYandexEnabledServices(rawServices, enabled) {
@@ -3441,7 +3442,9 @@ async function buildYandexOAuthUrlFromConfig(rawArgs = []) {
   const config = await loadConfig();
   const clientId = options["client-id"] || config.yandex?.oauth?.clientId || YANDEX_CONNECTOR_CLIENT_ID;
   if (!clientId) throw new Error("Yandex OAuth Client ID не задан. Пример: iola yandex oauth-url disk --client-id CLIENT_ID");
-  const services = normalizeYandexServiceList(options._.length ? options._ : (config.yandex?.authorizedServices?.length ? config.yandex.authorizedServices : getYandexOAuthCapableServiceIds()));
+  const capableServices = getYandexOAuthCapableServiceIds();
+  const requestedServices = normalizeYandexServiceList(options._.length ? options._ : capableServices);
+  const services = requestedServices.filter((id) => capableServices.includes(id));
   return buildYandexOAuthUrl({ clientId, services, redirectUrl: options["redirect-url"] || config.yandex?.oauth?.redirectUrl || YANDEX_OAUTH_REDIRECT_URL });
 }
 
@@ -3617,16 +3620,16 @@ async function deleteYandexConnectorToken() {
 async function printYandexConnectorStatus(options = {}) {
   const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
   const enabled = config.yandex?.enabledServices || [];
-  const authorized = config.yandex?.authorizedServices?.length ? config.yandex.authorizedServices : [];
   const legacyDiskToken = Boolean(secrets.cloud?.["yandex-disk"]?.token && !secrets.yandex?.oauthToken);
+  const authState = await getYandexServiceAuthState({ config, secrets });
   const token = process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token || "";
   const rows = Object.entries(YANDEX_CONNECTOR_SERVICES).map(([id, service]) => ({
     id,
     enabled: enabled.includes(id) ? "yes" : (legacyDiskToken && id === "disk" ? "legacy" : "no"),
     category: service.category,
     status: service.status,
-    token: service.scope && (authorized.includes(id) || enabled.includes(id) || (legacyDiskToken && id === "disk")) ? (token ? "local/env" : "missing") : "-",
-    authorized: authorized.includes(id) ? "yes" : "-",
+    token: service.scope && authState.byService[id]?.authorized ? (authState.byService[id]?.hasToken ? "local/env" : "missing") : "-",
+    authorized: authState.byService[id]?.authorized ? "yes" : "-",
     title: service.title,
   }));
   printTable(rows, [
@@ -3648,6 +3651,35 @@ async function printYandexConnectorStatus(options = {}) {
       defaultEmail: profile.default_email || "-",
     });
   }
+}
+
+async function getYandexServiceAuthState({ config = null, secrets = null } = {}) {
+  const loadedConfig = config || await loadConfig();
+  const loadedSecrets = secrets || await loadSecrets();
+  const apps = getConfiguredYandexOAuthApps();
+  const appTokens = loadedSecrets.yandex?.oauthApps || {};
+  const envToken = process.env.YANDEX_OAUTH_TOKEN || "";
+  const byService = {};
+  for (const id of Object.keys(YANDEX_CONNECTOR_SERVICES)) {
+    byService[id] = { authorized: false, hasToken: false, apps: [] };
+  }
+  for (const app of apps) {
+    const hasToken = Boolean(envToken || appTokens[app.id]?.token || (app.id === "core" && loadedSecrets.yandex?.oauthToken));
+    for (const id of normalizeYandexServiceList(app.services)) {
+      byService[id] = byService[id] || { authorized: false, hasToken: false, apps: [] };
+      byService[id].authorized = true;
+      byService[id].hasToken = byService[id].hasToken || hasToken;
+      byService[id].apps.push(app.id);
+    }
+  }
+  if (loadedSecrets.cloud?.["yandex-disk"]?.token) {
+    byService.disk.authorized = true;
+    byService.disk.hasToken = true;
+    byService.disk.apps.push("legacy-cloud");
+  }
+  const authorizedServices = Object.entries(byService).filter(([, state]) => state.authorized).map(([id]) => id);
+  const enabledServices = loadedConfig.yandex?.enabledServices || [];
+  return { byService, authorizedServices, enabledServices };
 }
 
 async function yandexUserInfo(token) {

@@ -58,6 +58,9 @@ assertIncludes(cliSource, "dedupeDatedOpenAiModels", "OpenAI model selection sho
 assertIncludes(cliSource, "chooseLocalModel", "Local model selection should support IOLA and Ollama models");
 assertIncludes(cliSource, "Другая Ollama-модель", "Local model selection should allow manual Ollama model names");
 assertIncludes(cliSource, "chooseYandexServicesMenu", "Yandex Connector should have a service selection menu");
+assertIncludes(cliSource, "Функции Яндекса.", "Yandex service selection should use a numbered menu");
+assertIncludes(cliSource, "Выберите номера функций через запятую", "Yandex service selection should ask for numbers");
+assertIncludes(cliSource, "getYandexServiceAuthState", "Yandex status should derive permissions from configured OAuth apps");
 assertIncludes(cliSource, "OAuth-права встроенного приложения", "Yandex setup should report packaged OAuth app permissions");
 assertIncludes(cliSource, "Выбрать активные функции можно командой /yandex", "Yandex setup should direct service selection to /yandex");
 assertIncludes(cliSource, "runYandexBrowserOAuth", "Yandex setup should support browser OAuth flow");
