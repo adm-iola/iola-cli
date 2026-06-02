@@ -84,4 +84,18 @@ if (deletePlan.willKeep.includes("npm package files")) {
   throw new Error("delete dry-run should not keep npm package files");
 }
 
+const multiSchoolAnswer = await runCli(["ask", "Кто директор школы № 2 и адрес школы № 7?", "--profile", "yandexgpt", "--no-history"]);
+assertIncludes(multiSchoolAnswer, "Адамова Наталья Васильевна", "multi school answer");
+assertIncludes(multiSchoolAnswer, "улица Первомайская, дом 89", "multi school answer");
+assertNotIncludes(multiSchoolAnswer, "улица Осипенко, дом 46\nИсточник: слой schools, МБОУ \"Средняя общеобразовательная школа № 7", "multi school answer");
+
+const externalTownAnswer = await runCli(["ask", "Адрес школы № 1 Козьмодемьянска", "--profile", "yandexgpt", "--no-history"]);
+assertIncludes(externalTownAnswer, "Данных по Козьмодемьянске", "external town answer");
+assertNotIncludes(externalTownAnswer, "улица Петрова, дом 15", "external town answer");
+
+const semenovkaAnswer = await runCli(["ask", "Адрес школы № 1 Семеновки", "--profile", "yandexgpt", "--no-history"]);
+assertIncludes(semenovkaAnswer, "Точную школу № 1 в Семёновке", "semenovka answer");
+assertIncludes(semenovkaAnswer, "село Семёновка", "semenovka answer");
+assertNotIncludes(semenovkaAnswer, "улица Петрова, дом 15", "semenovka answer");
+
 console.log("smoke tests passed");

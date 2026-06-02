@@ -6695,7 +6695,7 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
-  const directAnswer = buildDirectDataAnswer(question, dataContext);
+  const directAnswer = await buildDirectDataAnswer(question, dataContext);
   if (directAnswer) {
     if (historyEnabled) {
       recordAskHistory({ question, answer: directAnswer, providerConfig, dataContext, error: "", sessionId });
@@ -6758,10 +6758,12 @@ async function aiAsk(args, context = {}) {
   return answer;
 }
 
-function buildDirectDataAnswer(question, dataContext) {
+async function buildDirectDataAnswer(question, dataContext) {
   const normalized = question.toLocaleLowerCase("ru-RU");
   const requestedFields = detectDirectDataFields(normalized);
   if (requestedFields.length === 0) return "";
+  const educationAnswer = await buildDeterministicEducationAnswer(question, requestedFields);
+  if (educationAnswer) return educationAnswer;
   const rows = [
     ...dataContext.schools.map((item) => ({ layer: "schools", layerName: "школы", ...item })),
     ...dataContext.kindergartens.map((item) => ({ layer: "kindergartens", layerName: "детские сады", ...item })),
@@ -6789,6 +6791,140 @@ function detectDirectDataFields(normalizedQuestion) {
   if (/(инн)/iu.test(normalizedQuestion)) fields.push("inn");
   if (/(лиценз)/iu.test(normalizedQuestion)) fields.push("license");
   return [...new Set(fields)];
+}
+
+async function buildDeterministicEducationAnswer(question, requestedFields) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  const layer = /(сад|детсад|детск\w*\s+сад|садик)/iu.test(normalized)
+    ? "kindergartens"
+    : /(школ|сош|лице|гимнази)/iu.test(normalized)
+      ? "schools"
+      : "";
+  if (!layer) return "";
+
+  const requests = extractEducationFactRequests(question, requestedFields, layer);
+  if (requests.length === 0) return "";
+
+  const items = normalizeItems(await fetchAllApiItems(`${await getApiBaseUrl()}/${DATASETS[layer].endpoint}`))
+    .map((item) => ({ layer, layerName: layer === "schools" ? "школы" : "детские сады", ...selectPublicSummary(item) }));
+  const answers = [];
+
+  for (const request of requests) {
+    const answer = resolveEducationFactRequest(request, items, layer);
+    if (answer) answers.push(answer);
+  }
+
+  return answers.filter(Boolean).join("\n");
+}
+
+function extractEducationFactRequests(question, requestedFields, layer) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  const segments = splitEducationQuestionSegments(question);
+  const requests = [];
+
+  for (const segment of segments) {
+    const segmentFields = detectDirectDataFields(segment.toLocaleLowerCase("ru-RU"));
+    const fields = segmentFields.length > 0 ? segmentFields : (segments.length === 1 ? requestedFields : []);
+    if (fields.length === 0) continue;
+    const place = detectEducationPlace(segment) || detectEducationPlace(question);
+    const number = extractEntityNumberFromQuestion(segment, layer)
+      || (segments.length === 1 ? extractEntityNumberFromQuestion(question, layer) : "");
+    const hasEntitySignal = Boolean(number || place || /(школ|сош|лице|гимнази|сад|детсад|детск\w*\s+сад|садик)/iu.test(segment));
+    if (!hasEntitySignal) continue;
+    requests.push({ segment, fields, number, place });
+  }
+
+  if (requests.length === 0 && requestedFields.length > 0 && /(школ|сош|лице|гимнази|сад|детсад|детск\w*\s+сад|садик)/iu.test(normalized)) {
+    requests.push({
+      segment: question,
+      fields: requestedFields,
+      number: extractEntityNumberFromQuestion(question, layer),
+      place: detectEducationPlace(question),
+    });
+  }
+
+  return requests;
+}
+
+function splitEducationQuestionSegments(question) {
+  const text = String(question || "").trim();
+  if (!text) return [];
+  return text
+    .split(/\s+(?:и|а также|,|;)\s+(?=(?:кто|какой|какая|адрес|телефон|инн|сайт|почт|email|директ|руковод|завед|где))/iu)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function detectEducationPlace(text) {
+  const normalized = normalizeEntityText(text || "");
+  if (/(козьмодемьянск|козьмодемьянск[аеуом]?|козьмодемьянск\w*)/iu.test(normalized)) {
+    return { id: "kozmodemyansk", label: "Козьмодемьянск", locative: "Козьмодемьянске", supported: false, aliases: ["козьмодемьянск", "козмодемьянск"] };
+  }
+  if (/(семеновк|семёновк)/iu.test(normalized)) {
+    return { id: "semenovka", label: "Семёновка", locative: "Семёновке", supported: true, aliases: ["семеновк", "семёновк"] };
+  }
+  if (/(йошкар|йошкар-ола|йошкар ола)/iu.test(normalized)) {
+    return { id: "yoshkar_ola", label: "Йошкар-Ола", locative: "Йошкар-Оле", supported: true, aliases: ["йошкар", "йошкар-ола", "йошкар ола"] };
+  }
+  return null;
+}
+
+function resolveEducationFactRequest(request, items, layer) {
+  const entityLabel = layer === "schools" ? "школу" : "детский сад";
+  if (request.place && !request.place.supported) {
+    return `В текущих открытых данных iola-cli есть данные городского округа Йошкар-Ола. Данных по ${request.place.locative || request.place.label} в этом слое нет, поэтому ответить по этому объекту не могу.`;
+  }
+
+  let candidates = items;
+  if (request.place) {
+    candidates = candidates.filter((item) => itemMatchesPlace(item, request.place));
+  }
+
+  if (request.number) {
+    const exactByNumber = candidates.filter((item) => itemNameHasNumber(item, request.number));
+    if (exactByNumber.length === 0) {
+      if (request.place && candidates.length > 0) {
+        return [
+          `Точную ${entityLabel} № ${request.number} в ${request.place.locative || request.place.label} в открытом слое не нашел.`,
+          `В ${request.place.locative || request.place.label} есть:`,
+          ...candidates.slice(0, 5).map((item) => `- ${getDirectDataItemName(item)}${item.address ? `; адрес: ${item.address}` : ""}${item.inn ? `; ИНН ${item.inn}` : ""}`),
+        ].join("\n");
+      }
+      return `В открытом слое не нашел ${entityLabel} № ${request.number}.`;
+    }
+    candidates = exactByNumber;
+  }
+
+  if (candidates.length === 0) {
+    const placeText = request.place ? ` в ${request.place.locative || request.place.label}` : "";
+    return `В открытом слое не нашел ${entityLabel}${placeText}.`;
+  }
+
+  if (candidates.length > 1 && !request.number) {
+    return [
+      `Нашел несколько подходящих записей${request.place ? ` для ${request.place.locative || request.place.label}` : ""}:`,
+      ...candidates.slice(0, 5).flatMap((item) => [
+        `- ${getDirectDataItemName(item)}`,
+        ...request.fields.map((field) => `  ${formatDirectDataField(field, item)}`).filter(Boolean),
+        `  Источник: слой ${item.layer}, ИНН ${item.inn || "-"}.`,
+      ]),
+    ].join("\n");
+  }
+
+  const item = candidates[0];
+  const lines = request.fields.map((field) => formatDirectDataField(field, item)).filter(Boolean);
+  if (lines.length === 0) return "";
+  return [
+    ...lines,
+    `Источник: слой ${item.layer}, ${getDirectDataItemName(item)}, ИНН ${item.inn || "-"}.`,
+  ].join("\n");
+}
+
+function itemMatchesPlace(item, place) {
+  if (!place) return true;
+  const text = normalizeEntityText(`${item.name || ""} ${item.address || ""} ${item.legal_address || ""} ${item.fns_full_name || ""} ${item.fns_short_name || ""}`);
+  if (place.id === "yoshkar_ola") return /йошкар|йошкар-ола|йошкар ола/u.test(text) && !/семеновк/u.test(text);
+  return place.aliases.some((alias) => text.includes(normalizeEntityText(alias)));
 }
 
 function pickDirectDataItem(question, dataContext, rows) {
