@@ -1085,9 +1085,9 @@ async function startAgentRawInput() {
           const shouldExit = await handleAgentLine(line, state);
           stopActivity();
           flushPendingAgentOutput(state);
-          await refreshAgentAiStatus(state);
-          if (!shouldExit) restoreRawInput();
           if (shouldExit) break;
+          await refreshAgentAiStatus(state);
+          restoreRawInput();
         } catch (error) {
           stopActivity();
           restoreRawInput();
@@ -2452,12 +2452,40 @@ async function handleUninstall(args = []) {
 
   console.log("Локальные данные iola-cli удалены.");
   console.log(`Удаляю npm-пакет ${npmPackage}...`);
-  await runCommand(getNpmCommand(), ["remove", "-g", npmPackage], { inherit: true });
-  console.log("npm-пакет iola-cli удален.");
+  const packageRemoval = await removeGlobalNpmPackage(npmPackage).catch((error) => ({
+    status: "failed",
+    error: error instanceof Error ? error.message : String(error),
+  }));
+  if (packageRemoval.status === "scheduled") {
+    console.log("Удаление npm-пакета запланировано после выхода из CLI.");
+  } else if (packageRemoval.status === "removed") {
+    console.log("npm-пакет iola-cli удален.");
+  } else {
+    console.log(`Не удалось удалить npm-пакет автоматически: ${packageRemoval.error}`);
+    console.log("Локальные данные уже удалены, CLI сейчас выйдет.");
+    console.log("После выхода выполните вручную:");
+    console.log(`  npm remove -g ${npmPackage}`);
+  }
   console.log("Codex CLI не тронут.");
   console.log("Для повторной установки:");
   console.log("  npm install -g @iola_adm/iola-cli@latest");
   return { deleted: true };
+}
+
+async function removeGlobalNpmPackage(npmPackage) {
+  if (process.platform === "win32") {
+    const command = quoteWindowsCommand(getNpmCommand(), ["remove", "-g", npmPackage]);
+    const script = `ping 127.0.0.1 -n 3 > nul & ${command}`;
+    const child = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", script], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    return { status: "scheduled" };
+  }
+  await runCommand(getNpmCommand(), ["remove", "-g", npmPackage], { inherit: true });
+  return { status: "removed" };
 }
 
 async function handleDb(args) {
