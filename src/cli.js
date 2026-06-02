@@ -1961,9 +1961,10 @@ async function doctor(args = []) {
   printKeyValue(report.ai);
   console.log("");
   console.log("Skills/Toolsets/Daemon");
-  printKeyValue({ ...report.skills, toolsets: report.toolsets.enabled, daemon: report.daemon.status });
+  printKeyValueFull({ ...report.skills, toolsets: report.toolsets.enabled, daemon: report.daemon.status });
   console.log("");
-  printDiagnostics(diagnostics, recommendOllamaModel(diagnostics));
+  const isLocalAi = ["iola", "ollama"].includes(activeAiProfile.provider);
+  printDiagnostics(diagnostics, isLocalAi ? recommendOllamaModel(diagnostics) : null);
   if (options.all) {
     console.log("");
     console.log("Фичи");
@@ -7838,25 +7839,32 @@ async function setupIolaLocal(args) {
   }
 
   const config = await loadConfig();
+  const localProfile = {
+    provider: "iola",
+    model,
+    runtime,
+    baseUrl: "http://127.0.0.1:11434",
+    repo,
+    ggufRepo,
+    ggufFile,
+    modelDir,
+  };
+  const shouldActivate = !options["preserve-active"];
+  const previousActiveProfile = getActiveProfileName(config);
+  const nextActiveProfile = shouldActivate ? profileName : previousActiveProfile;
+  const nextActiveConfig = nextActiveProfile === profileName
+    ? localProfile
+    : (config.ai.profiles?.[nextActiveProfile] || config.ai.profiles?.[previousActiveProfile] || localProfile);
   await saveConfig({
     ai: {
       ...config.ai,
-      activeProfile: profileName,
-      provider: "iola",
-      model,
-      baseUrl: "http://127.0.0.1:11434",
+      activeProfile: nextActiveProfile,
+      provider: nextActiveConfig.provider,
+      model: nextActiveConfig.model,
+      baseUrl: nextActiveConfig.baseUrl || config.ai.baseUrl,
       profiles: {
         ...(config.ai.profiles || {}),
-        [profileName]: {
-          provider: "iola",
-          model,
-          runtime,
-          baseUrl: "http://127.0.0.1:11434",
-          repo,
-          ggufRepo,
-          ggufFile,
-          modelDir,
-        },
+        [profileName]: localProfile,
       },
     },
   });
@@ -10707,7 +10715,7 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--append" || arg === "--preserve-active") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
@@ -12404,8 +12412,8 @@ async function executeRpc(method, options = {}) {
 
 async function getLatestNpmVersion(packageName) {
   try {
-    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
-      headers: { accept: "application/json" },
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest?t=${Date.now()}`, {
+      headers: { accept: "application/json", "cache-control": "no-cache" },
     });
 
     if (!response.ok) {
@@ -12480,8 +12488,11 @@ function printDiagnostics(diagnostics, recommendation) {
     vram: diagnostics.gpu.vramGb ? `${diagnostics.gpu.vramGb} GB` : "-",
     ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "не установлен",
   });
+  if (!recommendation) {
+    return;
+  }
   console.log("");
-  console.log("Рекомендация");
+  console.log("Рекомендация локальной модели");
   printKeyValue({
     profile: recommendation.profile,
     model: recommendation.model,
@@ -12665,6 +12676,9 @@ function sanitizeConfig(config) {
   }
   if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("open-data") && !next.skills.enabled.includes("education")) {
     next.skills.enabled = ["education", ...next.skills.enabled];
+  }
+  if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("open-data") && !next.skills.enabled.includes("geo")) {
+    next.skills.enabled = [...next.skills.enabled, "geo"];
   }
   if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("local-files") && !next.skills.enabled.includes("personal-docs")) {
     next.skills.enabled = [...next.skills.enabled, "personal-docs"];
@@ -13050,6 +13064,19 @@ function printKeyValue(value) {
     ["key", "Поле"],
     ["value", "Значение"],
   ]);
+}
+
+function printKeyValueFull(value) {
+  const rows = Object.entries(value).map(([key, raw]) => ({
+    key,
+    value: raw == null || raw === "" ? "-" : String(raw),
+  }));
+  const keyWidth = Math.max(4, ...rows.map((row) => visibleLength(row.key)));
+  console.log(`${padCell("Поле", keyWidth)}  Значение`);
+  console.log(`${"-".repeat(keyWidth)}  ${"-".repeat(8)}`);
+  for (const row of rows) {
+    console.log(`${padCell(row.key, keyWidth)}  ${row.value}`);
+  }
 }
 
 function printTable(rows, columns) {

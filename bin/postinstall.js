@@ -19,7 +19,7 @@ const steps = [
   },
   {
     title: "Проверка локальной модели IOLA",
-    args: [cliPath, "ai", "setup", "iola", "--yes", "--quiet", "--optional"],
+    args: [cliPath, "ai", "setup", "iola", "--yes", "--quiet", "--optional", "--preserve-active"],
   },
 ];
 
