@@ -42,8 +42,8 @@ const BROWSER_RUNTIME_PACKAGE = path.join(BROWSER_RUNTIME_DIR, "node_modules", "
 const CLOUD_DEFAULT_REMOTE_DIR = "/IOLA";
 const YANDEX_OAUTH_AUTHORIZE_URL = "https://oauth.yandex.ru/authorize";
 const YANDEX_OAUTH_REDIRECT_URL = "https://oauth.yandex.ru/verification_code";
-const YANDEX_CONNECTOR_CLIENT_ID = process.env.IOLA_YANDEX_OAUTH_CLIENT_ID || process.env.YANDEX_OAUTH_CLIENT_ID || "915b0b6ef0474f3a9b3edd70515c5d60";
-const YANDEX_CONNECTOR_WORKSPACE_CLIENT_ID = process.env.IOLA_YANDEX_WORKSPACE_OAUTH_CLIENT_ID || "";
+const YANDEX_CONNECTOR_CLIENT_ID = process.env.IOLA_YANDEX_OAUTH_CLIENT_ID || process.env.YANDEX_OAUTH_CLIENT_ID || "9b7c9bcf81e8491f9bd36ba44fa76128";
+const YANDEX_CONNECTOR_ORGANIZER_CLIENT_ID = process.env.IOLA_YANDEX_ORGANIZER_OAUTH_CLIENT_ID || "4ab53d8557e64ac98534ed60295cb138";
 const YANDEX_CONNECTOR_REDIRECT_HOST = "127.0.0.1";
 const YANDEX_CONNECTOR_REDIRECT_PORT = Number(process.env.IOLA_YANDEX_OAUTH_PORT || 18791);
 const YANDEX_CONNECTOR_REDIRECT_PATH = "/yandex/oauth/callback";
@@ -79,30 +79,9 @@ const YANDEX_CONNECTOR_SERVICES = {
   contacts: {
     title: "Яндекс Контакты",
     category: "contacts",
-    scope: "carddav",
+    scope: "addressbook:all",
     status: "research",
-    hint: "контакты через CardDAV/360, требует проверки",
-  },
-  wiki: {
-    title: "Yandex Wiki",
-    category: "workspace",
-    scope: "wiki:read wiki:write",
-    status: "research",
-    hint: "страницы wiki, больше полезно организациям",
-  },
-  tracker: {
-    title: "Yandex Tracker",
-    category: "workspace",
-    scope: "tracker:read tracker:write",
-    status: "research",
-    hint: "задачи и обращения, больше полезно организациям",
-  },
-  forms: {
-    title: "Yandex Forms",
-    category: "forms",
-    scope: "forms:read forms:write",
-    status: "research",
-    hint: "формы и опросы, API надо подтвердить",
+    hint: "адресная книга и контакты, требует проверки API",
   },
   docs: {
     title: "Яндекс Документы / 360",
@@ -114,9 +93,9 @@ const YANDEX_CONNECTOR_SERVICES = {
   telemost: {
     title: "Яндекс Телемост",
     category: "meetings",
-    scope: "",
+    scope: "calendar:all",
     status: "research",
-    hint: "создание встреч через публичный API надо подтвердить",
+    hint: "встречи через календарное событие, если поддерживается",
   },
   cloud: {
     title: "Yandex Cloud",
@@ -157,15 +136,15 @@ const YANDEX_CONNECTOR_SERVICES = {
 const YANDEX_CONNECTOR_OAUTH_APPS = [
   {
     id: "core",
-    title: "IOLA Yandex Core",
+    title: "IOLA CLI A",
     clientId: YANDEX_CONNECTOR_CLIENT_ID,
-    services: ["identity", "disk", "mail"],
+    services: ["identity", "disk", "mail", "docs"],
   },
   {
-    id: "workspace",
-    title: "IOLA Yandex Workspace",
-    clientId: YANDEX_CONNECTOR_WORKSPACE_CLIENT_ID,
-    services: ["contacts", "wiki", "tracker", "forms", "docs"],
+    id: "organizer",
+    title: "IOLA CLI B",
+    clientId: YANDEX_CONNECTOR_ORGANIZER_CLIENT_ID,
+    services: ["calendar", "contacts", "telemost"],
   },
 ];
 const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
@@ -2040,7 +2019,7 @@ async function doctor(args = []) {
       openaiKey: process.env.OPENAI_API_KEY ? "env" : secrets.openai?.apiKey ? "local" : "missing",
       openrouterKey: process.env.OPENROUTER_API_KEY ? "env" : secrets.openrouter?.apiKey ? "local" : "missing",
       yandexGeocoderKey: (process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY) ? "env" : secrets.yandexGeocoder?.apiKey ? "local" : "missing",
-      yandexConnector: (process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || secrets.cloud?.["yandex-disk"]?.token) ? "local/env" : "missing",
+      yandexConnector: (process.env.YANDEX_OAUTH_TOKEN || secrets.yandex?.oauthToken || Object.keys(secrets.yandex?.oauthApps || {}).length || secrets.cloud?.["yandex-disk"]?.token) ? "local/env" : "missing",
       yandexAuthorized: config.yandex?.authorizedServices?.join(", ") || "-",
       yandexServices: config.yandex?.enabledServices?.join(", ") || (secrets.cloud?.["yandex-disk"]?.token ? "disk (legacy cloud token)" : "-"),
       ollama: diagnostics.ollama.installed ? diagnostics.ollama.version : "not-installed",
@@ -3285,7 +3264,7 @@ async function handleYandex(args) {
   iola yandex disable mail
   iola yandex oauth-url [disk mail calendar] [--client-id ID] [--open]
   iola yandex token set
-  iola yandex token delete
+  iola yandex token delete    удалить локальные токены и настройки коннектора
   iola yandex backlog`);
 }
 
@@ -3343,11 +3322,12 @@ async function setupYandexConnector(args = []) {
       }
       await printYandexConnectorStatus({ check: true });
     } else {
-      const app = oauthApps[0] || { clientId, services: authorizedServices };
-      const url = buildYandexOAuthUrl({ clientId: app.clientId, services: app.services, redirectUrl });
-      console.log("Откройте ссылку авторизации, получите OAuth-токен и сохраните его командой: iola yandex token set");
-      console.log(url);
-      if (options.open) await openUrl(url);
+      console.log("Откройте ссылки авторизации, получите OAuth-токены и сохраните их командой: iola yandex token set --app APP_ID");
+      for (const app of oauthApps.length ? oauthApps : [{ id: "custom", title: "Yandex Connector", clientId, services: authorizedServices }]) {
+        const url = buildYandexOAuthUrl({ clientId: app.clientId, services: app.services, redirectUrl });
+        console.log(`${app.id}: ${url}`);
+        if (options.open) await openUrl(url);
+      }
     }
   } else {
     console.log("Yandex Connector не может открыть браузер: в этой сборке не задан public OAuth client_id приложения IOLA.");
@@ -3362,7 +3342,8 @@ async function chooseYandexServicesMenu() {
     return;
   }
   const config = await loadConfig();
-  const serviceIds = Object.keys(YANDEX_CONNECTOR_SERVICES);
+  const serviceIds = getYandexConnectorMenuServiceIds();
+  const deleteNumber = serviceIds.length + 1;
   const enabled = new Set(config.yandex?.enabledServices?.length ? config.yandex.enabledServices : ["identity", "disk"]);
   const authState = await getYandexServiceAuthState();
   console.log("Функции Яндекса.");
@@ -3374,6 +3355,7 @@ async function chooseYandexServicesMenu() {
     const authLabel = auth?.hasToken ? "подключено" : (auth?.authorized ? "нужен вход" : "нет прав");
     console.log(`${index + 1}. [${marker}] ${service.title} - ${service.hint} (${service.status}, ${authLabel})`);
   });
+  console.log(`${deleteNumber}. Удалить подключение-коннектор`);
   console.log("0. Отмена");
   const defaults = serviceIds.map((id, index) => enabled.has(id) ? String(index + 1) : "").filter(Boolean);
   const answer = (await askText(`Номера через запятую [${defaults.join(",") || "1,2"}]: `)).trim();
@@ -3382,6 +3364,16 @@ async function chooseYandexServicesMenu() {
     return;
   }
   const selectedNumbers = answer ? answer.split(/[,\s]+/).filter(Boolean) : (defaults.length ? defaults : ["1", "2"]);
+  if (selectedNumbers.includes(String(deleteNumber))) {
+    if (selectedNumbers.length > 1) throw new Error("Удаление коннектора выбирается отдельно, без других пунктов.");
+    const ok = await askYesNo("Удалить локальные токены и настройки Yandex Connector? [y/N] ", false);
+    if (!ok) {
+      console.log("Удаление отменено.");
+      return;
+    }
+    await deleteYandexConnectorToken();
+    return;
+  }
   const selected = selectedNumbers.map((item) => {
     const index = Number(item) - 1;
     if (!Number.isInteger(index) || index < 0 || index >= serviceIds.length) {
@@ -3395,6 +3387,12 @@ async function chooseYandexServicesMenu() {
   const missingToken = selected.filter((id) => authState.byService[id]?.authorized && !authState.byService[id]?.hasToken);
   if (missingAuth.length) console.log(`Нет OAuth-прав в текущей сборке: ${missingAuth.join(", ")}. Для них нужно отдельное OAuth-приложение Яндекса.`);
   if (missingToken.length) console.log(`Нужно пройти вход Яндекса для: ${missingToken.join(", ")}. Запустите iola yandex setup.`);
+}
+
+function getYandexConnectorMenuServiceIds() {
+  return Object.entries(YANDEX_CONNECTOR_SERVICES)
+    .filter(([, service]) => service.status === "ready" || service.status === "research")
+    .map(([id]) => id);
 }
 
 async function updateYandexEnabledServices(rawServices, enabled) {
@@ -3440,11 +3438,15 @@ async function saveYandexAuthorizedServices(services) {
 async function buildYandexOAuthUrlFromConfig(rawArgs = []) {
   const options = parseOptions(rawArgs);
   const config = await loadConfig();
-  const clientId = options["client-id"] || config.yandex?.oauth?.clientId || YANDEX_CONNECTOR_CLIENT_ID;
-  if (!clientId) throw new Error("Yandex OAuth Client ID не задан. Пример: iola yandex oauth-url disk --client-id CLIENT_ID");
+  const apps = getConfiguredYandexOAuthApps();
   const capableServices = getYandexOAuthCapableServiceIds();
   const requestedServices = normalizeYandexServiceList(options._.length ? options._ : capableServices);
-  const services = requestedServices.filter((id) => capableServices.includes(id));
+  const app = options.app
+    ? apps.find((item) => item.id === options.app)
+    : apps.find((item) => requestedServices.some((service) => item.services.includes(service))) || apps[0];
+  const clientId = options["client-id"] || app?.clientId || config.yandex?.oauth?.clientId || YANDEX_CONNECTOR_CLIENT_ID;
+  if (!clientId) throw new Error("Yandex OAuth Client ID не задан. Пример: iola yandex oauth-url disk --client-id CLIENT_ID");
+  const services = requestedServices.filter((id) => capableServices.includes(id) && (!app || app.services.includes(id)));
   return buildYandexOAuthUrl({ clientId, services, redirectUrl: options["redirect-url"] || config.yandex?.oauth?.redirectUrl || YANDEX_OAUTH_REDIRECT_URL });
 }
 
@@ -3557,7 +3559,6 @@ function waitForYandexOAuthToken({ clientId, services, redirectUrl }) {
 function getYandexScopesForServices(services) {
   const scopes = new Set();
   const normalized = normalizeYandexServiceList(services);
-  if (normalized.length > 0 && !normalized.includes("identity")) normalized.unshift("identity");
   for (const id of normalized) {
     const raw = YANDEX_CONNECTOR_SERVICES[id]?.scope || "";
     for (const scope of raw.split(/\s+/).filter(Boolean)) scopes.add(scope);
@@ -3614,7 +3615,18 @@ async function deleteYandexConnectorToken() {
   if (secrets.cloud?.["yandex-disk"]) delete secrets.cloud["yandex-disk"];
   if (secrets.cloud && Object.keys(secrets.cloud).length === 0) delete secrets.cloud;
   await saveSecrets(secrets);
-  console.log("Yandex Connector token удален. Токен Яндекс Диска в cloud тоже удален.");
+  await deleteLocalYandexConnectorConfig();
+  console.log("Yandex Connector удален локально. Токены и настройки приложений очищены.");
+}
+
+async function deleteLocalYandexConnectorConfig() {
+  const local = await readConfigLayer(CONFIG_FILE);
+  if (!local) return;
+  delete local.yandex;
+  if (local.cloud?.activeProvider === "yandex-disk") local.cloud.activeProvider = "";
+  await mkdir(CONFIG_DIR, { recursive: true });
+  if (existsSync(CONFIG_FILE)) await copyFile(CONFIG_FILE, LAST_GOOD_CONFIG_FILE).catch(() => {});
+  await writeFile(CONFIG_FILE, `${JSON.stringify(local, null, 2)}\n`, "utf8");
 }
 
 async function printYandexConnectorStatus(options = {}) {
@@ -11390,7 +11402,7 @@ async function getOnboardComponentStatus() {
     browser: browser.installed === "yes",
     "yandex-geocoder": Boolean(yandexGeocoderKey),
     cloud: Object.keys(cloudSecrets).length > 0,
-    yandex: Boolean(secrets.yandex?.oauthToken || config.yandex?.enabledServices?.length),
+    yandex: Boolean(secrets.yandex?.oauthToken || Object.keys(secrets.yandex?.oauthApps || {}).length || config.yandex?.enabledServices?.length),
   };
 }
 
@@ -13414,6 +13426,12 @@ function sanitizeConfig(config) {
   }
   if (Array.isArray(next.skills?.enabled) && next.skills.enabled.includes("local-files") && !next.skills.enabled.includes("personal-docs")) {
     next.skills.enabled = [...next.skills.enabled, "personal-docs"];
+  }
+  if (Array.isArray(next.yandex?.enabledServices)) {
+    next.yandex.enabledServices = next.yandex.enabledServices.filter((service) => Boolean(YANDEX_CONNECTOR_SERVICES[service]));
+  }
+  if (Array.isArray(next.yandex?.authorizedServices)) {
+    next.yandex.authorizedServices = next.yandex.authorizedServices.filter((service) => Boolean(YANDEX_CONNECTOR_SERVICES[service]));
   }
   const localProfile = next.ai?.profiles?.local;
   if (localProfile?.provider === "iola") {

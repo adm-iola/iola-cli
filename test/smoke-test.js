@@ -60,11 +60,14 @@ assertIncludes(cliSource, "Другая Ollama-модель", "Local model selec
 assertIncludes(cliSource, "chooseYandexServicesMenu", "Yandex Connector should have a service selection menu");
 assertIncludes(cliSource, "Функции Яндекса.", "Yandex service selection should use a numbered menu");
 assertIncludes(cliSource, "Выберите номера функций через запятую", "Yandex service selection should ask for numbers");
+assertIncludes(cliSource, "Удалить подключение-коннектор", "Yandex service selection should allow connector deletion");
 assertIncludes(cliSource, "getYandexServiceAuthState", "Yandex status should derive permissions from configured OAuth apps");
 assertIncludes(cliSource, "OAuth-права встроенного приложения", "Yandex setup should report packaged OAuth app permissions");
 assertIncludes(cliSource, "Выбрать активные функции можно командой /yandex", "Yandex setup should direct service selection to /yandex");
 assertIncludes(cliSource, "runYandexBrowserOAuth", "Yandex setup should support browser OAuth flow");
 assertIncludes(cliSource, "IOLA_YANDEX_OAUTH_CLIENT_ID", "Yandex setup should use a packaged/env OAuth client id");
+assertIncludes(cliSource, "IOLA_YANDEX_ORGANIZER_OAUTH_CLIENT_ID", "Yandex setup should support the organizer OAuth app group");
+assertIncludes(cliSource, "addressbook:all", "Yandex contacts should use the addressbook OAuth scope");
 assertIncludes(cliSource, "--app", "Yandex token command should persist tokens by OAuth app group");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
