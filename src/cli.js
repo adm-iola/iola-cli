@@ -1606,8 +1606,7 @@ function getSlashVisibleLimit() {
 function renderAgentInput(state) {
   clearAgentInputArea(state);
   const prompt = "> ";
-  const lines = state.buffer.split("\n");
-  const inputLines = [`${prompt}${lines[0] || ""}`, ...lines.slice(1)];
+  const inputLines = buildAgentInputDisplayLines(state.buffer, prompt);
   const menuLines = [];
   if (state.slashOpen) {
     const matches = currentSlashMatches(state);
@@ -1633,11 +1632,39 @@ function renderAgentInput(state) {
   const renderedLines = [...menuLines, ...inputLines];
   output.write(renderedLines.join("\n"));
   if (output.isTTY) {
-    const cursorColumn = visibleLength(inputLines[inputLines.length - 1]);
+    const cursorColumn = Math.min(visibleLength(inputLines[inputLines.length - 1]), Math.max(1, Number(output.columns || 100)) - 1);
     output.write(`\x1b[${cursorColumn + 1}G`);
   }
   state.renderedInputLines = inputLines.length;
   state.renderedLines = renderedLines.length;
+}
+
+function buildAgentInputDisplayLines(buffer, prompt = "> ") {
+  const columns = Math.max(20, Number(output.columns || 100));
+  const logicalLines = String(buffer || "").split("\n");
+  const result = [];
+  for (let index = 0; index < logicalLines.length; index += 1) {
+    const prefix = index === 0 ? prompt : "";
+    const width = Math.max(1, columns - visibleLength(prefix));
+    const chunks = wrapTerminalText(logicalLines[index] || "", width);
+    if (chunks.length === 0) {
+      result.push(prefix);
+      continue;
+    }
+    result.push(`${prefix}${chunks[0]}`);
+    for (const chunk of chunks.slice(1)) result.push(chunk);
+  }
+  return result.length ? result : [prompt];
+}
+
+function wrapTerminalText(value, width) {
+  const chars = [...String(value || "")];
+  if (!chars.length) return [];
+  const rows = [];
+  for (let index = 0; index < chars.length; index += width) {
+    rows.push(chars.slice(index, index + width).join(""));
+  }
+  return rows;
 }
 
 function clearAgentInputArea(state = null) {
@@ -3968,8 +3995,8 @@ async function yandexMailList(options = {}) {
     const search = await imapCommand(session, `UID SEARCH ${criterion}`);
     const uids = parseImapSearchUids(search).slice(-Number(options.limit || 10));
     if (!uids.length) return [];
-    const fetch = await imapCommand(session, `UID FETCH ${uids.join(",")} (UID FLAGS ENVELOPE RFC822.SIZE BODY.PEEK[TEXT]<0.800>)`, { timeout: 45000 });
-    return parseImapFetchSummaries(fetch);
+    const fetch = await imapCommand(session, `UID FETCH ${uids.join(",")} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] BODY.PEEK[TEXT]<0.800>)`, { timeout: 45000 });
+    return parseImapFetchSummaries(fetch).sort((left, right) => Number(right.uid || 0) - Number(left.uid || 0));
   } finally {
     await imapClose(session);
   }
@@ -3989,7 +4016,7 @@ async function yandexMailRead(uid, options = {}) {
   try {
     await imapAuthenticate(session, email, token);
     await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
-    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS ENVELOPE RFC822.SIZE BODY.PEEK[])`, { timeout: 60000 });
+    const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] BODY.PEEK[TEXT])`, { timeout: 60000 });
     return parseImapFetchSummaries(fetch, { full: true })[0] || { uid, status: "not-found" };
   } finally {
     await imapClose(session);
@@ -4142,26 +4169,93 @@ function parseImapFetchSummaries(text, options = {}) {
   for (const chunk of chunks) {
     const uid = Number(chunk.match(/UID (\d+)/iu)?.[1] || 0);
     if (!uid) continue;
-    const subject = decodeMimeHeader(chunk.match(/ENVELOPE \([^\n]*?"([^"]*)"/iu)?.[1] || chunk.match(/Subject:\s*([^\r\n]+)/iu)?.[1] || "");
-    const from = decodeMimeHeader(chunk.match(/From:\s*([^\r\n]+)/iu)?.[1] || chunk.match(/NIL NIL "([^"]*)" "([^"]*)"/iu)?.slice(1, 3).filter(Boolean).join("@") || "");
-    const date = chunk.match(/INTERNALDATE "([^"]+)"/iu)?.[1] || chunk.match(/Date:\s*([^\r\n]+)/iu)?.[1] || "";
+    const headers = parseMailHeaders(chunk);
+    const subject = headers.subject || "";
+    const from = headers.from || "";
+    const date = headers.date || "";
     const body = options.full ? stripMailBody(chunk) : stripMailBody(chunk).slice(0, 800);
     rows.push({ uid, date, from, subject, snippet: body.replace(/\s+/g, " ").trim().slice(0, options.full ? 12000 : 500) });
   }
   return rows;
 }
 
+function parseMailHeaders(value) {
+  const normalized = String(value || "").replace(/\r/g, "").replace(/\n BODY\[[\s\S]*$/u, "");
+  const headerValue = (name) => {
+    const match = normalized.match(new RegExp(`^${name}:\\s*([^\\n]*(?:\\n[\\t ][^\\n]*)*)`, "imu"));
+    return match ? decodeMimeHeader(match[1].replace(/\n[\t ]+/g, " ").trim()) : "";
+  };
+  return {
+    date: headerValue("Date"),
+    from: headerValue("From"),
+    subject: headerValue("Subject"),
+  };
+}
+
 function decodeMimeHeader(value) {
-  return String(value || "").replace(/=\?UTF-8\?B\?([^?]+)\?=/giu, (_, data) => Buffer.from(data, "base64").toString("utf8"));
+  return String(value || "")
+    .replace(/\?=\s+=\?/gu, "?==?")
+    .replace(/=\?UTF-8\?B\?([^?]+)\?=/giu, (_, data) => Buffer.from(data, "base64").toString("utf8"))
+    .replace(/=\?UTF-8\?Q\?([^?]+)\?=/giu, (_, data) => Buffer.from(data.replace(/_/g, " ").replace(/=([A-F0-9]{2})/giu, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "binary").toString("utf8"));
 }
 
 function stripMailBody(value) {
-  return String(value || "")
-    .replace(/\r/g, "")
-    .split(/\n\)/u)[0]
-    .replace(/^[\s\S]*?\n\n/u, "")
-    .replace(/[^\S\n]+/g, " ")
-    .trim();
+  const raw = String(value || "").replace(/\r/g, "");
+  const withoutFetch = raw
+    .replace(/^\* \d+ FETCH[^\n]*\n?/u, "")
+    .replace(/^BODY\[[^\n]*\]\s*\{\d+\}\n?/imu, "")
+    .replace(/\n\)\s*$/u, "");
+  const bodyMatch = withoutFetch.match(/BODY\[TEXT\]\s*\{\d+\}\s*([\s\S]*)/iu);
+  if (bodyMatch?.[1]) return extractMimeText(bodyMatch[1]);
+  const headerEnd = withoutFetch.indexOf("\n\n");
+  if (headerEnd < 0) return withoutFetch.replace(/[^\S\n]+/g, " ").trim();
+  const headers = withoutFetch.slice(0, headerEnd);
+  const body = withoutFetch.slice(headerEnd + 2).replace(/^BODY\[[^\n]*\]\s*\{\d+\}\n?/imu, "");
+  return extractMimeText(`${headers}\n\n${body}`);
+}
+
+function extractMimeText(source, depth = 0) {
+  if (depth > 5) return decodeMailPart(source);
+  const boundary = String(source || "").match(/boundary="?([^"\n;]+)"?/iu)?.[1];
+  if (!boundary || !source.includes(`--${boundary}`)) return decodeMailPart(source);
+  const parts = source.slice(source.indexOf(`--${boundary}`)).split(`--${boundary}`).filter((part) => part.trim() && part.trim() !== "--");
+  const plain = parts.find((part) => /^Content-Type:\s*text\/plain/im.test(part));
+  if (plain) return decodeMailPart(plain);
+  for (const part of parts) {
+    if (/^Content-Type:\s*multipart\//im.test(part) || /boundary="?([^"\n;]+)"?/iu.test(part)) {
+      const nested = extractMimeText(part, depth + 1);
+      if (nested) return nested;
+    }
+  }
+  const html = parts.find((part) => /^Content-Type:\s*text\/html/im.test(part));
+  if (html) return decodeMailPart(html);
+  return decodeMailPart(parts[0] || source);
+}
+
+function decodeMailPart(part) {
+  const text = String(part || "").replace(/\r/g, "");
+  let headerEnd = text.indexOf("\n\n");
+  let headers = headerEnd >= 0 ? text.slice(0, headerEnd) : "";
+  let body = headerEnd >= 0 ? text.slice(headerEnd + 2) : text;
+  if (headerEnd < 0) {
+    const transferMatch = text.match(/^(.*Content-Transfer-Encoding:\s*(?:base64|quoted-printable)[^\n]*\n)([\s\S]*)$/imu);
+    if (transferMatch) {
+      headers = transferMatch[1];
+      body = transferMatch[2];
+    }
+  }
+  const encoding = headers.match(/^Content-Transfer-Encoding:\s*([^\n]+)/imu)?.[1]?.trim().toLocaleLowerCase("en-US") || "";
+  let decoded = body;
+  if (encoding === "base64") {
+    decoded = Buffer.from(body.replace(/\s+/g, ""), "base64").toString("utf8");
+  } else if (encoding === "quoted-printable") {
+    decoded = decodeQuotedPrintable(body);
+  }
+  return decoded.replace(/<[^>]+>/g, " ").replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function decodeQuotedPrintable(value) {
+  return Buffer.from(String(value || "").replace(/=\n/gu, "").replace(/=([A-F0-9]{2})/giu, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "binary").toString("utf8");
 }
 
 async function yandexDavRequest(url, token, options = {}) {
@@ -9352,7 +9446,7 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
-  const yandexAnswer = await buildYandexDirectAnswer(question);
+  const yandexAnswer = await buildYandexDirectAnswer(question, context.history || history);
   if (yandexAnswer) {
     if (historyEnabled) {
       recordAskHistory({ question, answer: yandexAnswer, providerConfig, dataContext, error: "", sessionId });
@@ -9480,10 +9574,19 @@ async function buildDirectDataAnswer(question, dataContext) {
   ].join("\n");
 }
 
-async function buildYandexDirectAnswer(question) {
+async function buildYandexDirectAnswer(question, history = []) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
-  if (!/(яндекс|yandex|почт|письм|календар|контакт|телемост)/iu.test(normalized)) return "";
+  const previousAssistantText = [...(history || [])].reverse().find((item) => item.role === "assistant")?.content || "";
+  const mailContext = /Яндекс Почта|Письмо #|\bUID\b|#\d{3,}/iu.test(previousAssistantText);
+  if (!/(яндекс|yandex|почт|письм|календар|контакт|телемост)/iu.test(normalized) && !(/^\s*\d{3,}\s*$/u.test(question) && mailContext)) return "";
   try {
+    if (/^\s*\d{3,}\s*$/u.test(question) && mailContext) {
+      const uid = extractYandexMailUid(question);
+      const row = await yandexMailRead(uid);
+      if (!row || row.status === "not-found") return `Письмо #${uid} не найдено.`;
+      return formatYandexMailRead(row);
+    }
+
     if (/(аккаунт|профил|логин|кто подключен)/iu.test(normalized) && /(яндекс|yandex)/iu.test(normalized)) {
       const profile = await getYandexIdentityProfile();
       return [
@@ -9499,11 +9602,26 @@ async function buildYandexDirectAnswer(question) {
         const result = await yandexMailStatus();
         return `Яндекс Почта подключена: ${result.email}. Входящие: ${result.inbox?.exists ?? "-"}.`;
       }
+      if (/(отправ|напиши|пошли)/iu.test(normalized)) {
+        const draft = parseYandexMailSendRequest(question);
+        if (!draft.to.length || !draft.text) {
+          return "Для отправки письма укажите получателя и текст. Пример: отправь письмо user@example.com тема: Привет текст: Проверка.";
+        }
+        const result = await yandexMailSend({ ...draft, confirm: true });
+        return `Письмо отправлено: ${result.to.join(", ")}. Тема: ${result.subject}.`;
+      }
+      if (isYandexMailReadRequest(normalized)) {
+        const uid = extractYandexMailUid(question) || await getLatestYandexMailUid({ unread: /непрочитан/iu.test(normalized) });
+        if (!uid) return "Писем для чтения не найдено.";
+        const row = await yandexMailRead(uid);
+        if (!row || row.status === "not-found") return `Письмо #${uid} не найдено.`;
+        return formatYandexMailRead(row);
+      }
       const rows = /(найди|поиск)/iu.test(normalized)
         ? await yandexMailSearch(cleanupYandexQuery(question), { limit: 10 })
         : await yandexMailList({ limit: 10, unread: /непрочитан/iu.test(normalized) });
       if (!rows.length) return "Писем по запросу не найдено.";
-      return ["Яндекс Почта:", ...rows.map((row, index) => `${index + 1}. #${row.uid} ${row.subject || "(без темы)"}${row.from ? `, от ${row.from}` : ""}`)].join("\n");
+      return ["Яндекс Почта:", ...rows.map((row, index) => `${index + 1}. ${formatYandexMailSummary(row)}`)].join("\n");
     }
 
     if (/(календар|событи)/iu.test(normalized) && !/(создай|добавь|запланируй)/iu.test(normalized)) {
@@ -9538,6 +9656,54 @@ function cleanupYandexQuery(question) {
     .filter((token) => token && !stop.test(token))
     .join(" ")
     .trim();
+}
+
+function extractYandexMailUid(question) {
+  const text = String(question || "");
+  const explicit = text.match(/(?:#|uid\s*|письм[оа]?\s*)?(\d{3,})/iu)?.[1];
+  return explicit ? Number(explicit) : 0;
+}
+
+function isYandexMailReadRequest(normalizedQuestion) {
+  return /(^|\s)(прочитай|прочти|открой|раскрой)(\s|$)/iu.test(normalizedQuestion)
+    || /(покажи\s+содерж|о чем|о чём)/iu.test(normalizedQuestion);
+}
+
+async function getLatestYandexMailUid(options = {}) {
+  const rows = await yandexMailList({ limit: 1, unread: Boolean(options.unread) });
+  return rows[0]?.uid || 0;
+}
+
+function parseYandexMailSendRequest(question) {
+  const text = String(question || "").replace(/\s+/g, " ").trim();
+  const emails = [...text.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu)].map((match) => match[0]);
+  const subjectMatch = text.match(/(?:тема|subject)\s*:\s*(.*?)(?=\s+(?:текст|body|сообщение)\s*:|$)/iu);
+  const bodyMatch = text.match(/(?:текст|body|сообщение)\s*:\s*(.*)$/iu);
+  const withoutCommand = text
+    .replace(/^(?:отправь|отправить|напиши|пошли)\s+(?:письмо\s+)?/iu, "")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "")
+    .trim();
+  return {
+    to: emails,
+    subject: (subjectMatch?.[1] || "Сообщение от IOLA CLI").trim(),
+    text: (bodyMatch?.[1] || (!subjectMatch ? withoutCommand : "")).trim(),
+  };
+}
+
+function formatYandexMailSummary(row) {
+  return `#${row.uid} ${row.subject || "(без темы)"}${row.from ? `, от ${row.from}` : ""}${row.date ? `, ${row.date}` : ""}`;
+}
+
+function formatYandexMailRead(row) {
+  const body = String(row.snippet || "").trim();
+  return [
+    `Письмо #${row.uid}`,
+    `От: ${row.from || "-"}`,
+    `Тема: ${row.subject || "(без темы)"}`,
+    row.date ? `Дата: ${row.date}` : "",
+    "",
+    body ? `Текст: ${body.slice(0, 2000)}` : "Текст письма пустой или не распознан.",
+  ].filter((line) => line !== "").join("\n");
 }
 
 async function buildCloudDirectAnswer(question) {
@@ -9936,7 +10102,7 @@ async function localToolAsk(question, providerConfig, options) {
     if (!options.quiet) console.log(casualAnswer);
     return casualAnswer;
   }
-  const yandexAnswer = await buildYandexDirectAnswer(question);
+  const yandexAnswer = await buildYandexDirectAnswer(question, []);
   if (yandexAnswer) {
     if (!options.quiet) console.log(yandexAnswer);
     return yandexAnswer;
