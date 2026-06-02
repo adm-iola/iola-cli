@@ -4002,6 +4002,20 @@ async function yandexMailList(options = {}) {
   }
 }
 
+async function yandexMailCount(options = {}) {
+  const { token, email } = await yandexMailCredentials();
+  const session = await imapConnect();
+  try {
+    await imapAuthenticate(session, email, token);
+    await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
+    const criterion = options.unread ? "UNSEEN" : "ALL";
+    const search = await imapCommand(session, `UID SEARCH ${criterion}`);
+    return parseImapSearchUids(search).length;
+  } finally {
+    await imapClose(session);
+  }
+}
+
 async function yandexMailSearch(query, options = {}) {
   const normalized = normalizeGeoText(query);
   if (!normalized) return yandexMailList(options);
@@ -9456,6 +9470,20 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
+  const casualAnswer = buildCasualDirectAnswer(question);
+  if (casualAnswer) {
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: casualAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, casualAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: casualAnswer.length, sessionId, direct: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, casualAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(casualAnswer);
+    return casualAnswer;
+  }
   const yandexAnswer = await buildYandexDirectAnswer(question, context.history || history);
   if (yandexAnswer) {
     if (historyEnabled) {
@@ -9588,10 +9616,12 @@ async function buildYandexDirectAnswer(question, history = []) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   const previousAssistantText = [...(history || [])].reverse().find((item) => item.role === "assistant")?.content || "";
   const mailContext = /Яндекс Почта|Письмо #|\bUID\b|#\d{3,}/iu.test(previousAssistantText);
-  if (!isYandexServiceQuestion(normalized) && !(/^\s*\d{3,}\s*$/u.test(question) && mailContext)) return "";
+  const mailFollowup = mailContext && isYandexMailFollowupQuestion(normalized, question);
+  if (!isYandexServiceQuestion(normalized) && !mailFollowup) return "";
   try {
-    if (/^\s*\d{3,}\s*$/u.test(question) && mailContext) {
-      const uid = extractYandexMailUid(question);
+    if (mailFollowup && (isYandexMailReadRequest(normalized) || isYandexMailSelectionQuestion(question))) {
+      const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText)
+        || await getLatestYandexMailUid({ unread: /непрочитан/iu.test(normalized) });
       const row = await yandexMailRead(uid);
       if (!row || row.status === "not-found") return `Письмо #${uid} не найдено.`;
       return formatYandexMailRead(row);
@@ -9620,8 +9650,18 @@ async function buildYandexDirectAnswer(question, history = []) {
         const result = await yandexMailSend({ ...draft, confirm: true });
         return `Письмо отправлено: ${result.to.join(", ")}. Тема: ${result.subject}.`;
       }
+      if (/(сколько|количеств|есть\s+ли)/iu.test(normalized) && /непрочитан/iu.test(normalized)) {
+        const count = await yandexMailCount({ unread: true });
+        if (!count) return "Непрочитанных писем нет.";
+        const latest = await yandexMailList({ limit: 1, unread: true });
+        return [
+          `Непрочитанных писем: ${count}.`,
+          latest[0] ? `Самое свежее: ${formatYandexMailSummary(latest[0])}` : "",
+        ].filter(Boolean).join("\n");
+      }
       if (isYandexMailReadRequest(normalized)) {
-        const uid = extractYandexMailUid(question) || await getLatestYandexMailUid({ unread: /непрочитан/iu.test(normalized) });
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText)
+          || await getLatestYandexMailUid({ unread: /непрочитан/iu.test(normalized) });
         if (!uid) return "Писем для чтения не найдено.";
         const row = await yandexMailRead(uid);
         if (!row || row.status === "not-found") return `Письмо #${uid} не найдено.`;
@@ -9668,6 +9708,12 @@ function isYandexIdentityQuestion(normalized) {
     && /(яндекс|яндес|язндекс|язндекс|яндкс|yandex)/iu.test(text);
 }
 
+function isYandexMailFollowupQuestion(normalized, question) {
+  return isYandexMailReadRequest(normalized)
+    || isYandexMailSelectionQuestion(question)
+    || /(самое\s+свеж|последн|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(normalized || ""));
+}
+
 function cleanupYandexQuery(question) {
   const stop = /^(?:в|на|у|из|для|по|яндекс|yandex|найди|поиск|покажи|посмотри|проверь|почт\p{L}*|письм\p{L}*|календар\p{L}*|контакт\p{L}*)$/iu;
   return String(question || "")
@@ -9684,9 +9730,41 @@ function extractYandexMailUid(question) {
   return explicit ? Number(explicit) : 0;
 }
 
+function isYandexMailSelectionQuestion(question) {
+  return /^\s*\d{1,3}\.?\s*$/u.test(String(question || ""));
+}
+
+function resolveYandexMailUidFromQuestion(question, previousAssistantText = "") {
+  const explicitUid = extractYandexMailUid(question);
+  if (explicitUid) return explicitUid;
+  const ordinal = String(question || "").match(/^\s*(\d{1,3})\.?\s*$/u)?.[1];
+  if (ordinal) {
+    const uid = extractYandexMailUidByOrdinal(previousAssistantText, Number(ordinal));
+    if (uid) return uid;
+  }
+  if (/(самое\s+свеж|последн|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(question || ""))) {
+    return extractFirstYandexMailUid(previousAssistantText);
+  }
+  return 0;
+}
+
+function extractYandexMailUidByOrdinal(text, ordinal) {
+  if (!ordinal || ordinal < 1) return 0;
+  const rows = String(text || "").split(/\r?\n/u);
+  for (const row of rows) {
+    const match = row.match(/^\s*(\d{1,3})\.\s+#(\d{3,})/u);
+    if (match && Number(match[1]) === ordinal) return Number(match[2]);
+  }
+  return 0;
+}
+
+function extractFirstYandexMailUid(text) {
+  return Number(String(text || "").match(/#(\d{3,})/u)?.[1] || 0);
+}
+
 function isYandexMailReadRequest(normalizedQuestion) {
-  return /(^|\s)(прочитай|прочти|открой|раскрой)(\s|$)/iu.test(normalizedQuestion)
-    || /(покажи\s+содерж|о чем|о чём)/iu.test(normalizedQuestion);
+  return /(^|\s)(прочитай|прочти|открой|раскрой|прочитаем)(\s|$)/iu.test(normalizedQuestion)
+    || /(покажи\s+содерж|о чем|о чём|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(normalizedQuestion);
 }
 
 async function getLatestYandexMailUid(options = {}) {
