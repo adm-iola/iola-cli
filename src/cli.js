@@ -228,7 +228,7 @@ const DEFAULT_AI_CONFIG = {
     suggestions: true,
   },
   skills: {
-    enabled: ["education", "open-data", "reports", "local-model", "local-files", "browser-agent"],
+    enabled: ["education", "open-data", "geo", "reports", "local-model", "local-files", "browser-agent"],
   },
   daemon: {
     host: "127.0.0.1",
@@ -5343,6 +5343,36 @@ async function handleGeo(args) {
     return;
   }
 
+  if (command === "nearby") {
+    await geoNearby([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (command === "distance") {
+    await geoDistance([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (command === "map-link") {
+    await geoMapLink([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (command === "resolve") {
+    await geoResolve([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (command === "route-context") {
+    await geoRouteContext([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (command === "services") {
+    await geoServices([subcommand, ...rest].filter(Boolean));
+    return;
+  }
+
   if (command === "doctor" || command === "status") {
     await printGeoKeyStatus({ check: command === "doctor" });
     return;
@@ -5353,7 +5383,13 @@ async function handleGeo(args) {
   iola geo key status
   iola geo key doctor
   iola geo key delete yandex
-  iola geo geocode "Йошкар-Ола, ул. Петрова, 15"`);
+  iola geo geocode "Йошкар-Ола, ул. Петрова, 15"
+  iola geo nearby "Йошкар-Ола, ул. Петрова, 15" --dataset all --limit 5
+  iola geo distance --from "Йошкар-Ола, ул. Петрова, 15" --to "школа 7"
+  iola geo map-link "школа 7"
+  iola geo resolve "садик золотой петушок"
+  iola geo route-context "школа 7"
+  iola geo services "Йошкар-Ола, ул. Петрова, 15"`);
 }
 
 async function handleGeoKey(args) {
@@ -5433,6 +5469,56 @@ async function geoGeocode(args) {
   printKeyValue(result);
 }
 
+async function geoNearby(args) {
+  const options = parseOptions(args);
+  const query = options._.join(" ").trim();
+  if (!query) throw new Error('Адрес обязателен. Пример: iola geo nearby "Йошкар-Ола, ул. Петрова, 15" --dataset schools');
+  const answer = await buildNearbyAnswer(query, {
+    dataset: normalizeGeoDataset(options.dataset || inferGeoDataset(query)),
+    limit: Number(options.limit || 5),
+    radius: Number(options.radius || 0),
+  });
+  console.log(answer);
+}
+
+async function geoDistance(args) {
+  const options = parseOptions(args);
+  const from = options.from || options.address || options._.join(" ").split(/\s+(?:до|и|->)\s+/iu)[0]?.trim();
+  const to = options.to || options._.join(" ").split(/\s+(?:до|и|->)\s+/iu)[1]?.trim();
+  if (!from || !to) throw new Error('Нужны две точки. Пример: iola geo distance --from "Петрова 15" --to "школа 7"');
+  const answer = await buildDistanceAnswer(from, to);
+  console.log(answer);
+}
+
+async function geoMapLink(args) {
+  const query = args.join(" ").trim();
+  if (!query) throw new Error('Объект или адрес обязателен. Пример: iola geo map-link "школа 7"');
+  const answer = await buildMapLinkAnswer(query);
+  console.log(answer);
+}
+
+async function geoResolve(args) {
+  const query = args.join(" ").trim();
+  if (!query) throw new Error('Место или объект обязателен. Пример: iola geo resolve "садик золотой петушок"');
+  const answer = await buildPlaceResolverAnswer(query);
+  console.log(answer);
+}
+
+async function geoRouteContext(args) {
+  const query = args.join(" ").trim();
+  if (!query) throw new Error('Объект или адрес обязателен. Пример: iola geo route-context "школа 7"');
+  const answer = await buildRouteContextAnswer(query);
+  console.log(answer);
+}
+
+async function geoServices(args) {
+  const options = parseOptions(args);
+  const query = options._.join(" ").trim();
+  if (!query) throw new Error('Адрес обязателен. Пример: iola geo services "Йошкар-Ола, ул. Петрова, 15"');
+  const answer = await buildAddressToServicesAnswer(query, { limit: Number(options.limit || 3) });
+  console.log(answer);
+}
+
 async function checkYandexGeocoderKey(options = {}) {
   try {
     const result = await callYandexGeocoder("Йошкар-Ола");
@@ -5462,12 +5548,7 @@ async function callYandexGeocoder(query) {
   url.searchParams.set("lang", "ru_RU");
   url.searchParams.set("results", "1");
 
-  let response;
-  try {
-    response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-  } catch (error) {
-    throw new Error(formatProviderFetchError("Yandex Geocoder", error));
-  }
+  const response = await fetchYandexGeocoderWithRetry(url);
 
   if (!response.ok) {
     const text = await response.text();
@@ -5490,6 +5571,401 @@ async function callYandexGeocoder(query) {
     coordinates: lat && lon ? `${lat}, ${lon}` : point,
     map: lat && lon ? `https://yandex.ru/maps/?pt=${lon},${lat}&z=16&l=map` : "",
   };
+}
+
+async function fetchYandexGeocoderWithRetry(url) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (response.status !== 429 || attempt === 2) return response;
+      await sleep(700 * (attempt + 1));
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) break;
+      await sleep(500 * (attempt + 1));
+    }
+  }
+  throw new Error(formatProviderFetchError("Yandex Geocoder", lastError));
+}
+
+const geoMemoryCache = new Map();
+
+async function buildGeoDirectAnswer(question) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (!isGeoQuestion(normalized)) return "";
+  const place = detectEducationPlace(question);
+  if (place && !place.supported && /(школ|сош|лице|гимнази|сад|детсад|детск\w*\s+сад|садик)/iu.test(normalized)) {
+    return formatUnsupportedEducationGeoPlace(place);
+  }
+
+  try {
+    if (/(расстояни|как далеко|далеко ли|ближе)/iu.test(normalized)) {
+      const pair = extractDistancePair(question);
+      if (pair.from && pair.to) return buildDistanceAnswer(pair.from, pair.to);
+    }
+
+    if (/(карт[аеу]|ссылк.*карт|открыть.*карт)/iu.test(normalized)) {
+      const query = cleanupGeoObjectQuery(question);
+      if (query) return buildMapLinkAnswer(query);
+    }
+
+    if (/(где находится|как пройти|как добраться|что рядом|ориентир)/iu.test(normalized)) {
+      const query = cleanupGeoObjectQuery(question);
+      if (query) return buildRouteContextAnswer(query);
+    }
+
+    if (/(мой адрес|живу|по адресу)/iu.test(normalized)) {
+      const address = extractAddressForNearby(question);
+      if (address) return buildAddressToServicesAnswer(address, { limit: 3 });
+    }
+
+    if (/(рядом|поблизости|ближайш|ближе|около|возле)/iu.test(normalized)) {
+      const address = extractAddressForNearby(question);
+      if (address) return buildNearbyAnswer(address, { dataset: normalizeGeoDataset(inferGeoDataset(question)), limit: 5 });
+    }
+
+    if (/(уточни место|какой населенный пункт|какой район|фильтр.*район|фильтр.*населен|не путай.*населен)/iu.test(normalized)) {
+      const query = cleanupGeoObjectQuery(question);
+      if (query) return buildPlaceResolverAnswer(query);
+    }
+  } catch (error) {
+    if (/Yandex Geocoder API key не найден/iu.test(String(error?.message || ""))) return "";
+    return `Не смог выполнить geo-запрос: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  return "";
+}
+
+function formatUnsupportedEducationGeoPlace(place) {
+  return `В текущих открытых данных iola-cli есть данные городского округа Йошкар-Ола. Данных по ${place.locative || place.label} в подключенных слоях нет, поэтому не могу надежно ответить по этому объекту.`;
+}
+
+function isGeoQuestion(normalized) {
+  return /(рядом|поблизости|ближайш|ближе|расстояни|как далеко|карт[аеу]|где находится|как пройти|как добраться|мой адрес|живу|по адресу|ориентир|уточни место|какой населенный пункт|какой район|фильтр.*район|фильтр.*населен)/iu.test(normalized);
+}
+
+async function buildNearbyAnswer(address, options = {}) {
+  const origin = await resolveGeoPoint(address);
+  const dataset = normalizeGeoDataset(options.dataset || "all");
+  const limit = Math.max(1, Number(options.limit || 5));
+  const radius = Number(options.radius || 0);
+  const candidates = await getGeoCandidates(dataset);
+  const ranked = (await asyncMapLimit(candidates, 6, async (item) => {
+    const point = item.address
+      ? await geocodeCached(normalizeAddressForGeocoder(item.address)).catch(() => null)
+      : await resolveGeoPoint(item.name).catch(() => null);
+    if (!point?.lat || !point?.lon) return null;
+    const distanceMeters = haversineMeters(origin, point);
+    return { ...item, point, distanceMeters };
+  })).filter(Boolean)
+    .filter((item) => !radius || item.distanceMeters <= radius)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, limit);
+
+  if (ranked.length === 0) return `Рядом с адресом "${address}" не нашел объектов в подключенных слоях.`;
+
+  return [
+    `Ближайшие объекты к адресу: ${origin.address || address}`,
+    ...ranked.map((item, index) => `${index + 1}. ${item.name} — ${formatDistance(item.distanceMeters)}${item.address ? `\n   Адрес: ${item.address}` : ""}${item.inn ? `\n   ИНН: ${item.inn}` : ""}${item.point.map ? `\n   Карта: ${item.point.map}` : ""}`),
+    `Источник: Yandex Geocoder + слои ${dataset === "all" ? "schools, kindergartens" : dataset}.`,
+  ].join("\n");
+}
+
+async function buildDistanceAnswer(fromQuery, toQuery) {
+  const from = await resolveGeoPoint(fromQuery);
+  const to = await resolveGeoPoint(toQuery);
+  const distance = haversineMeters(from, to);
+  return [
+    `Расстояние по прямой: ${formatDistance(distance)}.`,
+    `От: ${from.name || from.address || fromQuery}${from.address && from.address !== from.name ? ` (${from.address})` : ""}`,
+    `До: ${to.name || to.address || toQuery}${to.address && to.address !== to.name ? ` (${to.address})` : ""}`,
+    to.map ? `Карта точки назначения: ${to.map}` : "",
+    "Это расстояние по координатам, не маршрут по дорогам.",
+  ].filter(Boolean).join("\n");
+}
+
+async function buildMapLinkAnswer(query) {
+  const point = await resolveGeoPoint(query);
+  return [
+    point.name || query,
+    point.address ? `Адрес: ${point.address}` : "",
+    point.coordinates ? `Координаты: ${point.coordinates}` : "",
+    point.map ? `Карта: ${point.map}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+async function buildPlaceResolverAnswer(query) {
+  const match = await resolveGeoEntity(query).catch(() => null);
+  if (match) {
+    return [
+      `Нашел объект: ${match.name}`,
+      match.address ? `Адрес: ${match.address}` : "",
+      match.inn ? `ИНН: ${match.inn}` : "",
+      match.layer ? `Слой: ${match.layer}` : "",
+      match.map ? `Карта: ${match.map}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  const point = await callYandexGeocoder(query);
+  if (!point) return `Не смог уточнить место: ${query}`;
+  return [
+    `Уточнил место через геокодер: ${point.name || query}`,
+    point.address ? `Адрес: ${point.address}` : "",
+    point.precision ? `Точность: ${point.precision}` : "",
+    point.coordinates ? `Координаты: ${point.coordinates}` : "",
+    point.map ? `Карта: ${point.map}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+async function buildRouteContextAnswer(query) {
+  const point = await resolveGeoPoint(query);
+  const nearby = await buildNearbyAnswer(point.address || query, { dataset: "all", limit: 3 });
+  return [
+    `${point.name || query}`,
+    point.address ? `Адрес: ${point.address}` : "",
+    point.coordinates ? `Координаты: ${point.coordinates}` : "",
+    point.map ? `Карта: ${point.map}` : "",
+    "",
+    nearby,
+  ].filter(Boolean).join("\n");
+}
+
+async function buildAddressToServicesAnswer(address, options = {}) {
+  const limit = Math.max(1, Number(options.limit || 3));
+  const schools = await buildNearbyAnswer(address, { dataset: "schools", limit });
+  const kindergartens = await buildNearbyAnswer(address, { dataset: "kindergartens", limit });
+  return [
+    `По адресу "${address}" ближайшие подключенные городские объекты:`,
+    "",
+    "Школы:",
+    stripNearbyHeader(schools),
+    "",
+    "Детские сады:",
+    stripNearbyHeader(kindergartens),
+  ].join("\n");
+}
+
+function stripNearbyHeader(text) {
+  return String(text || "").split("\n").filter((line) => !line.startsWith("Ближайшие объекты к адресу:")).join("\n");
+}
+
+async function resolveGeoPoint(query) {
+  const entity = await resolveGeoEntity(query).catch(() => null);
+  if (entity?.address) {
+    const point = await geocodeCached(normalizeAddressForGeocoder(entity.address));
+    return mergeGeoEntityPoint(entity, point);
+  }
+  return geocodeCached(query);
+}
+
+async function resolveGeoEntity(query) {
+  const dataset = normalizeGeoDataset(inferGeoDataset(query));
+  let candidates = await getGeoCandidates(dataset);
+  const normalized = normalizeGeoText(query);
+  const number = extractEntityNumberFromQuestion(query, dataset === "kindergartens" ? "kindergartens" : "schools");
+  const place = detectEducationPlace(query);
+  if (place && !place.supported) return null;
+  if (place?.supported) {
+    const placeMatches = candidates.filter((item) => geoItemMatchesPlace(item, place));
+    if (placeMatches.length > 0) candidates = placeMatches;
+  }
+  if (number) {
+    const exactNumberMatches = candidates.filter((item) => itemNameHasNumber(item, number));
+    if (exactNumberMatches.length === 1) {
+      const point = exactNumberMatches[0].address ? await geocodeCached(normalizeAddressForGeocoder(exactNumberMatches[0].address)).catch(() => null) : null;
+      return mergeGeoEntityPoint(exactNumberMatches[0], point);
+    }
+    if (exactNumberMatches.length > 1) {
+      const scoped = place?.supported
+        ? exactNumberMatches.filter((item) => geoItemMatchesPlace(item, place))
+        : exactNumberMatches;
+      const bestExact = scoped[0] || exactNumberMatches[0];
+      const point = bestExact.address ? await geocodeCached(normalizeAddressForGeocoder(bestExact.address)).catch(() => null) : null;
+      return mergeGeoEntityPoint(bestExact, point);
+    }
+  }
+  const scored = candidates.map((item) => ({ ...item, score: scoreGeoCandidate(item, normalized, number, place) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  if (!best) return null;
+  const point = best.address ? await geocodeCached(normalizeAddressForGeocoder(best.address)).catch(() => null) : null;
+  return mergeGeoEntityPoint(best, point);
+}
+
+function mergeGeoEntityPoint(entity, point) {
+  if (!point) return entity;
+  return {
+    ...entity,
+    geoName: point.name || "",
+    geocodedAddress: point.address || "",
+    precision: point.precision || "",
+    coordinates: point.coordinates || "",
+    map: point.map || "",
+    lat: point.lat,
+    lon: point.lon,
+  };
+}
+
+function scoreGeoCandidate(item, normalizedQuery, number, place) {
+  const name = normalizeGeoText(item.name);
+  const address = normalizeGeoText(item.address);
+  let score = 0;
+  if (number && itemNameHasNumber(item, number)) score += 20;
+  for (const token of normalizeGeoText(normalizedQuery).split(/\s+/).filter((part) => part.length >= 3)) {
+    if (name.includes(token)) score += 3;
+    if (address.includes(token)) score += 1;
+  }
+  if (place?.supported && geoItemMatchesPlace(item, place)) score += 8;
+  if (/(сад|детсад|садик)/iu.test(normalizedQuery) && item.layer === "kindergartens") score += 5;
+  if (/(школ|лице|гимнази)/iu.test(normalizedQuery) && item.layer === "schools") score += 5;
+  return score;
+}
+
+function geoItemMatchesPlace(item, place) {
+  if (!place?.supported) return false;
+  const haystack = normalizeGeoText(`${item.name || ""} ${item.address || ""}`);
+  const aliases = [place.label, ...(place.aliases || [])].map(normalizeGeoText).filter(Boolean);
+  return aliases.some((alias) => haystack.includes(alias));
+}
+
+async function getGeoCandidates(dataset = "all") {
+  const layers = dataset === "all" ? ["schools", "kindergartens"] : [dataset];
+  const result = [];
+  for (const layer of layers) {
+    const items = normalizeItems(await fetchAllApiItems(`${await getApiBaseUrl()}/${DATASETS[layer].endpoint}`))
+      .map(selectPublicSummary)
+      .filter((item) => item.name || item.address)
+      .map((item) => ({ ...item, layer }));
+    result.push(...items);
+  }
+  return result;
+}
+
+async function geocodeCached(query) {
+  const key = normalizeGeoText(query);
+  if (geoMemoryCache.has(key)) return geoMemoryCache.get(key);
+  const value = await callYandexGeocoder(query);
+  if (!value) throw new Error(`Yandex Geocoder не вернул результат для: ${query}`);
+  const parsed = parseCoordinates(value.coordinates);
+  const point = { ...value, ...parsed };
+  geoMemoryCache.set(key, point);
+  return point;
+}
+
+function parseCoordinates(coordinates) {
+  const [lat, lon] = String(coordinates || "").split(",").map((part) => Number(part.trim()));
+  return { lat, lon };
+}
+
+async function asyncMapLimit(items, limit, mapper) {
+  const source = Array.from(items || []);
+  if (source.length === 0) return [];
+  const results = new Array(source.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, source.length)) }, async () => {
+    while (next < source.length) {
+      const index = next;
+      next += 1;
+      results[index] = await mapper(source[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function haversineMeters(a, b) {
+  const radius = 6371000;
+  const lat1 = toRadians(Number(a.lat));
+  const lat2 = toRadians(Number(b.lat));
+  const deltaLat = toRadians(Number(b.lat) - Number(a.lat));
+  const deltaLon = toRadians(Number(b.lon) - Number(a.lon));
+  const x = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) ** 2;
+  return 2 * radius * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function toRadians(value) {
+  return value * Math.PI / 180;
+}
+
+function formatDistance(meters) {
+  if (!Number.isFinite(meters)) return "-";
+  if (meters < 1000) return `${Math.round(meters)} м`;
+  return `${(meters / 1000).toFixed(meters < 10000 ? 1 : 0)} км`;
+}
+
+function normalizeGeoDataset(value) {
+  const text = String(value || "").toLocaleLowerCase("ru-RU");
+  if (text === "schools" || /школ|лице|гимнази/.test(text)) return "schools";
+  if (text === "kindergartens" || /сад|детсад|садик/.test(text)) return "kindergartens";
+  return "all";
+}
+
+function inferGeoDataset(text) {
+  const normalized = String(text || "").toLocaleLowerCase("ru-RU");
+  if (/(сад|детсад|садик)/iu.test(normalized)) return "kindergartens";
+  if (/(школ|лице|гимнази)/iu.test(normalized)) return "schools";
+  return "all";
+}
+
+function extractAddressForNearby(question) {
+  const text = String(question || "").trim();
+  const match = text.match(/(?:рядом с|рядом|около|возле|поблизости от|живу на|мой адрес|по адресу)\s+(.+)/iu);
+  if (match?.[1]) return cleanupGeoAddress(match[1].split(/[,;]\s*(?:какие|что|где|кто|дай|покажи)/iu)[0]);
+  return cleanupGeoAddress(text);
+}
+
+function extractDistancePair(question) {
+  const text = String(question || "").trim();
+  const explicit = {
+    from: text.match(/(?:от|from)\s+(.+?)\s+(?:до|к|to)\s+(.+)/iu)?.[1],
+    to: text.match(/(?:от|from)\s+(.+?)\s+(?:до|к|to)\s+(.+)/iu)?.[2],
+  };
+  if (explicit.from && explicit.to) return { from: cleanupGeoAddress(explicit.from), to: cleanupGeoAddress(explicit.to) };
+  const parts = text.split(/\s+(?:и|до|->)\s+/iu).map(cleanupGeoAddress).filter(Boolean);
+  return { from: parts[0] || "", to: parts[1] || "" };
+}
+
+function cleanupGeoObjectQuery(text) {
+  return cleanupGeoAddress(String(text || "")
+    .replace(/^(?:где находится|как пройти|как добраться|покажи|дай|открой|найди|ссылку на карту|ссылка на карту)\s+/iu, "")
+    .replace(/\b(?:на карте|карту|карта|рядом|что рядом|ориентиры?)\b/giu, ""));
+}
+
+function cleanupGeoAddress(text) {
+  return String(text || "")
+    .replace(/[?.!]+$/u, "")
+    .replace(/(^|\s)улице(?=\s|$)/giu, "$1улица")
+    .replace(/\b(?:какие|какой|какая|есть|ближайшие|ближайший|школы|школа|детские сады|детский сад|садики|садик|объекты|городские|учреждения|рядом|поблизости)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeAddressForGeocoder(address) {
+  const source = String(address || "").trim();
+  if (!source) return source;
+  let text = source
+    .replace(/^\s*\d{6},?\s*/u, "")
+    .replace(/\bРоссия,\s*/iu, "")
+    .replace(/\bРоссийская Федерация,\s*/iu, "")
+    .replace(/\bРеспублика Марий Эл,\s*/iu, "")
+    .replace(/\bгородской округ\s+город\s+Йошкар-Ола,\s*/iu, "")
+    .replace(/\bГОРОД ЙОШКАР-ОЛА,\s*/iu, "")
+    .replace(/\bЙошкар-Ола\s+г,\s*/iu, "")
+    .replace(/\bгород\s+Йошкар-Ола,\s*/iu, "Йошкар-Ола, ")
+    .replace(/\bсело\s+Сем[её]новка,\s*/iu, "Йошкар-Ола, Семёновка, ")
+    .replace(/\bдом\s+/giu, "д. ")
+    .replace(/\bулица\s+/giu, "ул. ")
+    .replace(/([А-ЯЁ])\.(?=[А-ЯЁ])/gu, "$1. ")
+    .replace(/\s+/g, " ")
+    .replace(/,\s*,/g, ",")
+    .trim();
+  if (!/(йошкар|сем[её]новк)/iu.test(text)) text = `Йошкар-Ола, ${text}`;
+  return text;
+}
+
+function normalizeGeoText(text) {
+  return String(text || "").toLocaleLowerCase("ru-RU").replace(/ё/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 async function getYandexGeocoderKey() {
@@ -6912,6 +7388,20 @@ async function aiAsk(args, context = {}) {
   const historyEnabled = !options.bare && !options["no-history"] && isFeatureEnabled("sqlite-history");
   const sessionId = historyEnabled && isFeatureEnabled("sessions") ? ensureSessionForAsk(options, providerConfig, question) : null;
   const history = context.history || (sessionId ? getSessionAiHistory(sessionId) : []);
+  const geoAnswer = await buildGeoDirectAnswer(question);
+  if (geoAnswer) {
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: geoAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, geoAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: geoAnswer.length, sessionId, direct: true, geo: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, geoAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(geoAnswer);
+    return geoAnswer;
+  }
   const directAnswer = await buildDirectDataAnswer(question, dataContext);
   if (directAnswer) {
     if (historyEnabled) {
@@ -7280,6 +7770,11 @@ async function localToolAsk(question, providerConfig, options) {
   if (casualAnswer) {
     if (!options.quiet) console.log(casualAnswer);
     return casualAnswer;
+  }
+  const geoAnswer = await buildGeoDirectAnswer(question);
+  if (geoAnswer) {
+    if (!options.quiet) console.log(geoAnswer);
+    return geoAnswer;
   }
   await ensureLocalData();
   const personRoleAnswer = buildPersonRoleDirectAnswer(question);
@@ -7754,9 +8249,9 @@ function extractEntityNumberFromQuestion(question, layer) {
   const isKindergarten = layer === "kindergartens";
   const isSchool = layer === "schools";
   const patterns = isKindergarten
-    ? [/(?:детск\w*\s+сад\w*|детсад\w*|сад\w*)\s*(?:№|номер|n)?\s*(\d{1,4})/iu, /№\s*(\d{1,4})/iu]
+    ? [/(?:детск[\p{L}\p{N}_-]*\s+сад[\p{L}\p{N}_-]*|детсад[\p{L}\p{N}_-]*|сад[\p{L}\p{N}_-]*)\s*(?:№|номер|n)?\s*(\d{1,4})/iu, /№\s*(\d{1,4})/iu]
     : isSchool
-      ? [/(?:школ\w*|сош|гимнази\w*|лице\w*)\s*(?:№|номер|n)?\s*(\d{1,4})/iu, /№\s*(\d{1,4})/iu]
+      ? [/(?:школ[\p{L}\p{N}_-]*|сош|гимнази[\p{L}\p{N}_-]*|лице[\p{L}\p{N}_-]*)\s*(?:№|номер|n)?\s*(\d{1,4})/iu, /№\s*(\d{1,4})/iu]
       : [/№\s*(\d{1,4})/iu];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -9567,7 +10062,7 @@ function parseOptions(args) {
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -9816,6 +10311,7 @@ function selectSkillsForPrompt(config, question = "", options = {}) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   if (enabled.has("local-model")) selected.add("local-model");
   if (enabled.has("open-data") && shouldUseDataContext(question, options)) selected.add("open-data");
+  if (enabled.has("geo") && isGeoQuestion(normalized)) selected.add("geo");
   if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
   if (enabled.has("local-files") && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
   if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");

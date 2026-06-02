@@ -162,9 +162,16 @@ iola ai setup gigachat --model GigaChat-2
 iola geo key set yandex
 iola geo key doctor
 iola geo geocode "Йошкар-Ола, улица Петрова, 15"
+iola geo nearby "Йошкар-Ола, улица Петрова, 15" --dataset all --limit 5
+iola geo distance --from "Петрова 15" --to "школа 7"
+iola geo map-link "школа 7"
+iola geo resolve "садик золотой петушок"
+iola geo route-context "школа 7"
+iola geo services "Йошкар-Ола, улица Петрова, 15"
 ```
 
 Инструкция по получению ключа: [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key).
+Список сценариев: [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей).
 
 Зарубежные API-ключи:
 
