@@ -4372,8 +4372,8 @@ async function listAiModels(provider) {
     if (getAiNetworkMode(relayConfig) === "gateway") {
       const payload = await callAiRelayModels(relayConfig, apiKey, "OpenAI");
       return (payload.data || [])
-        .map((model) => ({ id: model.id, provider: "openai", note: model.owned_by || "" }))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .map(mapOpenAiModel)
+        .sort(sortModelsByFreshness);
     }
     const response = await fetch("https://api.openai.com/v1/models", {
       headers: { authorization: `Bearer ${apiKey}` },
@@ -4385,8 +4385,8 @@ async function listAiModels(provider) {
 
     const payload = await response.json();
     return (payload.data || [])
-      .map((model) => ({ id: model.id, provider: "openai", note: model.owned_by || "" }))
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .map(mapOpenAiModel)
+      .sort(sortModelsByFreshness);
   }
 
   if (provider === "openrouter") {
@@ -4429,6 +4429,44 @@ async function getApiProviderNetworkConfig(provider) {
     ...profile,
     aiRelayBaseUrl: profile.aiRelayBaseUrl || config.api?.aiRelayBaseUrl || AI_RELAY_BASE_URL,
   };
+}
+
+function mapOpenAiModel(model) {
+  const id = String(model.id || "");
+  const created = Number(model.created || inferOpenAiModelCreated(id) || 0);
+  return {
+    id,
+    provider: "openai",
+    note: model.owned_by || "",
+    created,
+    releaseDate: formatUnixDate(created),
+  };
+}
+
+function isOpenAiTextGenerationModel(model) {
+  const id = String(model.id || "").toLocaleLowerCase("en-US");
+  if (!id) return false;
+  if (/^(babbage|davinci|text-|whisper|tts|dall-|omni-|computer-|codex-mini-latest)/.test(id)) return false;
+  if (/(image|audio|tts|transcribe|realtime|embedding|moderation|search|instruct|safeguard)/.test(id)) return false;
+  if (/^gpt-3\.5/.test(id)) return false;
+  return id === "chat-latest"
+    || /^gpt-(4|4o|5|5\.)/.test(id)
+    || /^o[134](?:-|$)/.test(id);
+}
+
+function dedupeDatedOpenAiModels(models) {
+  const ids = new Set(models.map((model) => model.id));
+  return models.filter((model) => {
+    const base = model.id.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+    return base === model.id || !ids.has(base);
+  });
+}
+
+function inferOpenAiModelCreated(id) {
+  const match = String(id || "").match(/(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return 0;
+  const [, year, month, day] = match;
+  return Math.floor(Date.UTC(Number(year), Number(month) - 1, Number(day)) / 1000);
 }
 
 function mapOpenRouterModel(model) {
@@ -4834,19 +4872,27 @@ async function chooseAiModel(provider) {
     ? models.filter((model) => model.id.toLocaleLowerCase("ru-RU").includes(search.toLocaleLowerCase("ru-RU")))
     : models;
 
+  if (provider === "openai") {
+    filtered = dedupeDatedOpenAiModels(filtered.filter(isOpenAiTextGenerationModel))
+      .sort(sortModelsByFreshness);
+  }
+
   if (filtered.length === 0) {
     console.log("Модели не найдены.");
     return "";
   }
 
-  const limit = 25;
+  const limit = provider === "openai" ? 30 : 25;
   if (filtered.length > limit) {
     filtered = filtered.slice(0, limit);
-    console.log(`Показаны первые ${limit} моделей. Для точного выбора запустите /model и задайте фильтр.`);
+    console.log(`Показаны первые ${limit} моделей.`);
   }
 
   console.log("Выберите модель:");
-  filtered.forEach((model, index) => console.log(`  ${index + 1}. ${model.id}${model.note ? ` - ${model.note}` : ""}`));
+  filtered.forEach((model, index) => {
+    const date = model.releaseDate ? ` (${model.releaseDate})` : "";
+    console.log(`  ${index + 1}. ${model.id}${date}${model.note ? ` - ${model.note}` : ""}`);
+  });
   console.log("  0. Отмена");
 
   const answer = Number(await askText("Номер: "));

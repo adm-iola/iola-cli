@@ -53,6 +53,8 @@ assertIncludes(cliSource, "console.log(\"  0. Назад\")", "OpenRouter model 
 assertIncludes(cliSource, "renderTerminalMarkdown", "AI answers should render inline markdown in the terminal");
 assertIncludes(cliSource, "\\x1b[1m$1\\x1b[22m", "AI answer renderer should support bold markdown");
 assertIncludes(cliSource, "ensureApiKeyForModelSelection", "API model selection should prompt for missing provider keys");
+assertIncludes(cliSource, "isOpenAiTextGenerationModel", "OpenAI model selection should filter technical and legacy models");
+assertIncludes(cliSource, "dedupeDatedOpenAiModels", "OpenAI model selection should hide dated duplicates when aliases exist");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");
