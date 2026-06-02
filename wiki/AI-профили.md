@@ -29,39 +29,110 @@ iola ask "найди школы на Петрова"
 
 ### YandexGPT
 
-Официальные страницы:
+Для CLI нужны две вещи: API key и ID каталога Yandex Cloud.
 
-- документация Foundation Models: `https://yandex.cloud/ru/docs/foundation-models/`;
-- аутентификация API: `https://yandex.cloud/ru/docs/ai-studio/api-ref/authentication`;
-- тарифы: `https://yandex.cloud/ru/docs/foundation-models/pricing`.
+Пошаговая настройка:
 
-Для CLI нужны API key и ID каталога Yandex Cloud:
+1. Перейдите в консоль Yandex Cloud: `https://console.cloud.yandex.ru/`.
+2. Войдите в аккаунт Яндекса.
+3. Если облако еще не создано, создайте облако.
+4. Откройте нужный каталог внутри облака или создайте новый каталог для `iola-cli`.
+5. Скопируйте ID каталога. Обычно он виден на странице каталога в консоли Yandex Cloud. Этот ID понадобится как `YANDEXGPT_FOLDER_ID`.
+6. Откройте раздел сервисных аккаунтов в выбранном каталоге.
+7. Создайте сервисный аккаунт для CLI, например `iola-cli`.
+8. Назначьте сервисному аккаунту роль, которая разрешает вызов Foundation Models / AI Studio в этом каталоге.
+9. Откройте созданный сервисный аккаунт.
+10. Перейдите в раздел ключей сервисного аккаунта.
+11. Создайте API-ключ.
+12. Скопируйте API-ключ сразу после создания и сохраните его локально в CLI:
 
 ```bash
 iola ai key set yandexgpt
+```
+
+CLI попросит ввести:
+
+- `YANDEXGPT_API_KEY` - API-ключ сервисного аккаунта;
+- `YANDEXGPT_FOLDER_ID` - ID каталога Yandex Cloud.
+
+После сохранения ключа выберите профиль и модель:
+
+```bash
 iola ai setup yandexgpt --model yandexgpt-lite/latest
 ```
+
+Через интерактивное меню:
+
+```text
+/model
+2. Российские AI (YandexGPT/GigaChat)
+1. YandexGPT API
+```
+
+Доступные модели в CLI:
+
+- `yandexgpt-lite/latest` - быстрый и более дешевый вариант;
+- `yandexgpt/latest` - YandexGPT Pro latest;
+- `yandexgpt/rc` - release candidate.
 
 CLI также понимает env-переменные `YANDEXGPT_API_KEY` или `YANDEX_CLOUD_API_KEY`, а для каталога - `YANDEXGPT_FOLDER_ID` или `YANDEX_CLOUD_FOLDER_ID`.
 
 ### GigaChat
 
-Официальные страницы:
+Для CLI нужен authorization key. Это не одноразовый OAuth access token: CLI сам получает OAuth-токен перед запросом, используя сохраненный authorization key.
 
-- документация GigaChat: `https://developers.sber.ru/docs/ru/gigachat/overview`;
-- получение OAuth-токена: `https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token`;
-- тарифы: `https://developers.sber.ru/docs/ru/gigachat/tariffs`.
+Пошаговая настройка:
 
-Для CLI нужен authorization key:
+1. Перейдите на портал разработчиков Сбера: `https://developers.sber.ru/`.
+2. Войдите в аккаунт.
+3. Откройте раздел GigaChat.
+4. Если нужно, подключите доступ к GigaChat API для физического лица или организации.
+5. Откройте кабинет/проект, в котором доступны учетные данные GigaChat API.
+6. Найдите authorization key для REST API. В документации GigaChat он используется в OAuth-запросе в заголовке `Authorization: Basic ...`.
+7. Скопируйте authorization key и сохраните его локально в CLI:
 
 ```bash
 iola ai key set gigachat
+```
+
+CLI попросит ввести:
+
+- `GIGACHAT_AUTH_KEY` - authorization key;
+- `scope` - по умолчанию `GIGACHAT_API_PERS` для персонального доступа.
+
+После сохранения ключа выберите профиль и модель:
+
+```bash
 iola ai setup gigachat --model GigaChat-2
 ```
+
+Через интерактивное меню:
+
+```text
+/model
+2. Российские AI (YandexGPT/GigaChat)
+2. GigaChat API
+```
+
+Доступные модели в CLI:
+
+- `GigaChat-2` - основная модель;
+- `GigaChat-2-Pro` - повышенное качество;
+- `GigaChat-2-Max` - максимальное качество;
+- `GigaChat` - legacy/fallback.
 
 CLI также понимает env-переменные `GIGACHAT_AUTH_KEY` или `GIGACHAT_API_KEY`. По умолчанию используется scope `GIGACHAT_API_PERS`; при необходимости его можно задать через `GIGACHAT_SCOPE`.
 
 По тарифам: у GigaChat для физических лиц есть Freemium-лимит на токены; для больших объемов используются платные пакеты. У YandexGPT тарификация идет через Yandex Cloud по токенам и квотам аккаунта, поэтому актуальные бесплатные гранты или лимиты нужно проверять в консоли Yandex Cloud.
+
+Официальная документация:
+
+- Yandex Foundation Models: `https://yandex.cloud/ru/docs/foundation-models/`;
+- Yandex AI Studio authentication: `https://yandex.cloud/ru/docs/ai-studio/api-ref/authentication`;
+- Yandex Foundation Models pricing: `https://yandex.cloud/ru/docs/foundation-models/pricing`;
+- GigaChat overview: `https://developers.sber.ru/docs/ru/gigachat/overview`;
+- GigaChat OAuth token: `https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token`;
+- GigaChat tariffs: `https://developers.sber.ru/docs/ru/gigachat/tariffs`.
 
 ## OpenAI
 
