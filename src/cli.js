@@ -10935,21 +10935,13 @@ async function aiSetup(args) {
     }[provider];
     const profileName = options.name || provider;
     const profile = buildProfileFromOptions(provider, { ...options, model });
-    const config = await loadConfig();
-    await saveConfig({
-      ai: {
-        ...config.ai,
-        activeProfile: profileName,
-        provider,
-        model,
-        baseUrl: profile.baseUrl,
-        profiles: {
-          ...(config.ai.profiles || {}),
-          [profileName]: profile,
-        },
-      },
-    });
-    console.log(`AI-профиль ${profileName} сохранен и выбран в ${CONFIG_FILE}`);
+    if (provider === "yakunin-router") {
+      await saveApiProfile(provider, profileName, profile, { activate: false });
+      console.log(`AI-профиль ${profileName} сохранен в ${CONFIG_FILE}. Активируется после успешного получения ключа.`);
+    } else {
+      await saveApiProfile(provider, profileName, profile, { activate: true });
+      console.log(`AI-профиль ${profileName} сохранен и выбран в ${CONFIG_FILE}`);
+    }
     console.log(`Ключ сохраните командой: iola ai key set ${provider}`);
     const envHint = {
       openai: "OPENAI_API_KEY",
@@ -10988,6 +10980,24 @@ async function aiSetup(args) {
   }
 
   throw new Error(`Unknown AI provider: ${provider}`);
+}
+
+async function saveApiProfile(provider, profileName, profile, { activate }) {
+  const config = await loadConfig();
+  const nextAi = {
+    ...config.ai,
+    profiles: {
+      ...(config.ai.profiles || {}),
+      [profileName]: profile,
+    },
+  };
+  if (activate) {
+    nextAi.activeProfile = profileName;
+    nextAi.provider = provider;
+    nextAi.model = profile.model;
+    nextAi.baseUrl = profile.baseUrl;
+  }
+  await saveConfig({ ai: nextAi });
 }
 
 async function handleAiKey(args) {
@@ -18872,8 +18882,10 @@ async function onboard(args = []) {
   if (components.includes("yakunin-router")) {
     await aiSetup(["yakunin-router"]);
     if (process.stdin.isTTY) {
-      await setupYakuninRouterPayment({ topup: false });
-      await chooseAndSaveApiModel("yakunin-router");
+      const ready = await setupYakuninRouterPayment({ topup: false });
+      if (ready && await getApiKey("yakunin-router")) {
+        await chooseAndSaveApiModel("yakunin-router");
+      }
     }
   }
   if (components.includes("gigachat")) {
