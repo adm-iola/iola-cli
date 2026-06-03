@@ -170,14 +170,22 @@ const YANDEX_TOOLS = [
   "yandex_mail_read",
   "yandex_mail_send",
   "yandex_mail_reply",
+  "yandex_mail_forward",
   "yandex_mail_delete",
   "yandex_mail_mark",
+  "yandex_mail_save_to_disk",
+  "yandex_mail_create_calendar_event",
+  "yandex_mail_sender_to_contact",
+  "yandex_mail_city_context",
+  "yandex_mail_map_addresses",
+  "yandex_mail_create_task",
   "yandex_calendar_status",
   "yandex_calendar_create_event",
   "yandex_calendar_list",
   "yandex_contacts_status",
   "yandex_contacts_list",
   "yandex_contacts_search",
+  "yandex_contacts_create",
   "yandex_contacts_add_email",
   "yandex_telemost_create_event",
 ];
@@ -4007,14 +4015,22 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_mail_read") return yandexMailRead(args.uid || args.id, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: args.markSeen !== false });
   if (tool === "yandex_mail_send") return yandexMailSend(args);
   if (tool === "yandex_mail_reply") return yandexMailReply(args);
+  if (tool === "yandex_mail_forward") return yandexMailForward(args);
   if (tool === "yandex_mail_delete") return yandexMailDelete(args.uid || args.id, { ...args, mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX") });
   if (tool === "yandex_mail_mark") return yandexMailMark(args.uid || args.id, args.seen !== false && args.unread !== true, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX") });
+  if (tool === "yandex_mail_save_to_disk") return yandexMailSaveToDisk(args.uid || args.id, args);
+  if (tool === "yandex_mail_create_calendar_event") return yandexMailCreateCalendarEvent(args.uid || args.id, args);
+  if (tool === "yandex_mail_sender_to_contact") return yandexMailSenderToContact(args.uid || args.id, args);
+  if (tool === "yandex_mail_city_context") return yandexMailCityContext(args.uid || args.id, args);
+  if (tool === "yandex_mail_map_addresses") return yandexMailMapAddresses(args.uid || args.id, args);
+  if (tool === "yandex_mail_create_task") return yandexMailCreateTask(args.uid || args.id, args);
   if (tool === "yandex_calendar_status") return yandexCalendarStatus();
   if (tool === "yandex_calendar_create_event") return yandexCalendarCreateEvent(args);
   if (tool === "yandex_calendar_list") return yandexCalendarList(args);
   if (tool === "yandex_contacts_status") return yandexContactsStatus();
   if (tool === "yandex_contacts_list") return yandexContactsList(args);
   if (tool === "yandex_contacts_search") return yandexContactsSearch(args.query || "", args);
+  if (tool === "yandex_contacts_create") return yandexContactsCreate(args);
   if (tool === "yandex_contacts_add_email") return yandexContactsAddEmail(args.query || args.name || "", args.email, args);
   if (tool === "yandex_telemost_create_event") return yandexTelemostCreateEvent(args);
   throw new Error(`Yandex tool неизвестен: ${tool}`);
@@ -4253,6 +4269,123 @@ async function yandexMailReply(args = {}) {
     references: original.references || original.messageId || "",
   });
   return { ...result, replyToUid: Number(uid), originalFrom: original.from };
+}
+
+async function yandexMailForward(args = {}) {
+  if (!args.confirm) throw new Error("Для пересылки письма нужен аргумент confirm=true.");
+  const uid = args.uid || args.id;
+  const to = Array.isArray(args.to) ? args.to : String(args.to || "").split(/[;,]/).map((item) => item.trim()).filter(Boolean);
+  if (!uid) throw new Error("UID письма обязателен.");
+  if (!to.length) throw new Error("Получатель пересылки не указан.");
+  const original = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: true });
+  if (!original || original.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const text = [
+    args.text || args.comment || "",
+    "",
+    "---------- Пересланное письмо ----------",
+    `От: ${original.from || "-"}`,
+    `Дата: ${original.date || "-"}`,
+    `Тема: ${original.subject || "(без темы)"}`,
+    "",
+    original.snippet || "",
+  ].join("\n").trim();
+  return yandexMailSend({ to, subject: `Fwd: ${original.subject || "(без темы)"}`, text, confirm: true });
+}
+
+async function yandexMailSaveToDisk(uid, args = {}) {
+  if (!uid) throw new Error("UID письма обязателен.");
+  const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: args.markSeen !== false });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const safeSubject = slugForFile(row.subject || `mail-${uid}`).slice(0, 80);
+  const remotePath = args.path || args.remotePath || `${CLOUD_DEFAULT_REMOTE_DIR}/Почта/mail-${uid}-${safeSubject}.md`;
+  const text = [
+    `# ${row.subject || "(без темы)"}`,
+    "",
+    `- UID: ${row.uid}`,
+    `- От: ${row.from || "-"}`,
+    `- Дата: ${row.date || "-"}`,
+    "",
+    row.snippet || "",
+  ].join("\n");
+  const saved = await yandexDiskSaveText(text, remotePath);
+  return { ...saved, uid: row.uid, subject: row.subject };
+}
+
+async function yandexMailCreateCalendarEvent(uid, args = {}) {
+  if (!args.confirm) throw new Error("Для создания события из письма нужен аргумент confirm=true.");
+  if (!uid) throw new Error("UID письма обязателен.");
+  const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: true });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const detected = extractDateTimeFromText(`${row.subject}\n${row.snippet}`);
+  const start = args.start || detected.start || new Date(Date.now() + 3600000).toISOString();
+  const end = args.end || detected.end || new Date(new Date(start).getTime() + 3600000).toISOString();
+  return yandexCalendarCreateEvent({
+    title: args.title || row.subject || `Письмо #${uid}`,
+    description: [`Создано из письма #${uid}.`, `От: ${row.from || "-"}`, "", row.snippet || ""].join("\n"),
+    location: args.location || detected.location || "",
+    start,
+    end,
+    confirm: true,
+  });
+}
+
+async function yandexMailSenderToContact(uid, args = {}) {
+  if (!args.confirm) throw new Error("Для добавления отправителя в контакты нужен аргумент confirm=true.");
+  if (!uid) throw new Error("UID письма обязателен.");
+  const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: false });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const email = extractEmailAddress(row.from);
+  const name = extractDisplayName(row.from) || email;
+  if (!email) throw new Error("В отправителе письма не найден email.");
+  return yandexContactsCreate({ name, email, confirm: true });
+}
+
+async function yandexMailCityContext(uid, args = {}) {
+  if (!uid) throw new Error("UID письма обязателен.");
+  const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: false });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const text = `${row.subject}\n${row.snippet}`;
+  const queries = extractEducationQueriesFromText(text);
+  const results = [];
+  for (const query of queries) {
+    results.push(...searchLocalRecords(query, { dataset: "all", limit: 5, fts: true }));
+  }
+  const unique = dedupeBy(results, (item) => `${item.dataset || ""}:${item.inn || item.name}`);
+  return unique.slice(0, Number(args.limit || 10)).map((item) => ({
+    name: item.name,
+    inn: item.inn,
+    address: item.address,
+    phone: item.phone,
+    email: item.email,
+    website: item.website,
+    dataset: item.dataset,
+  }));
+}
+
+async function yandexMailMapAddresses(uid, args = {}) {
+  if (!uid) throw new Error("UID письма обязателен.");
+  const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: false });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const addresses = extractLikelyAddresses(`${row.subject}\n${row.snippet}`).slice(0, Number(args.limit || 5));
+  const rows = [];
+  for (const address of addresses) {
+    const point = await geocodeCached(address).catch(() => null);
+    rows.push({
+      address,
+      resolved: point?.address || "",
+      map: point?.lat && point?.lon ? `https://yandex.ru/maps/?pt=${point.lon},${point.lat}&z=16&l=map` : "",
+    });
+  }
+  return rows;
+}
+
+async function yandexMailCreateTask(uid, args = {}) {
+  if (!uid) throw new Error("UID письма обязателен.");
+  const row = await yandexMailRead(uid, { mailbox: await resolveYandexMailbox(args.mailbox || args.folder || "INBOX"), markSeen: false });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const title = args.title || `Ответить/разобрать письмо #${uid}: ${row.subject || "(без темы)"}`;
+  const id = addTask(title, `ask "прочитай письмо #${uid}"`);
+  return { id, title, uid: Number(uid), status: "open" };
 }
 
 async function yandexMailSend(args = {}) {
@@ -4715,6 +4848,33 @@ async function yandexContactsAddEmail(query, email, args = {}) {
   return { status: "updated", name: contact.name, email };
 }
 
+async function yandexContactsCreate(args = {}) {
+  if (!args.confirm) throw new Error("Для создания контакта нужен аргумент confirm=true.");
+  const name = String(args.name || args.email || "").trim();
+  const email = String(args.email || "").trim();
+  if (!name) throw new Error("Имя контакта обязательно.");
+  if (!email || !/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu.test(email)) throw new Error("Корректный email обязателен.");
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Контакты");
+  const baseUrl = await yandexContactsBaseUrl(token);
+  const uid = `${randomUUID()}@iola-cli`;
+  const card = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    `UID:${uid}`,
+    `FN:${escapeVcardValue(name)}`,
+    `EMAIL;TYPE=INTERNET:${email}`,
+    "END:VCARD",
+    "",
+  ].join("\r\n");
+  await yandexDavRequest(new URL(`${encodeURIComponent(uid)}.vcf`, baseUrl).toString(), token, {
+    method: "PUT",
+    headers: { "content-type": "text/vcard; charset=utf-8" },
+    body: card,
+    timeout: 45000,
+  });
+  return { status: "created", name, email, uid };
+}
+
 function upsertVcardEmail(card, email, options = {}) {
   const text = String(card || "").replace(/\r/g, "").trim();
   if (!text.includes("BEGIN:VCARD")) throw new Error("Контакт не похож на vCard.");
@@ -4723,6 +4883,10 @@ function upsertVcardEmail(card, email, options = {}) {
     return text.replace(/^EMAIL[^:]*:[^\n]*/imu, `EMAIL;TYPE=INTERNET:${email}`);
   }
   return text.replace(/\nEND:VCARD/iu, `\nEMAIL;TYPE=INTERNET:${email}\nEND:VCARD`);
+}
+
+function escapeVcardValue(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
 }
 
 function contactMatchesQuery(contact, normalizedQuery) {
@@ -10040,6 +10204,51 @@ async function buildYandexDirectAnswer(question, history = []) {
         const result = await yandexMailReply({ ...reply, confirm: true });
         return `Ответ отправлен на письмо #${result.replyToUid}: ${result.to.join(", ")}. Тема: ${result.subject}.`;
       }
+      if (/(перешли|переслать|перешли\s+письмо|fwd|forward)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        const to = [...String(question || "").matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu)].map((match) => match[0]);
+        if (!uid || !to.length) return "Для пересылки укажите письмо и получателя. Пример: перешли письмо #2382 user@example.com.";
+        const result = await yandexMailForward({ uid, to, confirm: true });
+        return `Письмо переслано: ${result.to.join(", ")}. Тема: ${result.subject}.`;
+      }
+      if (/(сохрани|запиши).{0,60}(диск|яндекс.?диск|облак)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Какое письмо сохранить на Диск? Укажите номер из списка или UID.";
+        const result = await yandexMailSaveToDisk(uid, { mailbox: extractYandexMailboxName(question) || "INBOX" });
+        return `Письмо #${uid} сохранено на Яндекс Диск: ${result.remote || result.path}.`;
+      }
+      if (/(создай|добавь).{0,40}(событи|встреч|календар)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Из какого письма создать событие? Укажите номер из списка или UID.";
+        const result = await yandexMailCreateCalendarEvent(uid, { mailbox: extractYandexMailboxName(question) || "INBOX", confirm: true });
+        return `Событие создано в Яндекс Календаре: ${result.title || result.uid}.`;
+      }
+      if (/(добавь|создай|сохрани).{0,50}(отправител|автор|контакт)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Из какого письма добавить отправителя в контакты? Укажите номер из списка или UID.";
+        const result = await yandexMailSenderToContact(uid, { mailbox: extractYandexMailboxName(question) || "INBOX", confirm: true });
+        return `Контакт создан: ${result.name}, ${result.email}.`;
+      }
+      if (/(школ|сад|детсад|инн|городск|сло[йи]|йошкар)/iu.test(normalized) && /(письм|письма|письме)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "По какому письму проверить городские слои? Укажите номер из списка или UID.";
+        const rows = await yandexMailCityContext(uid, { mailbox: extractYandexMailboxName(question) || "INBOX" });
+        if (!rows.length) return "В письме не нашел совпадений со слоями школ и детских садов.";
+        return ["Нашел в городских слоях:", ...rows.map((row, index) => `${index + 1}. ${row.name}${row.inn ? `, ИНН ${row.inn}` : ""}${row.address ? `, ${row.address}` : ""}`)].join("\n");
+      }
+      if (/(адрес|карт|гео|место|где)/iu.test(normalized) && /(письм|письма|письме)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Из какого письма взять адрес? Укажите номер из списка или UID.";
+        const rows = await yandexMailMapAddresses(uid, { mailbox: extractYandexMailboxName(question) || "INBOX" });
+        if (!rows.length) return "В письме не нашел адресов для карты.";
+        return ["Адреса из письма:", ...rows.map((row, index) => `${index + 1}. ${row.resolved || row.address}${row.map ? `\n${row.map}` : ""}`)].join("\n");
+      }
+      if (/(создай|добавь).{0,30}(задач|напомин)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "По какому письму создать задачу? Укажите номер из списка или UID.";
+        const result = await yandexMailCreateTask(uid, { mailbox: extractYandexMailboxName(question) || "INBOX" });
+        return `Задача создана #${result.id}: ${result.title}.`;
+      }
       if (/(удали|удалить|перемести\s+в\s+корзин)/iu.test(normalized)) {
         const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
         if (!uid) return "Какое письмо удалить? Укажите номер из списка или UID, например: удали письмо #2382.";
@@ -10307,6 +10516,79 @@ function formatYandexMailRead(row) {
     "",
     body ? `Текст: ${body.slice(0, 2000)}` : "Текст письма пустой или не распознан.",
   ].filter((line) => line !== "").join("\n");
+}
+
+function slugForFile(value) {
+  return String(value || "")
+    .toLocaleLowerCase("ru-RU")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    || "item";
+}
+
+function extractDisplayName(value) {
+  const text = decodeMimeHeader(String(value || "").trim());
+  return text.match(/^(.+?)\s*<[^<>]+>/u)?.[1]?.replace(/^["']|["']$/g, "").trim() || "";
+}
+
+function extractDateTimeFromText(value) {
+  const text = String(value || "").toLocaleLowerCase("ru-RU");
+  let date = null;
+  if (/завтра/u.test(text)) date = new Date(Date.now() + 86400000);
+  if (/послезавтра/u.test(text)) date = new Date(Date.now() + 2 * 86400000);
+  const explicit = text.match(/(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?/u);
+  if (explicit) {
+    const year = explicit[3] ? Number(explicit[3].length === 2 ? `20${explicit[3]}` : explicit[3]) : new Date().getFullYear();
+    date = new Date(year, Number(explicit[2]) - 1, Number(explicit[1]), 9, 0, 0);
+  }
+  const time = text.match(/(?:в\s*)?(\d{1,2})[:.](\d{2})/u) || text.match(/(?:в\s+)(\d{1,2})\s*(?:час|ч\b)?/u);
+  if (!date && time) date = new Date();
+  if (date && time) {
+    date.setHours(Number(time[1]), Number(time[2] || 0), 0, 0);
+  }
+  if (!date) return {};
+  const start = date.toISOString();
+  const end = new Date(date.getTime() + 3600000).toISOString();
+  const location = extractLikelyAddresses(value)[0] || "";
+  return { start, end, location };
+}
+
+function extractEducationQueriesFromText(value) {
+  const text = String(value || "");
+  const queries = [];
+  for (const match of text.matchAll(/(?:школ[ауыи]?|сош|гимнази[яи]|лице[йя])\s*№?\s*(\d{1,3})/giu)) queries.push(`школа ${match[1]}`);
+  for (const match of text.matchAll(/(?:детск\w*\s+сад|детсад|садик)\s*№?\s*(\d{1,3})/giu)) queries.push(`детский сад ${match[1]}`);
+  for (const match of text.matchAll(/\bинн\s*(\d{10,12})\b/giu)) queries.push(match[1]);
+  return [...new Set(queries)];
+}
+
+function extractLikelyAddresses(value) {
+  const text = String(value || "").replace(/\s+/g, " ");
+  const rows = [];
+  const patterns = [
+    /(?:адрес|по адресу|место)\s*:?\s*([^.!?\n]{8,120})/giu,
+    /((?:ул\.?|улица|проспект|пр-т|бульвар|пер\.?|переулок)\s+[^.!?\n,]{3,80}(?:,\s*(?:д\.?\s*)?\d+[а-яa-z]?)?)/giu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const address = String(match[1] || "").trim().replace(/[;,]+$/u, "");
+      if (address.length >= 8 && !/https?:|www\.|@/iu.test(address) && /(ул\.?|улица|проспект|пр-т|бульвар|пер\.?|переулок|дом|д\.|\d)/iu.test(address)) rows.push(address);
+    }
+  }
+  return [...new Set(rows)].slice(0, 10);
+}
+
+function dedupeBy(rows, keyFn) {
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    const key = keyFn(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
 }
 
 async function buildCloudDirectAnswer(question) {
@@ -10918,8 +11200,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
-    "Yandex tools: yandex_identity_me {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_save_text {path,text}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_calendar_list {start,end}, yandex_contacts_search {query}.",
-    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_delete, yandex_mail_send, yandex_mail_reply, yandex_mail_delete, yandex_calendar_create_event, yandex_telemost_create_event.",
+    "Yandex tools: yandex_identity_me {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_save_text {path,text}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_calendar_list {start,end}, yandex_contacts_search {query}.",
+    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_delete, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_contacts_create, yandex_contacts_add_email, yandex_calendar_create_event, yandex_telemost_create_event.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,

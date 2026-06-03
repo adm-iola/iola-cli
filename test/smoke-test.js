@@ -94,6 +94,13 @@ assertIncludes(cliSource, "yandexMailWatchTick", "Yandex mail should support man
 assertIncludes(cliSource, "resolveYandexMailRecipientFromContacts", "Yandex mail should resolve recipients from contacts");
 assertIncludes(cliSource, "yandexContactsAddEmail", "Yandex contacts should support adding email to a contact");
 assertIncludes(cliSource, "yandex_contacts_add_email", "Yandex contacts add email should be exposed as a tool");
+assertIncludes(cliSource, "yandex_mail_save_to_disk", "Yandex mail should save messages to Yandex Disk");
+assertIncludes(cliSource, "yandex_mail_create_calendar_event", "Yandex mail should create calendar events from messages");
+assertIncludes(cliSource, "yandex_mail_city_context", "Yandex mail should connect messages with city data layers");
+assertIncludes(cliSource, "yandex_mail_map_addresses", "Yandex mail should map addresses from messages");
+assertIncludes(cliSource, "yandex_mail_create_task", "Yandex mail should create local tasks from messages");
+assertIncludes(cliSource, "yandex_mail_forward", "Yandex mail should support forwarding messages");
+assertIncludes(cliSource, "yandexContactsCreate", "Yandex contacts should support creating contacts");
 assertIncludes(cliSource, "buildCasualDirectAnswer(question)", "Casual greetings should bypass external AI providers");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
