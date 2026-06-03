@@ -11914,6 +11914,7 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
   if (!result.openrouter_key && !existingHash) {
     throw new Error("Оплата подтверждена, но сервер не вернул ключ, совместимый с OpenRouter. Проверьте backend logs.");
   }
+  await openYakuninRouterSuccessPage(order, result);
 
   const nextSecrets = await loadSecrets();
   nextSecrets.yakuninRouter = {
@@ -11946,6 +11947,32 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
 
   console.log(`Yakunin-Router готов. Лимит: ${nextSecrets.yakuninRouter.limitUsd || units} у.е.`);
   return true;
+}
+
+async function openYakuninRouterSuccessPage(order, result) {
+  const successUrl = result.success_url || order.success_url || buildYakuninRouterStatusPageUrl("success", order.order_id);
+  if (!successUrl) return;
+  try {
+    await openUrl(successUrl);
+    console.log(`Страница успешной оплаты: ${successUrl}`);
+  } catch {
+    console.log(`Оплата успешна. Страница статуса: ${successUrl}`);
+  }
+}
+
+function buildYakuninRouterStatusPageUrl(status, orderId) {
+  try {
+    const url = new URL(YAKUNIN_ROUTER_BASE_URL);
+    const apiMarker = "/api/v1/pay/yakunin-router";
+    url.pathname = url.pathname.includes(apiMarker)
+      ? url.pathname.replace(apiMarker, `/yakunin-router/${status}`)
+      : `/yakunin-router/${status}`;
+    url.search = orderId ? `?order=${encodeURIComponent(orderId)}` : "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
 }
 
 async function chooseYakuninRouterUnits() {
