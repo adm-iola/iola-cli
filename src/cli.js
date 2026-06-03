@@ -10062,6 +10062,15 @@ async function askText(question) {
   }
 }
 
+async function askYesNo(question, defaultValue = false) {
+  if (!process.stdin.isTTY) return Boolean(defaultValue);
+  const answer = (await askText(question)).trim().toLocaleLowerCase("ru-RU");
+  if (!answer) return Boolean(defaultValue);
+  if (answer === "y" || answer === "yes" || answer === "д" || answer === "да") return true;
+  if (answer === "n" || answer === "no" || answer === "н" || answer === "нет") return false;
+  return Boolean(defaultValue);
+}
+
 async function aiContext(args) {
   const options = parseOptions(args);
   const query = options._.join(" ").trim();
@@ -16465,9 +16474,6 @@ async function onboard(args = []) {
       await chooseAndSaveApiModel("openrouter");
     }
   }
-  if (components.includes("yandex-cloud")) {
-    await setupYandexCloudConnector({});
-  }
   if (components.includes("gigachat")) {
     await aiSetup(["gigachat"]);
     if (process.stdin.isTTY) {
@@ -16485,6 +16491,9 @@ async function onboard(args = []) {
   }
   if (components.includes("yandex")) {
     await setupYandexConnector([]);
+  }
+  if (components.includes("yandex-cloud")) {
+    await setupYandexCloudConnector({});
   }
   if (components.includes("codex")) {
     await installCodexIfMissing();
@@ -16524,19 +16533,18 @@ async function chooseOnboardComponents(status = null) {
       1: "workspace",
       2: "policy",
       3: "iola",
-      4: "yandex-cloud",
-      5: "gigachat",
-      6: "openai",
-      7: "openrouter",
-      8: "codex",
-      9: "codex-mcp",
-      10: "archive",
-      11: "index",
-      12: "browser",
-      13: "ollama",
-      14: "cloud",
-      15: "yandex",
-      16: "yandex",
+      4: "gigachat",
+      5: "openai",
+      6: "openrouter",
+      7: "codex",
+      8: "codex-mcp",
+      9: "archive",
+      10: "index",
+      11: "browser",
+      12: "ollama",
+      13: "yandex",
+      14: "yandex-cloud",
+      15: "yandex-cloud",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -16559,7 +16567,6 @@ async function getOnboardComponentStatus() {
     getYandexGeocoderKey(),
     loadSecrets(),
   ]);
-  const cloudSecrets = secrets.cloud || {};
   const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
   const policyReady = (config.toolsets?.enabled || []).includes("analyst");
   return {
@@ -16576,7 +16583,6 @@ async function getOnboardComponentStatus() {
     archive: Boolean(archive),
     index: false,
     browser: browser.installed === "yes",
-    cloud: Object.keys(cloudSecrets).length > 0,
     yandex: isYandexConnectorFullyConnected(secrets),
   };
 }
@@ -16586,18 +16592,17 @@ function onboardComponentRows(status) {
     ["1", "workspace", "workspace и контекст", "рабочая папка, IOLA.md и .iola/context.md"],
     ["2", "policy", "policy analyst", "разрешения и профиль аналитика"],
     ["3", "iola", "IOLA локальная модель", "локальная модель найдена"],
-    ["4", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
-    ["5", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
-    ["6", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
-    ["7", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
-    ["8", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
-    ["9", "codex-mcp", "MCP для Codex", "можно переустановить/обновить"],
-    ["10", "archive", "7-Zip / архивы", "архиватор найден"],
-    ["11", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
-    ["12", "browser", "Browser runtime", "Playwright/Chromium установлен"],
-    ["13", "ollama", "Ollama", "опциональный локальный runtime"],
-    ["14", "cloud", "Облачный диск", "Яндекс Диск или Облако Mail.ru"],
-    ["15", "yandex", "Yandex Connector", "единый вход и категории сервисов Яндекса"],
+    ["4", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
+    ["5", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
+    ["6", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+    ["7", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
+    ["8", "codex-mcp", "MCP для Codex", "можно переустановить/обновить"],
+    ["9", "archive", "7-Zip / архивы", "архиватор найден"],
+    ["10", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
+    ["11", "browser", "Browser runtime", "Playwright/Chromium установлен"],
+    ["12", "ollama", "Ollama", "опциональный локальный runtime"],
+    ["13", "yandex", "Yandex Connector", "единый вход и категории сервисов Яндекса"],
+    ["14", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -16607,12 +16612,12 @@ function defaultOnboardSelection(status) {
   if (!status.workspace) defaults.push("1");
   if (!status.policy) defaults.push("2");
   if (!status.iola) defaults.push("3");
-  if (!status.archive) defaults.push("10");
+  if (!status.archive) defaults.push("9");
   return defaults.length ? defaults : ["1", "2"];
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandex-cloud", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "cloud", 15: "yandex", 16: "yandex" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "gigachat", 5: "openai", 6: "openrouter", 7: "codex", 8: "codex-mcp", 9: "archive", 10: "index", 11: "browser", 12: "ollama", 13: "yandex", 14: "yandex-cloud", 15: "yandex-cloud" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 

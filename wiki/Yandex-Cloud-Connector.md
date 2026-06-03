@@ -18,7 +18,7 @@ iola master
 В мастере выберите:
 
 ```text
-4. Yandex Cloud Connector - геокодинг и YandexGPT
+14. Yandex Cloud Connector - геокодинг и YandexGPT
 ```
 
 CLI откроет консоль Yandex Cloud и попросит сохранить:
