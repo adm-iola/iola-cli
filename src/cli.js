@@ -1944,6 +1944,83 @@ function flushPendingAgentOutput(state) {
   printAiAnswer(text);
 }
 
+async function getConfiguredDomophoneProviders() {
+  const [ufanetStatus, domruStatus] = await Promise.all([
+    getUfanetStatus().catch(() => ({ configured: false, enabled: false })),
+    getDomruStatus().catch(() => ({ configured: false, enabled: false })),
+  ]);
+  const providers = [];
+  if (ufanetStatus.configured && ufanetStatus.enabled) providers.push("ufanet");
+  if (domruStatus.configured && domruStatus.enabled) providers.push("domru");
+  return providers;
+}
+
+async function getAllDomophoneChoices() {
+  const providers = await getConfiguredDomophoneProviders();
+  const groups = await Promise.all(providers.map(async (provider) => {
+    if (provider === "ufanet") {
+      const rows = await ufanetGetIntercoms().catch(() => []);
+      return rows.map((item) => ({
+        provider: "ufanet",
+        id: item.id,
+        name: item.name,
+        address: item.address,
+      }));
+    }
+    if (provider === "domru") {
+      const rows = await domruGetAllIntercoms().catch(() => []);
+      return rows.map((item) => ({
+        provider: "domru",
+        id: item.id,
+        placeId: item.placeId,
+        name: item.name,
+        address: item.address,
+      }));
+    }
+    return [];
+  }));
+  return groups.flat().map((item, index) => ({ ...item, index: index + 1 }));
+}
+
+async function openDomophoneSmart(options = {}) {
+  const choices = await getAllDomophoneChoices();
+  if (choices.length === 0) return { type: "empty" };
+  if (choices.length === 1) {
+    const result = await openDomophoneChoice(choices[0]);
+    return { type: "opened", result, choice: choices[0] };
+  }
+  if (options.state) {
+    options.state.pendingAction = { type: "domophone_select_open", choices, createdAt: new Date().toISOString() };
+  }
+  return { type: "select", choices };
+}
+
+async function openDomophoneChoice(choice) {
+  if (choice.provider === "ufanet") return ufanetOpenIntercom(choice.id, { confirm: true });
+  if (choice.provider === "domru") return domruOpenIntercom(choice.placeId, choice.id, { confirm: true });
+  throw new Error(`Неизвестный провайдер домофона: ${choice.provider || "-"}`);
+}
+
+function formatDomophoneSmartOpenResult(value) {
+  if (value.type === "empty") return "Подключенные домофоны не найдены. Настройте провайдера в `/master`: Уфанет или Дом.ру.";
+  if (value.type === "select") return formatDomophoneChoicePrompt(value.choices);
+  if (value.type === "opened") return formatDomophoneOpenResult(value.result, value.choice);
+  return "Не удалось выполнить действие с домофоном.";
+}
+
+function formatDomophoneChoicePrompt(choices = []) {
+  return [
+    "Найдено несколько домофонов. Какой открыть? Ответьте цифрой:",
+    ...choices.map((item, index) => `${index + 1}. ${item.address || item.name || "Домофон"}`),
+  ].join("\n");
+}
+
+function formatDomophoneOpenResult(result, choice = {}) {
+  if (choice.provider === "ufanet") return formatUfanetOpenResult(result, choice);
+  if (choice.provider === "domru") return formatDomruOpenResult(result, choice);
+  return result?.result ? "Домофон открыт." : "Провайдер не подтвердил открытие домофона.";
+}
+
 async function handlePendingAgentAction(line, state) {
   const action = state?.pendingAction;
   if (!action) return "";
@@ -1952,6 +2029,16 @@ async function handlePendingAgentAction(line, state) {
   if (/^(нет|не|отмена|cancel|no|n)$/iu.test(normalized)) {
     state.pendingAction = null;
     return "Действие отменено.";
+  }
+  if (action.type === "domophone_select_open") {
+    const number = Number(text.match(/\d+/u)?.[0] || 0);
+    if (!number || number < 1 || number > action.choices.length) {
+      return formatDomophoneChoicePrompt(action.choices);
+    }
+    const choice = action.choices[number - 1];
+    state.pendingAction = null;
+    const result = await openDomophoneChoice(choice);
+    return formatDomophoneOpenResult(result, choice);
   }
   if (action.type === "ufanet_select_open") {
     const number = Number(text.match(/\d+/u)?.[0] || 0);
@@ -15646,6 +15733,9 @@ function cleanupCloudSaveText(question) {
 
 async function buildUfanetDirectAnswer(question, context = {}) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  const mentionsUfanet = /(уфанет|ufanet)/iu.test(normalized);
+  const mentionsDomru = /(дом\.?ру|dom\.?ru|домру)/iu.test(normalized);
+  const asksDomophone = /(домофон|дверь|подъезд)/iu.test(normalized);
   if (!/(домофон|уфанет|ufanet|дверь|подъезд)/iu.test(normalized)) return "";
   if (/(дом\.?ру|dom\.?ru|домру)/iu.test(normalized)) return "";
   if (/(ростелеком|rostelecom)/iu.test(normalized)) return "Мой домофон Ростелеком пока в разработке. Сейчас реализован Уфанет: /ufanet.";
@@ -15661,10 +15751,19 @@ async function buildUfanetDirectAnswer(question, context = {}) {
     const status = await getUfanetStatus();
     return `Уфанет: ${status.configured ? "настроен" : "не настроен"}, уведомления ${status.notifications}.`;
   }
+  if (!mentionsUfanet && !mentionsDomru && asksDomophone && /(открой|открыть|открывай|пусти|впусти|двер)/iu.test(normalized)) {
+    const result = await openDomophoneSmart({ state: context.state });
+    return formatDomophoneSmartOpenResult(result);
+  }
   if (/(открой|открыть|открывай|пусти|впусти|двер)/iu.test(normalized)) {
     const id = extractUfanetIntercomId(question);
     const result = await ufanetOpenSmart({ id, state: context.state });
     return formatUfanetSmartOpenResult(result);
+  }
+  if (!mentionsUfanet && !mentionsDomru && asksDomophone && /(покажи|какие|список|доступн|подключен)/iu.test(normalized)) {
+    const choices = await getAllDomophoneChoices();
+    if (!choices.length) return "Подключенные домофоны не найдены. Настройте провайдера в `/master`: Уфанет или Дом.ру.";
+    return ["Мои домофоны:", ...choices.map((item, index) => `${index + 1}. ${item.address || item.name || "Домофон"}`)].join("\n");
   }
   if (/(истори|звонк|кто звонил|последн)/iu.test(normalized)) {
     const rows = await ufanetGetCallHistory({ page: 1, pageSize: 10 });
@@ -16357,6 +16456,14 @@ function inferToolPlan(question, options = {}) {
     if (/(адрес|мест|квартир|place)/iu.test(normalized)) return { steps: [{ tool: "domru_places", args: {} }] };
     if (/(статус|подключ|аккаунт|логин)/iu.test(normalized)) return { steps: [{ tool: "domru_status", args: {} }] };
     return { steps: [{ tool: "domru_intercoms", args: {} }] };
+  }
+  if (!/(уфанет|ufanet|дом\.?ру|dom\.?ru|домру|ростелеком|rostelecom)/iu.test(normalized) && /(домофон|домофонн|подъезд|двер)/iu.test(normalized)) {
+    if (/(открой|открыть|пусти|впусти|двер)/iu.test(normalized)) {
+      return { steps: [{ tool: "domru_intercoms", args: {} }] };
+    }
+    if (/(покажи|какие|список|доступн|подключен)/iu.test(normalized)) {
+      return { steps: [{ tool: "domru_intercoms", args: {} }] };
+    }
   }
   if (/(уфанет|домофон|домофонн|подъезд|звонк|камера|rtsp)/iu.test(normalized)) {
     if (/(дом\.?ру|dom\.?ru|домру)/iu.test(normalized)) return { steps: [{ tool: "domru_intercoms", args: {} }] };
