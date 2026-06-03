@@ -151,7 +151,7 @@ const INDEXABLE_EXTENSIONS = /\.(md|txt|csv|json|html|docx|xlsx|pptx|pdf)$/i;
 const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "get_card", "export_report", "file_read", "browser_open", "get_current_date"];
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
-const USER_SKILL_TOOLS = ["user_skill_create", "user_skill_enable", "user_skill_disable", "user_skill_delete", "user_skill_list"];
+const USER_SKILL_TOOLS = ["user_skill_create", "user_skill_update", "user_skill_enable", "user_skill_disable", "user_skill_delete", "user_skill_list", "user_skill_templates", "user_skill_validate", "user_skill_preview"];
 const YANDEX_TOOLS = [
   "yandex_identity_me",
   "yandex_disk_info",
@@ -192,6 +192,7 @@ const YANDEX_TOOLS = [
   "yandex_mail_city_context",
   "yandex_mail_map_addresses",
   "yandex_mail_create_task",
+  "yandex_mail_meeting_pack",
   "yandex_calendar_status",
   "yandex_calendar_calendars",
   "yandex_calendar_create_event",
@@ -243,6 +244,10 @@ const YANDEX_TOOLS = [
   "yandex_contact_from_public_entity",
   "yandex_telemost_status",
   "yandex_telemost_create_event",
+  "yandex_contact_full_pack",
+  "yandex_daily_digest",
+  "yandex_calendar_reminders_tick",
+  "yandex_disk_maintenance_tick",
 ];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...USER_SKILL_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
@@ -3065,6 +3070,29 @@ async function handleSkills(args) {
     return;
   }
 
+  if (action === "templates") {
+    printTable(userSkillTemplates().map((row) => ({ name: row.name, description: row.description, tools: row.tools.join(", ") })), [["name", "Шаблон"], ["description", "Описание"], ["tools", "Tools"]]);
+    return;
+  }
+
+  if (action === "preview") {
+    const options = parseOptions(args.slice(2));
+    console.log(buildUserSkillPreview({
+      name,
+      description: options.description || "",
+      instructions: options.instructions || options.text || options.prompt || options._.join(" "),
+      tools: parseCommaList(options["allowed-tools"] || options.tool || options.uses || ""),
+      template: options.template,
+    }));
+    return;
+  }
+
+  if (action === "validate") {
+    const result = await userSkillValidate(name);
+    printTable(result.checks, [["check", "Проверка"], ["status", "Статус"], ["message", "Сообщение"]]);
+    return;
+  }
+
   if (action === "create" || action === "new") {
     const options = parseOptions(args.slice(2));
     const result = await userSkillCreate({
@@ -3072,6 +3100,7 @@ async function handleSkills(args) {
       description: options.description || "",
       instructions: options.instructions || options.text || options.prompt || options._.join(" "),
       tools: parseCommaList(options["allowed-tools"] || options.tool || options.uses || ""),
+      template: options.template,
       enable: Boolean(options.enable),
       overwrite: Boolean(options.force),
       confirm: true,
@@ -3079,6 +3108,20 @@ async function handleSkills(args) {
     console.log(`Skill создан: ${result.name}`);
     console.log(`Файл: ${result.file}`);
     if (result.enabled) console.log("Skill включен.");
+    return;
+  }
+
+  if (action === "update" || action === "edit") {
+    const options = parseOptions(args.slice(2));
+    const result = await userSkillUpdate(name, {
+      description: options.description,
+      instructions: options.instructions || options.text || options.prompt || options._.join(" "),
+      tools: parseCommaList(options["allowed-tools"] || options.tool || options.uses || ""),
+      enable: options.enable,
+      confirm: true,
+    });
+    console.log(`Skill обновлен: ${result.name}`);
+    console.log(`Файл: ${result.file}`);
     return;
   }
 
@@ -3099,7 +3142,7 @@ async function handleSkills(args) {
     return;
   }
 
-  throw new Error("Команды skills: list, paths, show NAME, create NAME --description TEXT --instructions TEXT [--enable], enable NAME, disable NAME, delete NAME --yes, bundles, bundle enable NAME, doctor.");
+  throw new Error("Команды skills: list, paths, show NAME, templates, preview NAME --template T, create NAME --description TEXT --instructions TEXT [--enable], update NAME --instructions TEXT, validate NAME, enable NAME, disable NAME, delete NAME --yes, bundles, bundle enable NAME, doctor.");
 }
 
 async function handleTools(args) {
@@ -3395,6 +3438,21 @@ async function handleYandex(args) {
     return;
   }
 
+  if (action === "daily-digest" || action === "digest") {
+    await handleYandexDailyDigest([target, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (action === "calendar-reminders" || action === "calendar-watch" || action === "reminders") {
+    await handleYandexCalendarReminders([target, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (action === "disk-maintenance" || action === "disk-watch" || action === "disk-doctor") {
+    await handleYandexDiskMaintenance([target, ...rest].filter(Boolean));
+    return;
+  }
+
   if (action === "contacts-maintenance" || action === "contacts-watch" || action === "contacts-doctor") {
     await handleYandexContactsMaintenance([target, ...rest].filter(Boolean));
     return;
@@ -3436,6 +3494,9 @@ async function handleYandex(args) {
   iola yandex status|doctor
   iola yandex services
   iola yandex mail-watch on|off|status|tick [--minutes 5]
+  iola yandex daily-digest on|off|status|tick [--time 09:00] [--email]
+  iola yandex calendar-reminders on|off|status|tick [--minutes 15]
+  iola yandex disk-maintenance on|off|status|tick [--days 7]
   iola yandex contacts-maintenance on|off|status|tick [--days 7] [--backup]
   iola yandex enable disk mail calendar
   iola yandex disable mail
@@ -3505,6 +3566,107 @@ async function handleYandexMailWatch(args = []) {
     return;
   }
   throw new Error("Команды: iola yandex mail-watch on --minutes 5 | off | status | tick");
+}
+
+async function handleYandexDailyDigest(args = []) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "on" || action === "enable" || action === "start" || action === "вкл") {
+    const time = options.time || rest.find((item) => /^\d{1,2}:\d{2}$/u.test(String(item))) || "09:00";
+    const result = await yandexDailyDigestEnable({ time, email: Boolean(options.email), save: options.save !== false });
+    console.log(`Ежедневный дайджест включен: каждый день ${result.time}. Email: ${result.email ? "yes" : "no"}.`);
+    return;
+  }
+  if (action === "off" || action === "disable" || action === "stop" || action === "выкл") {
+    await yandexDailyDigestDisable();
+    console.log("Ежедневный дайджест выключен.");
+    return;
+  }
+  if (action === "tick" || action === "run" || action === "check") {
+    const result = await yandexDailyDigestTick({ force: true, email: Boolean(options.email), save: options.save !== false });
+    console.log(result.text || "Дайджест пуст.");
+    if (result.remote) console.log(`Сохранено на Диск: ${result.remote}`);
+    return;
+  }
+  const config = await loadConfig();
+  const digest = config.yandex?.dailyDigest || {};
+  printKeyValue({
+    enabled: digest.enabled ? "yes" : "no",
+    time: digest.time || "-",
+    email: digest.email ? "yes" : "no",
+    lastRunAt: digest.lastRunAt || "-",
+    lastRemote: digest.lastRemote || "-",
+    cron: listCronJobs().some((job) => job.command === "yandex daily-digest tick") ? "yes" : "no",
+  });
+}
+
+async function handleYandexCalendarReminders(args = []) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "on" || action === "enable" || action === "start" || action === "вкл") {
+    const minutes = Math.max(1, Number(options.minutes || rest.find((item) => /^\d+$/u.test(String(item))) || 15));
+    const result = await yandexCalendarRemindersEnable(minutes);
+    console.log(`Проверка календарных напоминаний включена: каждые ${result.minutes} минут.`);
+    return;
+  }
+  if (action === "off" || action === "disable" || action === "stop" || action === "выкл") {
+    await yandexCalendarRemindersDisable();
+    console.log("Проверка календарных напоминаний выключена.");
+    return;
+  }
+  if (action === "tick" || action === "run" || action === "check") {
+    const result = await yandexCalendarRemindersTick({ force: true, horizonMinutes: Number(options.horizon || options.minutes || 60) });
+    if (!result.events.length) console.log("Ближайших событий для напоминания нет.");
+    else console.log(["Ближайшие события:", ...result.events.map((row, index) => `${index + 1}. ${row.title || row.uid} — ${row.startIso || row.start || "-"}`)].join("\n"));
+    return;
+  }
+  const config = await loadConfig();
+  const reminders = config.yandex?.calendarReminders || {};
+  printKeyValue({
+    enabled: reminders.enabled ? "yes" : "no",
+    minutes: reminders.minutes || "-",
+    horizonMinutes: reminders.horizonMinutes || 60,
+    lastRunAt: reminders.lastRunAt || "-",
+    lastCount: reminders.lastCount ?? "-",
+    cron: listCronJobs().some((job) => job.command === "yandex calendar-reminders tick") ? "yes" : "no",
+  });
+}
+
+async function handleYandexDiskMaintenance(args = []) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "on" || action === "enable" || action === "start" || action === "вкл") {
+    const days = Math.max(1, Number(options.days || rest.find((item) => /^\d+$/u.test(String(item))) || 7));
+    const result = await yandexDiskMaintenanceEnable(days);
+    console.log(`Проверка Яндекс Диска включена: каждые ${result.days} дней.`);
+    return;
+  }
+  if (action === "off" || action === "disable" || action === "stop" || action === "выкл") {
+    await yandexDiskMaintenanceDisable();
+    console.log("Проверка Яндекс Диска выключена.");
+    return;
+  }
+  if (action === "tick" || action === "run" || action === "check") {
+    const result = await yandexDiskMaintenanceTick({ force: true });
+    printKeyValue({
+      used: formatBytes(result.usedSpace),
+      total: formatBytes(result.totalSpace),
+      trash: formatBytes(result.trashSize),
+      docs: result.docs,
+      publicLinks: result.publicLinks,
+      remote: result.remote || "-",
+    });
+    return;
+  }
+  const config = await loadConfig();
+  const disk = config.yandex?.diskMaintenance || {};
+  printKeyValue({
+    enabled: disk.enabled ? "yes" : "no",
+    days: disk.days || "-",
+    lastRunAt: disk.lastRunAt || "-",
+    lastRemote: disk.lastRemote || "-",
+    cron: listCronJobs().some((job) => job.command === "yandex disk-maintenance tick") ? "yes" : "no",
+  });
 }
 
 async function handleYandexContactsMaintenance(args = []) {
@@ -4164,6 +4326,7 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_mail_city_context") return yandexMailCityContext(args.uid || args.id, args);
   if (tool === "yandex_mail_map_addresses") return yandexMailMapAddresses(args.uid || args.id, args);
   if (tool === "yandex_mail_create_task") return yandexMailCreateTask(args.uid || args.id, args);
+  if (tool === "yandex_mail_meeting_pack") return yandexMailMeetingPack(args.uid || args.id, args);
   if (tool === "yandex_calendar_status") return yandexCalendarStatus();
   if (tool === "yandex_calendar_calendars") return yandexCalendarCalendars(args);
   if (tool === "yandex_calendar_create_event") return yandexCalendarCreateEvent(args);
@@ -4215,6 +4378,10 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_contact_from_public_entity") return yandexContactFromPublicEntity(args);
   if (tool === "yandex_telemost_status") return yandexTelemostStatus();
   if (tool === "yandex_telemost_create_event") return yandexTelemostCreateEvent(args);
+  if (tool === "yandex_contact_full_pack") return yandexContactFullPack(args);
+  if (tool === "yandex_daily_digest") return yandexDailyDigestTick({ ...args, force: true });
+  if (tool === "yandex_calendar_reminders_tick") return yandexCalendarRemindersTick({ ...args, force: true });
+  if (tool === "yandex_disk_maintenance_tick") return yandexDiskMaintenanceTick({ ...args, force: true });
   throw new Error(`Yandex tool неизвестен: ${tool}`);
 }
 
@@ -4383,6 +4550,142 @@ async function yandexMailWatchDisable() {
   await saveConfig({ yandex: { ...(config.yandex || {}), mailWatch: { ...(config.yandex?.mailWatch || {}), enabled: false, updatedAt: new Date().toISOString() } } });
   deleteCronJobsByCommand("yandex mail-watch tick");
   return { enabled: false };
+}
+
+async function yandexDailyDigestEnable(options = {}) {
+  const config = await loadConfig();
+  const time = normalizeDigestTime(options.time || "09:00");
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      dailyDigest: { ...(config.yandex?.dailyDigest || {}), enabled: true, time, email: Boolean(options.email), save: options.save !== false, updatedAt: new Date().toISOString() },
+    },
+  });
+  await upsertCronJob(`каждый день ${time}`, "yandex daily-digest tick", { replaceCommand: true });
+  return { enabled: true, time, email: Boolean(options.email), save: options.save !== false };
+}
+
+async function yandexDailyDigestDisable() {
+  const config = await loadConfig();
+  const current = config.yandex?.dailyDigest || {};
+  await saveConfig({ yandex: { ...(config.yandex || {}), dailyDigest: { ...current, enabled: false, lastRemote: "", updatedAt: new Date().toISOString() } } });
+  deleteCronJobsByCommand("yandex daily-digest tick");
+  return { enabled: false };
+}
+
+async function yandexDailyDigestTick(options = {}) {
+  const config = await loadConfig();
+  const digest = config.yandex?.dailyDigest || {};
+  if (!digest.enabled && !options.force) return { enabled: false, text: "" };
+  const unread = await yandexMailList({ mailbox: "INBOX", limit: 10, unread: true }).catch(() => []);
+  const events = await yandexCalendarList({ start: new Date().toISOString(), end: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), limit: 20 }).catch(() => []);
+  const incomplete = await yandexContactsFindIncomplete({ limit: 10 }).catch(() => []);
+  const text = [
+    `# Дайджест IOLA за ${new Intl.DateTimeFormat("ru-RU", { dateStyle: "long" }).format(new Date())}`,
+    "",
+    `Непрочитанных писем: ${unread.length}`,
+    ...unread.slice(0, 5).map((row, index) => `${index + 1}. ${formatYandexMailSummary(row)}`),
+    "",
+    `Событий на 24 часа: ${events.length}`,
+    ...events.slice(0, 10).map((row, index) => `${index + 1}. ${row.title || "(без названия)"} — ${row.startIso || row.start || "-"}`),
+    "",
+    `Неполных контактов: ${incomplete.length}`,
+    ...incomplete.slice(0, 5).map((row, index) => `${index + 1}. ${formatYandexContact(row)}`),
+  ].join("\n").trim();
+  let remote = "";
+  if (options.save !== false && digest.save !== false) {
+    const saved = await yandexDocsCreateText({ title: `daily-digest-${timestampForFile()}`, text, format: "md", confirm: true });
+    remote = saved.remote || "";
+  }
+  if (options.email || digest.email) {
+    const profile = await getYandexIdentityProfile();
+    const to = profile.defaultEmail || profile.emails?.[0];
+    if (to) await yandexMailSend({ to: [to], subject: "Ежедневный дайджест IOLA", text, confirm: true });
+  }
+  await saveConfig({ yandex: { ...(config.yandex || {}), dailyDigest: { ...digest, enabled: digest.enabled !== false, lastRunAt: new Date().toISOString(), lastRemote: remote || digest.lastRemote || "" } } });
+  return { enabled: true, text, remote, unread: unread.length, events: events.length, incomplete: incomplete.length };
+}
+
+async function yandexCalendarRemindersEnable(minutes = 15) {
+  const config = await loadConfig();
+  const safeMinutes = Math.max(1, Number(minutes || 15));
+  await saveConfig({ yandex: { ...(config.yandex || {}), calendarReminders: { ...(config.yandex?.calendarReminders || {}), enabled: true, minutes: safeMinutes, horizonMinutes: 60, updatedAt: new Date().toISOString() } } });
+  await upsertCronJob(`каждые ${safeMinutes} минут`, "yandex calendar-reminders tick", { replaceCommand: true });
+  return { enabled: true, minutes: safeMinutes };
+}
+
+async function yandexCalendarRemindersDisable() {
+  const config = await loadConfig();
+  const current = config.yandex?.calendarReminders || {};
+  await saveConfig({ yandex: { ...(config.yandex || {}), calendarReminders: { ...current, enabled: false, seen: [], updatedAt: new Date().toISOString() } } });
+  deleteCronJobsByCommand("yandex calendar-reminders tick");
+  return { enabled: false };
+}
+
+async function yandexCalendarRemindersTick(options = {}) {
+  const config = await loadConfig();
+  const reminders = config.yandex?.calendarReminders || {};
+  if (!reminders.enabled && !options.force) return { enabled: false, events: [] };
+  const horizon = Math.max(5, Number(options.horizonMinutes || reminders.horizonMinutes || 60));
+  const now = new Date();
+  const rows = await yandexCalendarList({ start: now.toISOString(), end: new Date(now.getTime() + horizon * 60 * 1000).toISOString(), limit: 30 });
+  const seen = new Set(reminders.seen || []);
+  const fresh = rows.filter((row) => {
+    const key = `${row.uid}:${row.start}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  await saveConfig({ yandex: { ...(config.yandex || {}), calendarReminders: { ...reminders, enabled: reminders.enabled !== false, lastRunAt: new Date().toISOString(), lastCount: fresh.length, seen: [...seen].slice(-500) } } });
+  return { enabled: true, events: fresh };
+}
+
+async function yandexDiskMaintenanceEnable(days = 7) {
+  const config = await loadConfig();
+  const safeDays = Math.max(1, Number(days || 7));
+  await saveConfig({ yandex: { ...(config.yandex || {}), diskMaintenance: { ...(config.yandex?.diskMaintenance || {}), enabled: true, days: safeDays, updatedAt: new Date().toISOString() } } });
+  await upsertCronJob(`каждые ${safeDays} дней`, "yandex disk-maintenance tick", { replaceCommand: true });
+  return { enabled: true, days: safeDays };
+}
+
+async function yandexDiskMaintenanceDisable() {
+  const config = await loadConfig();
+  const current = config.yandex?.diskMaintenance || {};
+  await saveConfig({ yandex: { ...(config.yandex || {}), diskMaintenance: { ...current, enabled: false, lastRemote: "", updatedAt: new Date().toISOString() } } });
+  deleteCronJobsByCommand("yandex disk-maintenance tick");
+  return { enabled: false };
+}
+
+async function yandexDiskMaintenanceTick(options = {}) {
+  const config = await loadConfig();
+  const disk = config.yandex?.diskMaintenance || {};
+  if (!disk.enabled && !options.force) return { enabled: false };
+  const info = await yandexDiskInfo();
+  const docs = await yandexDocsList({ limit: 500 }).catch(() => []);
+  const all = await yandexDiskListRecursive(CLOUD_DEFAULT_REMOTE_DIR, { depth: 4, limit: 500 }).catch(() => []);
+  const publicLinks = [];
+  for (const row of all.slice(0, 100)) {
+    const statRow = await yandexDiskStat(row.path).catch(() => null);
+    if (statRow?.publicUrl) publicLinks.push(statRow);
+  }
+  const text = [
+    `# Проверка Яндекс Диска ${new Date().toISOString()}`,
+    "",
+    `Занято: ${formatBytes(info.usedSpace)} из ${formatBytes(info.totalSpace)}`,
+    `Корзина: ${formatBytes(info.trashSize)}`,
+    `Документов: ${docs.length}`,
+    `Публичных ссылок в /IOLA: ${publicLinks.length}`,
+    ...publicLinks.slice(0, 20).map((row, index) => `${index + 1}. ${row.path} — ${row.publicUrl}`),
+  ].join("\n");
+  const saved = await yandexDocsCreateText({ title: `disk-maintenance-${timestampForFile()}`, text, format: "md", confirm: true });
+  await saveConfig({ yandex: { ...(config.yandex || {}), diskMaintenance: { ...disk, enabled: disk.enabled !== false, lastRunAt: new Date().toISOString(), lastRemote: saved.remote || "", lastDocs: docs.length, lastPublicLinks: publicLinks.length } } });
+  return { enabled: true, ...info, docs: docs.length, publicLinks: publicLinks.length, remote: saved.remote || "" };
+}
+
+function normalizeDigestTime(value) {
+  const match = String(value || "").match(/^(\d{1,2})(?::(\d{2}))?$/u);
+  if (!match) return "09:00";
+  return `${String(Math.min(23, Number(match[1]))).padStart(2, "0")}:${String(Math.min(59, Number(match[2] || 0))).padStart(2, "0")}`;
 }
 
 async function yandexContactsMaintenanceEnable(days = 7, options = {}) {
@@ -4586,6 +4889,47 @@ async function yandexMailCreateCalendarEvent(uid, args = {}) {
     end,
     confirm: true,
   });
+}
+
+async function yandexMailMeetingPack(uid, args = {}) {
+  if (!args.confirm) throw new Error("Для пакетного сценария по письму нужен аргумент confirm=true.");
+  if (!uid) throw new Error("UID письма обязателен.");
+  const mailbox = await resolveYandexMailbox(args.mailbox || args.folder || "INBOX");
+  const row = await yandexMailRead(uid, { mailbox, markSeen: true });
+  if (!row || row.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
+  const senderEmail = extractEmailAddress(row.from);
+  const saved = await yandexMailSaveToDisk(uid, { mailbox });
+  const shared = await yandexDiskShareWithQr(saved.remote, { confirm: true });
+  const detected = extractDateTimeFromText(`${args.text || ""}\n${row.subject}\n${row.snippet}`);
+  const start = args.start || detected.start || new Date(Date.now() + 3600000).toISOString();
+  const end = args.end || detected.end || new Date(new Date(start).getTime() + 3600000).toISOString();
+  const event = await yandexCalendarCreateEvent({
+    title: args.title || `Встреча по письму: ${row.subject || `#${uid}`}`,
+    description: [
+      `Создано из письма #${uid}.`,
+      `От: ${row.from || "-"}`,
+      `Письмо сохранено: ${saved.remote}`,
+      `Ссылка: ${shared.publicUrl}`,
+      `QR-код: ${shared.qrPublicUrl}`,
+      "",
+      row.snippet || "",
+    ].join("\n"),
+    location: args.location || detected.location || "",
+    start,
+    end,
+    attendees: senderEmail ? [senderEmail] : [],
+    confirm: true,
+  });
+  let sent = null;
+  if ((args.send || args.email) && senderEmail) {
+    sent = await yandexMailSend({
+      to: [senderEmail],
+      subject: args.subject || `Материалы к встрече: ${row.subject || `письмо #${uid}`}`,
+      text: [`Создал встречу и сохранил письмо на Яндекс Диск.`, `Ссылка: ${shared.publicUrl}`, `QR-код: ${shared.qrPublicUrl}`].join("\n"),
+      confirm: true,
+    });
+  }
+  return { status: "mail-meeting-pack-created", uid: Number(uid), from: row.from, saved: saved.remote, publicUrl: shared.publicUrl, qrPublicUrl: shared.qrPublicUrl, event: event.uid, sentTo: sent?.to || [] };
 }
 
 async function yandexMailSenderToContact(uid, args = {}) {
@@ -5643,6 +5987,47 @@ async function yandexContactFromPublicEntity(args = {}) {
     note: `Создано из открытого слоя ${layer}. ИНН: ${entity.inn || "-"}.`,
     confirm: true,
   });
+}
+
+async function yandexContactFullPack(args = {}) {
+  if (!args.confirm) throw new Error("Для полного сценария по контакту нужен аргумент confirm=true.");
+  const resolved = await resolveYandexContact(args.query || args.contact || args.name || "", args);
+  if (resolved.status !== "ok") return resolved;
+  const contact = resolved.contact;
+  const folder = await yandexContactCreateDiskFolder({ query: contact.email || contact.name || contact.phone, confirm: true, selectFirst: true });
+  const noteText = [
+    `# ${contact.name || contact.email || contact.phone}`,
+    "",
+    `Email: ${contact.email || "-"}`,
+    `Телефон: ${contact.phone || "-"}`,
+    `Адрес: ${contact.address || "-"}`,
+    `Организация: ${contact.org || "-"}`,
+    "",
+    args.note || args.text || "Пакет контакта создан IOLA CLI.",
+  ].join("\n");
+  const doc = await yandexDocsCreateText({ path: path.posix.join(folder.remote, "meeting-note.md"), text: noteText, confirm: true });
+  const shared = await yandexDiskShareWithQr(folder.remote, { confirm: true });
+  const dateTime = args.start || args.date ? { start: args.start || args.date, end: args.end } : extractDateTimeFromText(args.text || args.source_question || "");
+  let event = null;
+  if (args.createEvent !== false && contact.email) {
+    event = await yandexCalendarCreateEvent({
+      ...dateTime,
+      title: args.title || `Встреча: ${contact.name || contact.email}`,
+      description: [`Папка контакта: ${folder.remote}`, `Ссылка: ${shared.publicUrl}`, args.note || ""].filter(Boolean).join("\n"),
+      attendees: [contact.email],
+      confirm: true,
+    });
+  }
+  let sent = null;
+  if ((args.send || args.email) && contact.email) {
+    sent = await yandexMailSend({
+      to: [contact.email],
+      subject: args.subject || `Материалы IOLA: ${contact.name || contact.email}`,
+      text: [args.message || "Подготовил материалы.", `Ссылка: ${shared.publicUrl}`, `QR-код: ${shared.qrPublicUrl}`].join("\n"),
+      confirm: true,
+    });
+  }
+  return { status: "contact-full-pack-created", contact: contact.name || contact.email, folder: folder.remote, doc: doc.remote, publicUrl: shared.publicUrl, qrPublicUrl: shared.qrPublicUrl, event: event?.uid || "", sentTo: sent?.to || [] };
 }
 
 async function resolveYandexContact(query, args = {}) {
@@ -11084,6 +11469,13 @@ function isCronDue(job) {
     return !lastRun || now.getTime() - lastRun.getTime() >= Number(everyDays[1]) * 24 * 60 * 60 * 1000;
   }
   if (normalized.includes("каждый день") || normalized.includes("daily")) {
+    const time = normalized.match(/(\d{1,2}):(\d{2})/u);
+    if (time) {
+      const dueAt = new Date(now);
+      dueAt.setHours(Number(time[1]), Number(time[2]), 0, 0);
+      const ranToday = lastRun && lastRun.toISOString().slice(0, 10) === now.toISOString().slice(0, 10);
+      return now >= dueAt && !ranToday;
+    }
     return !lastRun || now.toISOString().slice(0, 10) !== lastRun.toISOString().slice(0, 10);
   }
   if (normalized.includes("каждую неделю") || normalized.includes("weekly")) {
@@ -11635,6 +12027,49 @@ async function buildYandexDirectAnswer(question, history = []) {
       ].join("\n");
     }
 
+    if (/(дайджест|сводк)/iu.test(normalized) && /(яндекс|почт|календар|контакт|диск)/iu.test(normalized)) {
+      if (/(включ|запусти|начни|поставь|создай)/iu.test(normalized) && /(кажд|ежеднев|авто|регуляр)/iu.test(normalized)) {
+        const time = question.match(/(\d{1,2}:\d{2})/u)?.[1] || "09:00";
+        const result = await yandexDailyDigestEnable({ time, email: /email|почт[уы]|письм/iu.test(normalized), save: true });
+        return `Ежедневный дайджест включен: каждый день ${result.time}.`;
+      }
+      if (/(выключ|отключ|останов|убери)/iu.test(normalized)) {
+        await yandexDailyDigestDisable();
+        return "Ежедневный дайджест выключен.";
+      }
+      const result = await yandexDailyDigestTick({ force: true, save: true, email: /отправь|email|почт[уы]/iu.test(normalized) });
+      return [result.text, result.remote ? `\nСохранено: ${result.remote}` : ""].join("").trim();
+    }
+
+    if (/(календар|событи|встреч)/iu.test(normalized) && /(напомин|уведом|следи|монитор|авто|регуляр)/iu.test(normalized)) {
+      if (/(включ|запусти|начни|поставь|создай)/iu.test(normalized)) {
+        const minutes = Number(question.match(/(\d+)\s*(?:мин|минут)/iu)?.[1] || 15);
+        await yandexCalendarRemindersEnable(minutes);
+        return `Проверка календарных напоминаний включена: каждые ${minutes} минут.`;
+      }
+      if (/(выключ|отключ|останов|убери)/iu.test(normalized)) {
+        await yandexCalendarRemindersDisable();
+        return "Проверка календарных напоминаний выключена.";
+      }
+      const result = await yandexCalendarRemindersTick({ force: true });
+      if (!result.events.length) return "Ближайших событий для напоминания нет.";
+      return ["Ближайшие события:", ...result.events.map((row, index) => `${index + 1}. ${row.title || row.uid} — ${row.startIso || row.start || "-"}`)].join("\n");
+    }
+
+    if (/(диск|яндекс.?диск|документ)/iu.test(normalized) && /(провер|обслуж|maintenance|аудит|регуляр|авто)/iu.test(normalized)) {
+      if (/(включ|запусти|начни|поставь|создай)/iu.test(normalized)) {
+        const days = Number(question.match(/(\d+)\s*(?:дн|день|дня|дней)/iu)?.[1] || 7);
+        await yandexDiskMaintenanceEnable(days);
+        return `Проверка Яндекс Диска включена: каждые ${days} дней.`;
+      }
+      if (/(выключ|отключ|останов|убери)/iu.test(normalized)) {
+        await yandexDiskMaintenanceDisable();
+        return "Проверка Яндекс Диска выключена.";
+      }
+      const result = await yandexDiskMaintenanceTick({ force: true });
+      return `Проверка Яндекс Диска выполнена. Документов: ${result.docs}, публичных ссылок: ${result.publicLinks}. Отчет: ${result.remote}.`;
+    }
+
     if (/(контакт|адресн)/iu.test(normalized) && !mailFollowup && !isExplicitYandexDiskPathDelete(question)) {
       return await buildYandexContactsDirectAnswer(question, normalized);
     }
@@ -11681,6 +12116,12 @@ async function buildYandexDirectAnswer(question, history = []) {
         if (!uid) return "Какое письмо сохранить на Диск? Укажите номер из списка или UID.";
         const result = await yandexMailSaveToDisk(uid, { mailbox: extractYandexMailboxName(question) || "INBOX" });
         return `Письмо #${uid} сохранено на Яндекс Диск: ${result.remote || result.path}.`;
+      }
+      if (/(пакет|комплект|встреч).{0,80}(письм|письма)|(?:письм|письма).{0,80}(пакет|комплект|встреч)/iu.test(normalized) && /(диск|ссылк|qr|календар|встреч)/iu.test(normalized)) {
+        const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
+        if (!uid) return "Из какого письма создать пакет? Укажите номер из списка или UID.";
+        const result = await yandexMailMeetingPack(uid, { mailbox: extractYandexMailboxName(question) || "INBOX", ...extractDateTimeFromText(question), confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
       }
       if (/(создай|добавь).{0,40}(событи|встреч|календар)/iu.test(normalized)) {
         const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
@@ -12122,6 +12563,11 @@ async function buildYandexContactsDirectAnswer(question, normalized = "") {
     const result = await yandexContactCreateDiskFolder({ query, confirm: true });
     return formatToolResult({ rows: [result], outputs: [] }, {});
   }
+  if (/(полный|комплект|пакет|подготовь).{0,80}(контакт|клиент|человек)/iu.test(text) || /(контакт|клиент|человек).{0,80}(полный|комплект|пакет)/iu.test(text)) {
+    const query = cleanupYandexContactActionQuery(question);
+    const result = await yandexContactFullPack({ query, ...extractDateTimeFromText(question), note: extractShareMessage(question), confirm: true });
+    return formatToolResult({ rows: [result], outputs: [] }, {});
+  }
   if (/(отправь|пошли).{0,80}(ссылк|qr|qr-код|диск|яндекс.?диск)/iu.test(text)) {
     const remotePath = extractCloudPath(question);
     const contact = cleanupYandexContactActionQuery(question.replace(remotePath || "", " "));
@@ -12156,6 +12602,27 @@ async function buildYandexContactsDirectAnswer(question, normalized = "") {
 async function buildUserSkillDirectAnswer(question) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   if (!/(skill|скилл|скил|навык)/iu.test(normalized)) return "";
+  if (/(шаблон|template|вариант)/iu.test(normalized) && /(покажи|список|какие|list)/iu.test(normalized)) {
+    const rows = userSkillTemplates();
+    return ["Шаблоны skills:", ...rows.map((row) => `- ${row.name}: ${row.description}`)].join("\n");
+  }
+  if (/(preview|предпросмотр|покажи\s+как)/iu.test(normalized)) {
+    const name = extractUserSkillNameFromQuestion(question) || "user-skill";
+    const template = normalizeUserSkillName(question.match(/(?:шаблон|template)\s+([a-z0-9а-яё_-]+)/iu)?.[1] || "");
+    return buildUserSkillPreview({ name, template, instructions: question });
+  }
+  if (/(проверь|validate|doctor|валидац)/iu.test(normalized)) {
+    const name = extractUserSkillNameFromQuestion(question);
+    if (!name) return "Какой skill проверить? Укажите имя.";
+    const result = await userSkillValidate(name);
+    return ["Проверка skill:", ...result.checks.map((row) => `${row.status}: ${row.check} - ${row.message}`)].join("\n");
+  }
+  if (/(обнови|измени|update|edit)/iu.test(normalized)) {
+    const name = extractUserSkillNameFromQuestion(question);
+    if (!name) return "Какой skill обновить? Укажите имя.";
+    const result = await userSkillUpdate(name, { instructions: question, tools: inferUserSkillTools(question), confirm: true });
+    return `Skill обновлен: ${result.name}\nФайл: ${result.file}`;
+  }
   if (/(создай|добавь|сделай|create|new)/iu.test(normalized)) {
     const name = extractUserSkillNameFromQuestion(question) || "user-skill";
     const result = await userSkillCreate({
@@ -12163,6 +12630,7 @@ async function buildUserSkillDirectAnswer(question) {
       description: extractUserSkillDescription(question, name),
       instructions: question,
       tools: inferUserSkillTools(question),
+      template: normalizeUserSkillName(question.match(/(?:шаблон|template)\s+([a-z0-9а-яё_-]+)/iu)?.[1] || ""),
       enable: true,
       confirm: true,
     });
@@ -13415,9 +13883,9 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
-    "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}.",
-    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event.",
-    "User skill tools: user_skill_create {name,description,instructions,tools,enable,confirm}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай skill только по явной просьбе пользователя и с confirm=true.",
+    "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_mail_meeting_pack {uid,start,end,send,confirm}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}, yandex_contact_full_pack {contact,start,end,send,confirm}, yandex_daily_digest {save,email}, yandex_calendar_reminders_tick {}, yandex_disk_maintenance_tick {}.",
+    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event.",
+    "User skill tools: user_skill_create {name,description,instructions,tools,template,enable,confirm}, user_skill_update {name,instructions,tools,confirm}, user_skill_templates {}, user_skill_validate {name}, user_skill_preview {name,template,instructions}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай или меняй skill только по явной просьбе пользователя и с confirm=true.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
     `Вопрос: ${question}`,
@@ -13497,6 +13965,12 @@ function inferToolPlan(question, options = {}) {
       }],
     };
   }
+  if (/(шаблон|template)/iu.test(normalized) && /(skill|скилл|скил|навык)/iu.test(normalized)) {
+    return { steps: [{ tool: "user_skill_templates", args: {} }] };
+  }
+  if (/(проверь|validate|doctor)/iu.test(normalized) && /(skill|скилл|скил|навык)/iu.test(normalized)) {
+    return { steps: [{ tool: "user_skill_validate", args: { name: extractUserSkillNameFromQuestion(question) } }] };
+  }
   if (/(яндекс|yandex)/iu.test(normalized) && /(аккаунт|профил|логин|почт[аы]|email|e-mail|кто подключен)/iu.test(normalized)) {
     return { steps: [{ tool: "yandex_identity_me", args: {} }] };
   }
@@ -13527,6 +14001,7 @@ function inferToolPlan(question, options = {}) {
     if (/(ответь|ответить|напиши\s+ответ)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_reply", args: { uid, mailbox, text: parseYandexMailReplyRequest(question).text, confirm: true } }] };
     if (/(удали|удалить|перемести\s+в\s+корзин)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_delete", args: { uid, mailbox, confirm: true } }] };
     if (/(пометь|отметь|сделай)/iu.test(normalized) && /(прочитан|непрочитан)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_mark", args: { uid, mailbox, seen: !/непрочитан/iu.test(normalized) } }] };
+    if (/(пакет|комплект)/iu.test(normalized) && uid) return { steps: [{ tool: "yandex_mail_meeting_pack", args: { uid, mailbox, ...extractDateTimeFromText(question), confirm: true } }] };
     if (/(прочитай|прочти|открой|раскрой|получи|получить)/iu.test(normalized) && uid) return { steps: [{ tool: "yandex_mail_read", args: { uid, mailbox } }] };
     if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_search", args: { mailbox, query: question, limit: 20 } }] };
     return { steps: [{ tool: "yandex_mail_list", args: { mailbox, limit: 10, unread: /непрочитан/iu.test(normalized) } }] };
@@ -13542,6 +14017,7 @@ function inferToolPlan(question, options = {}) {
     return { steps: [{ tool: "yandex_docs_list", args: { limit: 20 } }] };
   }
   if (/(календар|событи|встреч|телемост)/iu.test(normalized)) {
+    if (/(напомин|уведом|следи|монитор)/iu.test(normalized) && /(проверь|tick|сейчас)/iu.test(normalized)) return { steps: [{ tool: "yandex_calendar_reminders_tick", args: { force: true } }] };
     if (/(создай|добавь|запланируй|назначь)/iu.test(normalized)) {
       const dateTime = extractDateTimeFromText(question);
       return { steps: [{ tool: /телемост/iu.test(normalized) ? "yandex_telemost_create_event" : "yandex_calendar_create_event", args: { ...dateTime, title: extractCalendarTitle(question) || (/телемост/iu.test(normalized) ? "Телемост IOLA" : "Событие IOLA"), confirm: true } }] };
@@ -13557,6 +14033,7 @@ function inferToolPlan(question, options = {}) {
     if (/(экспорт|выгруз)/iu.test(normalized)) return { steps: [{ tool: /csv/iu.test(normalized) ? "yandex_contacts_export_csv" : "yandex_contacts_export_vcard", args: {} }] };
     if (/(резерв|backup|бэкап|диск|яндекс.?диск)/iu.test(normalized) && /(контакт)/iu.test(normalized) && /(сохрани|экспорт|выгруз|резерв|backup|бэкап)/iu.test(normalized)) return { steps: [{ tool: "yandex_contacts_backup_to_disk", args: { format: /csv/iu.test(normalized) ? "csv" : "vcard", confirm: true } }] };
     if (/(создай|добавь|запиши|сохрани)\s+контакт/iu.test(normalized)) return { steps: [{ tool: "yandex_contacts_create", args: { ...parseYandexContactCreateRequest(question), confirm: true } }] };
+    if (/(полный|комплект|пакет)/iu.test(normalized)) return { steps: [{ tool: "yandex_contact_full_pack", args: { contact: cleanupYandexContactActionQuery(question), ...extractDateTimeFromText(question), confirm: true } }] };
     if (/(удали|удалить)/iu.test(normalized)) return { steps: [{ tool: "yandex_contacts_delete", args: { query: cleanupYandexContactActionQuery(question), confirm: true } }] };
     if (/(отправь|пошли).{0,80}(ссылк|qr|qr-код|диск|яндекс.?диск)/iu.test(normalized)) return { steps: [{ tool: "yandex_contact_send_disk_link_qr", args: { contact: cleanupYandexContactActionQuery(question), path: extractCloudPath(question), confirm: true } }] };
     if (/(отправь|пошли|напиши).{0,40}(письм|сообщ)/iu.test(normalized)) {
@@ -14148,6 +14625,9 @@ function formatToolResult(result, options) {
     }
     if (row.status === "calendar-event-updated") return `Событие обновлено: ${row.title || row.uid}`;
     if (row.status === "calendar-event-deleted") return `Событие удалено: ${row.title || row.uid}`;
+    if (row.status === "mail-meeting-pack-created") return `Пакет по письму #${row.uid} создан.\nПисьмо: ${row.saved}\nСсылка: ${row.publicUrl}\nQR-код: ${row.qrPublicUrl}\nСобытие: ${row.event || "-"}`;
+    if (row.status === "contact-full-pack-created") return `Пакет контакта создан: ${row.contact}\nПапка: ${row.folder}\nДокумент: ${row.doc}\nСсылка: ${row.publicUrl}\nQR-код: ${row.qrPublicUrl}\nСобытие: ${row.event || "-"}`;
+    if (row.enabled && row.text && (row.unread !== undefined || row.events !== undefined)) return row.text;
     if (row.status === "ambiguous" && row.events) return [`Нашел несколько событий. Уточните:`, ...row.events.map((event, index) => `${index + 1}. ${event.title || event.uid} — ${event.startIso || event.start || "-"}`)].join("\n");
     if (row.status === "not-found" && row.kind === "calendar-event") return `Событие не найдено: ${row.query}`;
     if (row.status === "document-created") return `Документ создан на Яндекс Диске: ${row.remote}`;
@@ -15712,12 +16192,12 @@ function parseOptions(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--force" || arg === "--append" || arg === "--preserve-active" || arg === "--open" || arg === "--print-url" || arg === "--enable") {
+    if (arg === "--json" || arg === "--yes" || arg === "--silent" || arg === "--events" || arg === "--stream-json" || arg === "--stdio" || arg === "--system" || arg === "--headed" || arg === "--headless" || arg === "--no-history" || arg === "--summary" || arg === "--all" || arg === "--full" || arg === "--unread" || arg === "--once" || arg === "--local" || arg === "--cache" || arg === "--tools" || arg === "--files" || arg === "--plan" || arg === "--trace" || arg === "--diff" || arg === "--stage" || arg === "--fts" || arg === "--bare" || arg === "--quiet" || arg === "--optional" || arg === "--project" || arg === "--dry-run" || arg === "--no-color" || arg === "--fail-on-empty" || arg === "--debug" || arg === "--fix" || arg === "--force" || arg === "--append" || arg === "--preserve-active" || arg === "--open" || arg === "--print-url" || arg === "--enable" || arg === "--email" || arg === "--backup") {
       result[arg.slice(2)] = true;
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -15941,9 +16421,13 @@ function printSkillsList(skills, config) {
 async function executeUserSkillTool(tool, args = {}) {
   if (tool === "user_skill_list") return listSkills(await loadConfig()).filter((skill) => skill.source === "user");
   if (tool === "user_skill_create") return userSkillCreate({ ...args, confirm: args.confirm === true });
+  if (tool === "user_skill_update") return userSkillUpdate(args.name, { ...args, confirm: args.confirm === true });
   if (tool === "user_skill_enable") return userSkillSetEnabled(args.name, true);
   if (tool === "user_skill_disable") return userSkillSetEnabled(args.name, false);
   if (tool === "user_skill_delete") return userSkillDelete(args.name, { confirm: args.confirm === true });
+  if (tool === "user_skill_templates") return userSkillTemplates();
+  if (tool === "user_skill_validate") return userSkillValidate(args.name);
+  if (tool === "user_skill_preview") return { status: "preview", text: buildUserSkillPreview(args) };
   throw new Error(`Неизвестный user skill tool: ${tool}`);
 }
 
@@ -15951,22 +16435,41 @@ async function userSkillCreate(args = {}) {
   if (!args.confirm) throw new Error("Для создания пользовательского skill нужен аргумент confirm=true.");
   const name = normalizeUserSkillName(args.name || args.skill || args.title);
   if (!name) throw new Error("Имя skill обязательно.");
-  const description = String(args.description || `Пользовательский skill: ${name}`).trim();
-  const instructions = String(args.instructions || args.text || args.prompt || "").trim();
+  const template = getUserSkillTemplate(args.template);
+  const description = String(args.description || template?.description || `Пользовательский skill: ${name}`).trim();
+  const instructions = String(args.instructions || args.text || args.prompt || template?.instructions || "").trim();
   if (!instructions) throw new Error("Инструкции skill обязательны.");
   const tools = parseCommaList(args.tools || args.allowedTools || args.allowed_tools || args.uses || "");
+  const mergedTools = [...new Set([...(template?.tools || []), ...tools])];
   const dir = path.join(USER_SKILLS_DIR, name);
   const file = path.join(dir, "SKILL.md");
   if (existsSync(file) && !args.overwrite) throw new Error(`Skill уже существует: ${name}. Используйте overwrite=true или --force.`);
   await mkdir(dir, { recursive: true });
-  const body = buildUserSkillMarkdown({ name, description, instructions, tools });
+  const body = buildUserSkillMarkdown({ name, description, instructions, tools: mergedTools });
   await writeFile(file, body, "utf8");
   let enabled = false;
   if (args.enable) {
     await userSkillSetEnabled(name, true);
     enabled = true;
   }
-  return { name, description, file, enabled, tools, status: "created" };
+  return { name, description, file, enabled, tools: mergedTools, status: "created" };
+}
+
+async function userSkillUpdate(name, args = {}) {
+  if (!args.confirm) throw new Error("Для обновления пользовательского skill нужен confirm=true.");
+  const skillName = normalizeUserSkillName(name || args.name || args.skill);
+  if (!skillName) throw new Error("Имя skill обязательно.");
+  const file = path.join(USER_SKILLS_DIR, skillName, "SKILL.md");
+  if (!existsSync(file)) throw new Error(`Пользовательский skill не найден: ${skillName}`);
+  const current = await readFile(file, "utf8");
+  const meta = readSkillMeta(file);
+  const description = String(args.description || meta.description || `Пользовательский skill: ${skillName}`).trim();
+  const instructions = String(args.instructions || args.text || args.prompt || stripFrontmatter(current)).trim();
+  const tools = parseCommaList(args.tools || args.allowedTools || args.allowed_tools || args.uses || inferUserSkillTools(instructions));
+  const body = buildUserSkillMarkdown({ name: skillName, description, instructions, tools });
+  await writeFile(file, body, "utf8");
+  if (args.enable) await userSkillSetEnabled(skillName, true);
+  return { name: skillName, description, file, tools, status: "updated" };
 }
 
 async function userSkillSetEnabled(name, enabled) {
@@ -16060,8 +16563,22 @@ function inferUserSkillTools(question) {
   }
   if (/(календар|событи|встреч|телемост)/iu.test(text)) {
     tools.add("yandex_calendar_list");
+    tools.add("yandex_calendar_search");
     tools.add("yandex_calendar_create_event");
+    tools.add("yandex_calendar_update");
+    tools.add("yandex_calendar_move");
+    tools.add("yandex_calendar_delete");
+    tools.add("yandex_calendar_add_reminder");
     tools.add("yandex_telemost_create_event");
+  }
+  if (/(документ|docs|360)/iu.test(text)) {
+    tools.add("yandex_docs_list");
+    tools.add("yandex_docs_find");
+    tools.add("yandex_docs_create_text");
+    tools.add("yandex_docs_read");
+    tools.add("yandex_docs_share");
+    tools.add("yandex_docs_rename");
+    tools.add("yandex_docs_delete");
   }
   if (/(контакт|адресн)/iu.test(text)) {
     tools.add("yandex_contacts_search");
@@ -16101,6 +16618,69 @@ function inferUserSkillTools(question) {
   }
   if (/(сайт|страниц|браузер|url|ссылка)/iu.test(text)) tools.add("browser_open");
   return [...tools];
+}
+
+function userSkillTemplates() {
+  return [
+    {
+      name: "mail-triage",
+      description: "Разбор почты: найти важные письма, прочитать, сохранить, создать задачу или событие.",
+      tools: ["yandex_mail_list", "yandex_mail_search", "yandex_mail_read", "yandex_mail_save_to_disk", "yandex_mail_create_calendar_event", "yandex_mail_create_task"],
+      instructions: "Помогай разбирать почту пользователя. Сначала показывай краткую сводку, затем выполняй только явно запрошенные действия: чтение, сохранение письма на Диск, создание события или задачи.",
+    },
+    {
+      name: "family-calendar",
+      description: "Семейный календарь: события, напоминания, встречи и ежедневные проверки.",
+      tools: ["yandex_calendar_list", "yandex_calendar_search", "yandex_calendar_create_event", "yandex_calendar_move", "yandex_calendar_add_reminder", "yandex_calendar_delete", "yandex_calendar_reminders_tick"],
+      instructions: "Помогай вести личный календарь. Для изменения календаря требуй явную просьбу пользователя. Всегда называй дату и время события.",
+    },
+    {
+      name: "docs-organizer",
+      description: "Организация документов на Яндекс Диске.",
+      tools: ["yandex_docs_list", "yandex_docs_find", "yandex_docs_create_text", "yandex_docs_read", "yandex_docs_share", "yandex_docs_rename", "yandex_docs_delete", "yandex_disk_maintenance_tick"],
+      instructions: "Помогай искать, создавать и приводить в порядок документы на Яндекс Диске. Не путай облачные документы с локальными файлами на компьютере.",
+    },
+    {
+      name: "contact-workflow",
+      description: "Работа с контактами, письмами, встречами и папками контактов.",
+      tools: ["yandex_contacts_search", "yandex_contacts_get", "yandex_contact_send_mail", "yandex_contact_send_disk_link_qr", "yandex_contact_create_disk_folder", "yandex_contact_create_calendar_event", "yandex_contact_full_pack"],
+      instructions: "Помогай выполнять действия вокруг контакта: найти карточку, отправить письмо, создать папку, отправить ссылку или создать встречу. Если найдено несколько контактов, проси уточнение.",
+    },
+  ];
+}
+
+function getUserSkillTemplate(name) {
+  const normalized = normalizeUserSkillName(name || "");
+  return userSkillTemplates().find((item) => item.name === normalized) || null;
+}
+
+function buildUserSkillPreview(args = {}) {
+  const name = normalizeUserSkillName(args.name || args.skill || args.title || "user-skill");
+  const template = getUserSkillTemplate(args.template);
+  const description = args.description || template?.description || `Пользовательский skill: ${name}`;
+  const instructions = args.instructions || args.text || args.prompt || template?.instructions || "Опишите, что должен делать skill.";
+  const tools = [...new Set([...(template?.tools || []), ...parseCommaList(args.tools || args.allowedTools || args.allowed_tools || args.uses || inferUserSkillTools(instructions))])];
+  return buildUserSkillMarkdown({ name, description, instructions, tools });
+}
+
+async function userSkillValidate(name) {
+  const config = await loadConfig();
+  const skill = findSkill(normalizeUserSkillName(name), config);
+  const checks = [];
+  if (!skill) {
+    return { status: "error", checks: [{ check: "exists", status: "error", message: `Skill не найден: ${name || "-"}` }] };
+  }
+  const text = await readFile(skill.file, "utf8");
+  const meta = readSkillMeta(skill.file);
+  checks.push({ check: "exists", status: "ok", message: skill.file });
+  checks.push({ check: "name", status: meta.name ? "ok" : "error", message: meta.name || "Нет name во frontmatter" });
+  checks.push({ check: "description", status: meta.description ? "ok" : "warn", message: meta.description || "Описание пустое" });
+  checks.push({ check: "instructions", status: stripFrontmatter(text).trim().length >= 40 ? "ok" : "warn", message: "Инструкции должны быть понятными и достаточно подробными" });
+  checks.push({ check: "secrets", status: /(token|api[_-]?key|парол|секрет)\s*[:=]\s*\S{8,}/iu.test(text) ? "error" : "ok", message: "Skill не должен содержать секреты" });
+  const tools = [...text.matchAll(/`([a-z0-9_:-]+)`/giu)].map((match) => match[1]).filter((tool) => ALL_TOOL_ALIASES.includes(tool) || tool.startsWith("mcp:"));
+  const unknownTools = tools.filter((tool) => !ALL_TOOL_ALIASES.includes(tool) && !tool.startsWith("mcp:"));
+  checks.push({ check: "tools", status: unknownTools.length ? "warn" : "ok", message: unknownTools.length ? `Неизвестные tools: ${unknownTools.join(", ")}` : `${tools.length} tools` });
+  return { status: checks.some((row) => row.status === "error") ? "error" : "ok", checks };
 }
 
 function buildUserSkillMarkdown({ name, description, instructions, tools = [] }) {

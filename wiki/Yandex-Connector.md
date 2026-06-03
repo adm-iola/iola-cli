@@ -182,8 +182,20 @@ QR-код:
 - `yandex_contact_create_calendar_event` - создать встречу с контактом;
 - `yandex_contact_create_telemost_event` - создать событие для Телемоста с контактом;
 - `yandex_contact_from_public_entity` - создать контакт из открытого городского слоя;
+- `yandex_contact_full_pack` - собрать полный пакет по контакту: папка на Диске, заметка, публичная ссылка/QR, событие календаря и опциональное письмо;
+- `yandex_mail_meeting_pack` - собрать пакет по письму: сохранить письмо на Диск, создать ссылку/QR, поставить встречу в календарь и опционально отправить ссылку отправителю;
 - `yandex_telemost_status` - проверить режим Телемоста;
 - `yandex_telemost_create_event` - создать встречу: прямой Telemost API используется только если он доступен аккаунту; иначе создается календарное событие без выдуманной ссылки.
+
+Комбинированные сценарии:
+
+```bash
+iola ask "по последнему письму создай встречу завтра в 14:00, сохрани письмо на диск и пришли отправителю ссылку"
+iola ask "собери полный пакет по контакту Петров: папка на диске, заметка, встреча завтра в 12 и ссылка с QR"
+iola ask "создай папку для школы 2 на яндекс диске и отправь ссылку контакту Иванов"
+```
+
+CLI использует уже подключенные сервисы: Почту, Диск, Контакты и Календарь. Если не хватает email, найдено несколько контактов или неясна дата встречи, CLI должен уточнить, а не выбирать случайно.
 
 Регулярная проверка контактов:
 
@@ -196,6 +208,32 @@ iola yandex contacts-maintenance off
 ```
 
 Проверка ищет дубликаты и неполные карточки. Если включен `--backup`, при tick сохраняется CSV-копия контактов на Яндекс Диск.
+
+Регулярная автоматизация:
+
+```bash
+iola yandex daily-digest on --time 09:00
+iola yandex daily-digest on --time 09:00 --email
+iola yandex daily-digest status
+iola yandex daily-digest tick
+iola yandex daily-digest off
+
+iola yandex calendar-reminders on --minutes 15
+iola yandex calendar-reminders status
+iola yandex calendar-reminders tick
+iola yandex calendar-reminders off
+
+iola yandex disk-maintenance on --days 7
+iola yandex disk-maintenance status
+iola yandex disk-maintenance tick
+iola yandex disk-maintenance off
+```
+
+`daily-digest` собирает короткую сводку: непрочитанные письма, события ближайших суток и неполные контакты. По умолчанию сводка сохраняется документом в `/IOLA/docs`; с `--email` дополнительно отправляется на email подключенного Yandex ID.
+
+`calendar-reminders` проверяет события в ближайшие минуты и показывает напоминания без повторов по уже увиденным событиям.
+
+`disk-maintenance` проверяет место на Диске, публичные ссылки и состояние папки `/IOLA`, затем сохраняет отчет в `/IOLA/docs`.
 
 Включение сервиса в `/yandex` разрешает CLI использовать соответствующую категорию. Отправка письма, удаление файлов, публикация ссылок и создание событий требуют явного намерения пользователя и подтверждения в tool-вызове.
 

@@ -48,6 +48,7 @@ description: Сервисы Яндекса через Yandex Connector: ID, Ди
 - `yandex_mail_city_context` - найти в письме школы/детские сады/ИНН и подтянуть открытые городские слои.
 - `yandex_mail_map_addresses` - найти адреса в письме и дать ссылки на Яндекс.Карты.
 - `yandex_mail_create_task` - создать локальную задачу по письму.
+- `yandex_mail_meeting_pack` - по письму сохранить его на Диск, сделать ссылку/QR и создать встречу в календаре с отправителем.
 - Автоопрос почты включается командой `iola yandex mail-watch on --minutes 5`, выключается `iola yandex mail-watch off`, ручная проверка `iola yandex mail-watch tick`.
 - `yandex_calendar_status` - проверить доступ к Яндекс Календарю.
 - `yandex_calendar_calendars` - показать доступные календари.
@@ -98,9 +99,16 @@ description: Сервисы Яндекса через Yandex Connector: ID, Ди
 - `yandex_contact_create_calendar_event` - создать встречу с контактом.
 - `yandex_contact_create_telemost_event` - создать календарное событие для Телемоста с контактом.
 - `yandex_contact_from_public_entity` - создать контакт из открытого городского слоя, если у организации есть email или телефон.
+- `yandex_contact_full_pack` - создать полный пакет контакта: папка на Диске, документ, ссылка/QR и при возможности встреча.
 - `yandex_telemost_status` - проверить режим Телемоста.
 - `yandex_telemost_create_event` - создать встречу: если прямой Telemost API доступен аккаунту, добавить ссылку; иначе создать календарное событие с честным fallback.
+- `yandex_daily_digest` - собрать дайджест из почты, календаря и контактов; может сохранять Markdown-документ на Диск.
+- `yandex_calendar_reminders_tick` - проверить ближайшие события календаря для напоминаний.
+- `yandex_disk_maintenance_tick` - проверить место, документы и публичные ссылки в `/IOLA`, сохранить отчет на Диск.
 - Регулярная проверка контактов включается командой `iola yandex contacts-maintenance on --days 7`, выключается `iola yandex contacts-maintenance off`, ручная проверка `iola yandex contacts-maintenance tick`. Флаг `--backup` включает backup контактов на Диск при tick.
+- Ежедневный дайджест включается командой `iola yandex daily-digest on --time 09:00`, выключается `iola yandex daily-digest off`, ручной запуск `iola yandex daily-digest tick`.
+- Проверка календарных напоминаний включается `iola yandex calendar-reminders on --minutes 15`, выключается `iola yandex calendar-reminders off`.
+- Проверка Яндекс Диска включается `iola yandex disk-maintenance on --days 7`, выключается `iola yandex disk-maintenance off`, ручной запуск `iola yandex disk-maintenance tick`.
 
 Комбинированные сценарии:
 
@@ -109,6 +117,9 @@ description: Сервисы Яндекса через Yandex Connector: ID, Ди
 - Если пользователь просит "перенеси/скопируй файлы из папки, создай ссылку/QR и отправь", используй `yandex_disk_package_share_email`.
 - Если получатель указан именем, сначала ищи его в контактах. Если контактов несколько или email не найден, попроси уточнение.
 - Если пользователь просит отправить письмо контакту, создать встречу с контактом или отправить ссылку контакту, используй специализированные `yandex_contact_*` tools, а не ручную цепочку из нескольких tools.
+- Если пользователь просит "пакет по письму", "подготовь встречу по письму", "сохрани письмо, сделай ссылку и событие", используй `yandex_mail_meeting_pack`.
+- Если пользователь просит "полный пакет по контакту", используй `yandex_contact_full_pack`.
+- Если пользователь просит ежедневную сводку/дайджест, используй `yandex_daily_digest` или команды `iola yandex daily-digest ...`.
 - Если пользователь просит создать папку для контакта на Яндекс Диске, используй `yandex_contact_create_disk_folder`.
 - Если пользователь просит создать/найти/прочитать/переименовать/удалить документ именно на Яндекс Диске или в Яндекс 360, используй `yandex_docs_*`, а не общий список файлов.
 - Если пользователь просит перенести событие, добавить напоминание или удалить встречу, используй `yandex_calendar_move`, `yandex_calendar_add_reminder`, `yandex_calendar_delete`.
