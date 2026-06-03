@@ -600,6 +600,7 @@ const SLASH_COMMANDS = [
   { command: "/help", description: "список slash-команд" },
   { command: "/health", description: "проверка публичного API/MCP" },
   { command: "/doctor", description: "диагностика CLI" },
+  { command: "/security", description: "диагностика безопасности" },
   { command: "/master", description: "мастер настройки" },
   { command: "/db status", description: "статус локальной SQLite-БД" },
   { command: "/sessions", description: "AI-сессии" },
@@ -677,6 +678,7 @@ const COMMANDS = new Map([
   ["version", showVersion],
   ["update", checkUpdate],
   ["doctor", doctor],
+  ["security", handleSecurity],
   ["db", handleDb],
   ["history", handleHistory],
   ["sessions", handleSessions],
@@ -848,6 +850,7 @@ async function showHelp() {
   iola ufanet status           Мой домофон Уфанет
   iola mcp status              MCP-подключение
   iola doctor                  диагностика
+  iola security doctor         диагностика безопасности
   iola wiki                    документация
 
 Справка:
@@ -870,6 +873,7 @@ Usage:
   iola chat
   iola init
   iola doctor
+  iola security doctor
   iola db status
   iola db init
   iola history [--limit 20]
@@ -2587,6 +2591,63 @@ async function doctor(args = []) {
     console.log("");
     console.log("Фичи");
     await handleFeatures(["list"]);
+  }
+}
+
+async function handleSecurity(args = []) {
+  const [action = "doctor"] = args;
+  if (action !== "doctor" && action !== "status") {
+    throw new Error("Команды security: doctor.");
+  }
+  const secretsExists = existsSync(SECRETS_FILE);
+  const browserEvalEnabled = isUnsafeBrowserEvalEnabled();
+  const rows = [
+    {
+      check: "npm audit",
+      status: await npmAuditStatus(),
+      detail: "проверка известных npm-уязвимостей",
+    },
+    {
+      check: "postinstall",
+      status: "review",
+      detail: "инициализирует SQLite, browser runtime, локальную модель и OAuth-иконку; не читает пользовательские секреты",
+    },
+    {
+      check: "secrets",
+      status: secretsExists ? "local" : "missing",
+      detail: secretsExists ? `${SECRETS_FILE} хранится локально и не входит в npm-пакет` : "локальный secrets.json пока не создан",
+    },
+    {
+      check: "browser eval",
+      status: browserEvalEnabled ? "unsafe-enabled" : "disabled",
+      detail: browserEvalEnabled ? "JS eval разрешен env IOLA_ALLOW_BROWSER_EVAL=1" : "JS eval заблокирован по умолчанию; используйте browser text/html/click/type/screenshot",
+    },
+    {
+      check: "shell commands",
+      status: "review",
+      detail: "CLI использует spawn/execFile для npm, node, ollama, codex, ffmpeg и системных утилит",
+    },
+    {
+      check: "network",
+      status: "review",
+      detail: "доступ к API/MCP, AI-провайдерам, Yandex, GigaChat, Уфанет, Дом.ру, Hugging Face",
+    },
+  ];
+  printTable(rows, [["check", "Проверка"], ["status", "Статус"], ["detail", "Комментарий"]]);
+  console.log("");
+  console.log("Подробности: SECURITY.md и README раздел Security model.");
+}
+
+async function npmAuditStatus() {
+  try {
+    const command = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : getNpmCommand();
+    const args = process.platform === "win32" ? ["/d", "/s", "/c", "npm audit --json"] : ["audit", "--json"];
+    const { stdout } = await runCommand(command, args, { timeoutMs: 60000 });
+    const payload = JSON.parse(stdout || "{}");
+    const total = Number(payload?.metadata?.vulnerabilities?.total || 0);
+    return total === 0 ? "ok" : `${total} findings`;
+  } catch (error) {
+    return `unknown: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -9753,12 +9814,15 @@ async function handleBrowser(args) {
     const url = target || options.url;
     const script = options.script || rest.join(" ");
     if (!url || !script) throw new Error('Пример: iola browser eval https://example.com --script "document.title"');
+    if (!options["unsafe-eval"] && !isUnsafeBrowserEvalEnabled()) {
+      throw new Error("browser eval заблокирован по умолчанию. Используйте browser text/html/click/type/screenshot или явно включите: IOLA_ALLOW_BROWSER_EVAL=1 iola browser eval ... --unsafe-eval");
+    }
     const result = await runBrowserAutomation("eval", { ...browserParams(url, options), script });
     console.log(result);
     return;
   }
 
-  throw new Error("Команды browser: status, install, open URL, text URL, html URL, screenshot URL --output FILE, pdf URL --output FILE, click URL --selector SEL, type URL --selector SEL --text TEXT, eval URL --script JS.");
+  throw new Error("Команды browser: status, install, open URL, text URL, html URL, screenshot URL --output FILE, pdf URL --output FILE, click URL --selector SEL, type URL --selector SEL --text TEXT, eval URL --script JS --unsafe-eval.");
 }
 
 function browserParams(url, options = {}) {
@@ -9770,6 +9834,10 @@ function browserParams(url, options = {}) {
     selector: options.selector || "",
     viewport: options.viewport || "1366x768",
   };
+}
+
+function isUnsafeBrowserEvalEnabled() {
+  return process.env.IOLA_ALLOW_BROWSER_EVAL === "1" || process.env.IOLA_UNSAFE_BROWSER_EVAL === "1";
 }
 
 async function handleWorkspace(args) {

@@ -115,7 +115,24 @@ iola subagents list
 iola trajectory last
 iola review config
 iola browser status
+iola security doctor
 ```
+
+## Security model
+
+`iola-cli` - локальный CLI-агент с широкими полномочиями. Он может запускать локальные процессы, обращаться к сети, хранить локальные секреты и работать с файлами только в рамках включенных пользователем режимов.
+
+Секреты хранятся локально в `~/.iola/secrets.json` и не входят в npm-пакет. `postinstall` выполняет локальную подготовку: SQLite, browser runtime, локальная модель IOLA и OAuth-иконка; пользовательские секреты он не читает.
+
+Произвольный JavaScript в browser runtime заблокирован по умолчанию. Команда `iola browser eval` требует явного unsafe-режима: `IOLA_ALLOW_BROWSER_EVAL=1` и `--unsafe-eval`.
+
+Проверка:
+
+```bash
+iola security doctor
+```
+
+Подробно: [SECURITY.md](SECURITY.md).
 
 Локальная модель IOLA через Ollama/GGUF:
 
