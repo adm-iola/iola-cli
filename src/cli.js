@@ -178,6 +178,7 @@ const YANDEX_TOOLS = [
   "yandex_contacts_status",
   "yandex_contacts_list",
   "yandex_contacts_search",
+  "yandex_contacts_add_email",
   "yandex_telemost_create_event",
 ];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS];
@@ -3308,6 +3309,11 @@ async function handleYandex(args) {
     return;
   }
 
+  if (action === "mail-watch" || action === "mailwatch" || action === "watch-mail") {
+    await handleYandexMailWatch([target, ...rest].filter(Boolean));
+    return;
+  }
+
   if (action === "enable" || action === "disable") {
     const services = [target, ...rest].filter((item) => item && !String(item).startsWith("--"));
     if (services.length === 0) throw new Error("Укажите сервисы. Пример: iola yandex enable disk mail calendar");
@@ -3343,6 +3349,7 @@ async function handleYandex(args) {
   iola yandex menu
   iola yandex status|doctor
   iola yandex services
+  iola yandex mail-watch on|off|status|tick [--minutes 5]
   iola yandex enable disk mail calendar
   iola yandex disable mail
   iola yandex oauth-url [disk mail calendar] [--client-id ID] [--open]
@@ -3370,6 +3377,47 @@ function printYandexServices(options = {}) {
     ["scope", "Scope"],
     ["hint", "Суть"],
   ]);
+}
+
+async function handleYandexMailWatch(args = []) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "on" || action === "enable" || action === "start" || action === "вкл") {
+    const minutes = Math.max(1, Number(options.minutes || options.interval || rest.find((item) => /^\d+$/u.test(String(item))) || 5));
+    const result = await yandexMailWatchEnable(minutes);
+    console.log(`Автопроверка новых писем включена: каждые ${minutes} минут. Текущий последний UID: ${result.lastUid || "-"}.`);
+    console.log("Для работы по расписанию должен запускаться cron tick: вручную, через daemon или Windows Task Scheduler.");
+    return;
+  }
+  if (action === "off" || action === "disable" || action === "stop" || action === "выкл") {
+    await yandexMailWatchDisable();
+    console.log("Автопроверка новых писем выключена.");
+    return;
+  }
+  if (action === "tick" || action === "run" || action === "check") {
+    const result = await yandexMailWatchTick(options);
+    if (!result.enabled) {
+      console.log("Автопроверка новых писем выключена.");
+    } else if (!result.newMessages.length) {
+      console.log("Новых писем нет.");
+    } else {
+      console.log(["Новые письма:", ...result.newMessages.map((row, index) => `${index + 1}. ${formatYandexMailSummary(row)}`)].join("\n"));
+    }
+    return;
+  }
+  if (action === "status" || action === "doctor") {
+    const config = await loadConfig();
+    const watch = config.yandex?.mailWatch || {};
+    printKeyValue({
+      enabled: watch.enabled ? "yes" : "no",
+      minutes: watch.minutes || "-",
+      mailbox: watch.mailbox || "INBOX",
+      lastUid: watch.lastUid || "-",
+      cron: listCronJobs().some((job) => job.command === "yandex mail-watch tick") ? "yes" : "no",
+    });
+    return;
+  }
+  throw new Error("Команды: iola yandex mail-watch on --minutes 5 | off | status | tick");
 }
 
 async function setupYandexConnector(args = []) {
@@ -3967,6 +4015,7 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_contacts_status") return yandexContactsStatus();
   if (tool === "yandex_contacts_list") return yandexContactsList(args);
   if (tool === "yandex_contacts_search") return yandexContactsSearch(args.query || "", args);
+  if (tool === "yandex_contacts_add_email") return yandexContactsAddEmail(args.query || args.name || "", args.email, args);
   if (tool === "yandex_telemost_create_event") return yandexTelemostCreateEvent(args);
   throw new Error(`Yandex tool неизвестен: ${tool}`);
 }
@@ -4085,6 +4134,52 @@ async function yandexMailSearch(query, options = {}) {
   if (!normalized) return yandexMailList(options);
   const rows = await yandexMailList({ ...options, limit: Math.max(50, Number(options.limit || 20) * 3) });
   return rows.filter((row) => normalizeGeoText(`${row.from} ${row.subject} ${row.snippet}`).includes(normalized)).slice(0, Number(options.limit || 20));
+}
+
+async function yandexMailWatchTick(options = {}) {
+  const config = await loadConfig();
+  const watch = config.yandex?.mailWatch || {};
+  if (!watch.enabled && !options.force) return { enabled: false, newMessages: [] };
+  const mailbox = watch.mailbox || "INBOX";
+  const lastUid = Number(watch.lastUid || 0);
+  const rows = await yandexMailList({ mailbox, limit: Number(options.limit || 30), unread: false });
+  const newMessages = rows.filter((row) => Number(row.uid || 0) > lastUid).sort((left, right) => Number(left.uid || 0) - Number(right.uid || 0));
+  const newestUid = Math.max(lastUid, ...rows.map((row) => Number(row.uid || 0)));
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      mailWatch: {
+        ...watch,
+        enabled: watch.enabled !== false,
+        mailbox,
+        lastUid: newestUid,
+        lastCheckedAt: new Date().toISOString(),
+      },
+    },
+  });
+  return { enabled: true, mailbox, lastUid, newestUid, newMessages };
+}
+
+async function yandexMailWatchEnable(minutes = 5) {
+  const config = await loadConfig();
+  const safeMinutes = Math.max(1, Number(minutes || 5));
+  const latest = await yandexMailList({ mailbox: "INBOX", limit: 1, unread: false });
+  const lastUid = latest[0]?.uid || 0;
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      mailWatch: { enabled: true, minutes: safeMinutes, mailbox: "INBOX", lastUid, updatedAt: new Date().toISOString() },
+    },
+  });
+  await upsertCronJob(`каждые ${safeMinutes} минут`, "yandex mail-watch tick", { replaceCommand: true });
+  return { enabled: true, minutes: safeMinutes, mailbox: "INBOX", lastUid };
+}
+
+async function yandexMailWatchDisable() {
+  const config = await loadConfig();
+  await saveConfig({ yandex: { ...(config.yandex || {}), mailWatch: { ...(config.yandex?.mailWatch || {}), enabled: false, updatedAt: new Date().toISOString() } } });
+  deleteCronJobsByCommand("yandex mail-watch tick");
+  return { enabled: false };
 }
 
 async function yandexMailRead(uid, options = {}) {
@@ -4573,7 +4668,7 @@ async function yandexContactsList(args = {}) {
   const rows = [];
   for (const href of hrefs) {
     const card = await yandexDavRequest(new URL(href, "https://carddav.yandex.ru/").toString(), token, { method: "GET", timeout: 30000 }).catch(() => "");
-    rows.push(...parseVCards(card));
+    rows.push(...parseVCards(card).map((row) => args.full ? { ...row, href, card } : row));
   }
   return rows.slice(0, Number(args.limit || 50));
 }
@@ -4583,6 +4678,64 @@ async function yandexContactsSearch(query, args = {}) {
   const rows = await yandexContactsList({ limit: Math.max(100, Number(args.limit || 20) * 4) });
   if (!normalized) return rows.slice(0, Number(args.limit || 20));
   return rows.filter((row) => normalizeGeoText(`${row.name} ${row.email} ${row.phone}`).includes(normalized)).slice(0, Number(args.limit || 20));
+}
+
+async function resolveYandexMailRecipientFromContacts(query) {
+  const normalized = normalizeContactLookupText(query);
+  if (!normalized) return { status: "not-found", contacts: [] };
+  const rows = await yandexContactsList({ limit: 300 });
+  const matches = rows.filter((row) => contactMatchesQuery(row, normalized)).slice(0, 10);
+  if (!matches.length) return { status: "not-found", contacts: [] };
+  const withEmail = matches.filter((row) => row.email);
+  if (withEmail.length === 1) return { status: "ok", contact: withEmail[0] };
+  if (withEmail.length > 1) return { status: "ambiguous", contacts: withEmail };
+  return matches.length === 1
+    ? { status: "no-email", contact: matches[0] }
+    : { status: "ambiguous", contacts: matches };
+}
+
+async function yandexContactsAddEmail(query, email, args = {}) {
+  if (!args.confirm) throw new Error("Для изменения контакта нужен аргумент confirm=true.");
+  if (!query) throw new Error("Укажите имя или часть имени контакта.");
+  if (!email || !/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu.test(String(email))) throw new Error("Укажите корректный email.");
+  const rows = await yandexContactsList({ limit: 500, full: true });
+  const matches = rows.filter((row) => contactMatchesQuery(row, normalizeContactLookupText(query))).slice(0, 10);
+  if (!matches.length) return { status: "not-found", query };
+  if (matches.length > 1 && !args.selectFirst) return { status: "ambiguous", query, contacts: matches.map(({ card, ...row }) => row) };
+  const contact = matches[0];
+  if (contact.email && !args.overwrite) return { status: "has-email", contact: { name: contact.name, email: contact.email } };
+  const updatedCard = upsertVcardEmail(contact.card, email, { overwrite: Boolean(args.overwrite) });
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Контакты");
+  await yandexDavRequest(new URL(contact.href, "https://carddav.yandex.ru/").toString(), token, {
+    method: "PUT",
+    headers: { "content-type": "text/vcard; charset=utf-8" },
+    body: updatedCard,
+    timeout: 45000,
+  });
+  return { status: "updated", name: contact.name, email };
+}
+
+function upsertVcardEmail(card, email, options = {}) {
+  const text = String(card || "").replace(/\r/g, "").trim();
+  if (!text.includes("BEGIN:VCARD")) throw new Error("Контакт не похож на vCard.");
+  if (/^EMAIL[^:]*:/imu.test(text)) {
+    if (!options.overwrite) return text;
+    return text.replace(/^EMAIL[^:]*:[^\n]*/imu, `EMAIL;TYPE=INTERNET:${email}`);
+  }
+  return text.replace(/\nEND:VCARD/iu, `\nEMAIL;TYPE=INTERNET:${email}\nEND:VCARD`);
+}
+
+function contactMatchesQuery(contact, normalizedQuery) {
+  const contactText = normalizeContactLookupText(`${contact.name || ""} ${contact.email || ""}`);
+  if (!contactText || !normalizedQuery) return false;
+  if (contactText.includes(normalizedQuery)) return true;
+  const queryTokens = normalizedQuery.split(/\s+/u).filter(Boolean);
+  const contactTokens = contactText.split(/\s+/u).filter(Boolean);
+  return queryTokens.every((queryToken) => contactTokens.some((contactToken) => contactToken.startsWith(queryToken.slice(0, Math.max(4, Math.min(queryToken.length, 6)))) || queryToken.startsWith(contactToken.slice(0, Math.max(4, Math.min(contactToken.length, 6))))));
+}
+
+function normalizeContactLookupText(value) {
+  return normalizeGeoText(String(value || "").replace(/\b(?:кому|контакт|письмо|сообщение)\b/giu, " ")).trim();
 }
 
 async function yandexContactsBaseUrl(token) {
@@ -9273,11 +9426,40 @@ function addCronJob(scheduleText, command) {
   }
 }
 
+async function upsertCronJob(scheduleText, command, options = {}) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    const existing = db.prepare("SELECT id FROM cron_jobs WHERE command = ? ORDER BY id DESC LIMIT 1").get(command);
+    if (existing?.id) {
+      db.prepare("UPDATE cron_jobs SET schedule_text = ?, enabled = 1 WHERE id = ?").run(scheduleText, existing.id);
+      return Number(existing.id);
+    }
+    if (options.replaceCommand) {
+      db.prepare("DELETE FROM cron_jobs WHERE command = ?").run(command);
+    }
+    const result = db.prepare("INSERT INTO cron_jobs(schedule_text, command) VALUES (?, ?)").run(scheduleText, command);
+    return Number(result.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
 function deleteCronJob(id) {
   initDatabase();
   const db = openDatabase();
   try {
     db.prepare("DELETE FROM cron_jobs WHERE id = ?").run(id);
+  } finally {
+    db.close();
+  }
+}
+
+function deleteCronJobsByCommand(command) {
+  initDatabase();
+  const db = openDatabase();
+  try {
+    db.prepare("DELETE FROM cron_jobs WHERE command = ?").run(command);
   } finally {
     db.close();
   }
@@ -9829,6 +10011,20 @@ async function buildYandexDirectAnswer(question, history = []) {
     }
 
     if (mailFollowup || /(почт|письм|email|e-mail|спам|чернов|отправлен|исходящ|корзин)/iu.test(normalized)) {
+      if (/(авто|автомат|кажд|период|монитор|следи|проверяй|проверку|режим)/iu.test(normalized) && /(включ|запусти|начни|поставь|создай)/iu.test(normalized)) {
+        const minutes = Number(String(question || "").match(/(\d+)\s*(?:мин|минут)/iu)?.[1] || 5);
+        await yandexMailWatchEnable(minutes);
+        return `Автопроверка новых писем включена: каждые ${minutes} минут.`;
+      }
+      if (/(авто|автомат|кажд|период|монитор|следи|проверяй|проверку|режим)/iu.test(normalized) && /(выключ|отключ|останов|убери)/iu.test(normalized)) {
+        await yandexMailWatchDisable();
+        return "Автопроверка новых писем выключена.";
+      }
+      if (/(проверь|получи|есть).{0,40}(нов|свеж)/iu.test(normalized)) {
+        const result = await yandexMailWatchTick({ force: true });
+        if (!result.newMessages.length) return "Новых писем нет.";
+        return ["Новые письма:", ...result.newMessages.map((row, index) => `${index + 1}. ${formatYandexMailSummary(row)}`)].join("\n");
+      }
       if (/(папк|ящик|mailbox|folder)/iu.test(normalized) && /(покажи|список|какие|есть)/iu.test(normalized)) {
         const folders = await yandexMailFolders();
         if (!folders.length) return "Папки Яндекс Почты не найдены.";
@@ -9861,11 +10057,34 @@ async function buildYandexDirectAnswer(question, history = []) {
       }
       if (/(отправь|отправить|напиши|пошли)/iu.test(normalized) && !/(отправлен|исходящ)/iu.test(normalized)) {
         const draft = parseYandexMailSendRequest(question);
+        if (!draft.to.length && draft.contactQuery) {
+          const contactResult = await resolveYandexMailRecipientFromContacts(draft.contactQuery);
+          if (contactResult.status === "not-found") return `В Яндекс Контактах не нашел: ${draft.contactQuery}. Укажите email вручную.`;
+          if (contactResult.status === "no-email") return `Контакт найден, но email не указан: ${contactResult.contact.name}. Укажите email вручную.`;
+          if (contactResult.status === "ambiguous") {
+            return [
+              `Нашел несколько контактов для "${draft.contactQuery}". Уточните, кому отправить:`,
+              ...contactResult.contacts.map((contact, index) => `${index + 1}. ${contact.name || contact.email || "Контакт"}${contact.email ? `, ${contact.email}` : ", email не указан"}`),
+            ].join("\n");
+          }
+          draft.to = [contactResult.contact.email];
+        }
         if (!draft.to.length || !draft.text) {
           return "Для отправки письма укажите получателя и текст. Пример: отправь письмо user@example.com тема: Привет текст: Проверка.";
         }
         const result = await yandexMailSend({ ...draft, confirm: true });
-        return `Письмо отправлено: ${result.to.join(", ")}. Тема: ${result.subject}.`;
+        let contactNote = "";
+        if (draft.contactQuery && result.to[0] && process.stdin.isTTY) {
+          const contactResult = await resolveYandexMailRecipientFromContacts(draft.contactQuery).catch(() => null);
+          if (contactResult?.status === "no-email") {
+            const shouldAdd = await askYesNo(`Добавить ${result.to[0]} в контакт "${contactResult.contact.name}"? [y/N] `, false);
+            if (shouldAdd) {
+              const update = await yandexContactsAddEmail(draft.contactQuery, result.to[0], { confirm: true, selectFirst: true });
+              contactNote = update.status === "updated" ? `\nEmail добавлен в контакт: ${update.name || draft.contactQuery}.` : "";
+            }
+          }
+        }
+        return `Письмо отправлено: ${result.to.join(", ")}. Тема: ${result.subject}.${contactNote}`;
       }
       if (/(сколько|количеств|есть\s+ли)/iu.test(normalized) && /непрочитан/iu.test(normalized)) {
         const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
@@ -9900,6 +10119,21 @@ async function buildYandexDirectAnswer(question, history = []) {
     }
 
     if (/(контакт|адресн)/iu.test(normalized)) {
+      if (/(добав|запиши|сохрани).{0,40}(email|e-mail|почт)/iu.test(normalized)) {
+        const email = String(question || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu)?.[0] || "";
+        const query = cleanupYandexContactEmailTarget(question, email);
+        if (!email || !query) return "Укажите контакт и email. Пример: добавь email petrov@example.com к контакту Петров.";
+        const result = await yandexContactsAddEmail(query, email, { confirm: true });
+        if (result.status === "not-found") return `Контакт не найден: ${query}.`;
+        if (result.status === "has-email") return `У контакта уже есть email: ${result.contact.name}, ${result.contact.email}.`;
+        if (result.status === "ambiguous") {
+          return [
+            `Нашел несколько контактов для "${query}". Уточните контакт:`,
+            ...result.contacts.map((contact, index) => `${index + 1}. ${contact.name || contact.email || "Контакт"}${contact.email ? `, ${contact.email}` : ""}`),
+          ].join("\n");
+        }
+        return `Email добавлен в контакт: ${result.name || query}, ${result.email}.`;
+      }
       if (/(статус|проверь|работает|доступ)/iu.test(normalized)) {
         const result = await yandexContactsStatus();
         return `Яндекс Контакты подключены: ${result.displayName || result.url}.`;
@@ -10024,6 +10258,7 @@ function parseYandexMailSendRequest(question) {
   const emails = [...text.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu)].map((match) => match[0]);
   const subjectMatch = text.match(/(?:тема|subject)\s*:\s*(.*?)(?=\s+(?:текст|body|сообщение)\s*:|$)/iu);
   const bodyMatch = text.match(/(?:текст|body|сообщение)\s*:\s*(.*)$/iu);
+  const contactMatch = text.match(/^(?:отправь|отправить|напиши|пошли)\s+(.+?)(?:\s+письмо|\s+сообщение|\s+текст\s*:|\s+напомни|\s+скажи|$)/iu);
   const withoutCommand = text
     .replace(/^(?:отправь|отправить|напиши|пошли)\s+(?:письмо\s+)?/iu, "")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "")
@@ -10031,8 +10266,31 @@ function parseYandexMailSendRequest(question) {
   return {
     to: emails,
     subject: (subjectMatch?.[1] || "Сообщение от IOLA CLI").trim(),
-    text: (bodyMatch?.[1] || (!subjectMatch ? withoutCommand : "")).trim(),
+    text: (bodyMatch?.[1] || cleanupYandexMailBodyText(!subjectMatch ? withoutCommand : "")).trim(),
+    contactQuery: cleanupYandexContactQuery((contactMatch?.[1] || "").replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "")),
   };
+}
+
+function cleanupYandexMailBodyText(value) {
+  return String(value || "")
+    .replace(/^.+?\s+(?:письмо|сообщение)\s+/iu, "")
+    .trim();
+}
+
+function cleanupYandexContactQuery(value) {
+  return String(value || "")
+    .replace(/\b(?:письмо|сообщение|текст|напомни|скажи|ему|ей)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanupYandexContactEmailTarget(question, email) {
+  return String(question || "")
+    .replace(email || "", " ")
+    .replace(/\b(?:добавь|добавить|запиши|сохрани|email|e-mail|почту|почта|к|ко|контакту|контакт)\b/giu, " ")
+    .replace(/[,:;.!?]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatYandexMailSummary(row) {

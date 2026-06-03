@@ -89,6 +89,11 @@ assertIncludes(cliSource, "yandex_mail_delete", "Yandex mail should expose safe 
 assertIncludes(cliSource, "yandex_mail_mark", "Yandex mail should expose read/unread mark as a tool");
 assertIncludes(cliSource, "decodeImapModifiedUtf7", "Yandex mail folders should decode IMAP modified UTF-7 names");
 assertIncludes(cliSource, "encodeImapModifiedUtf7", "Yandex mail should select non-ASCII folders via IMAP modified UTF-7");
+assertIncludes(cliSource, "yandexMailWatchEnable", "Yandex mail should support scheduled new-mail polling");
+assertIncludes(cliSource, "yandexMailWatchTick", "Yandex mail should support manual new-mail polling");
+assertIncludes(cliSource, "resolveYandexMailRecipientFromContacts", "Yandex mail should resolve recipients from contacts");
+assertIncludes(cliSource, "yandexContactsAddEmail", "Yandex contacts should support adding email to a contact");
+assertIncludes(cliSource, "yandex_contacts_add_email", "Yandex contacts add email should be exposed as a tool");
 assertIncludes(cliSource, "buildCasualDirectAnswer(question)", "Casual greetings should bypass external AI providers");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
