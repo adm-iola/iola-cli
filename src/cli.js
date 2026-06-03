@@ -11897,15 +11897,15 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
 
   console.log("");
   console.log(`Заказ: ${order.order_id}`);
-  console.log("Отсканируйте QR-код банковским приложением и оплатите через СБП:");
-  await printTerminalQr(sbpPayload);
-  console.log("");
-  console.log("Если терминал не показывает QR корректно, откройте эту строку в банковском приложении/QR-генераторе:");
-  console.log(sbpPayload);
   try {
     await openUrl(sbpPayload);
+    console.log("Открыл платежную ссылку. Завершите оплату в браузере или банковском приложении.");
+    console.log(`Если окно не открылось, ссылка для оплаты: ${sbpPayload}`);
   } catch {
-    // Not every OS has an SBP handler. The terminal QR above is the primary path.
+    console.log("Не удалось открыть платежную ссылку автоматически.");
+    console.log(`Ссылка для оплаты: ${sbpPayload}`);
+    console.log("Можно отсканировать QR-код банковским приложением:");
+    await printTerminalQr(sbpPayload);
   }
 
   console.log("");
