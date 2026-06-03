@@ -116,12 +116,27 @@ OAuth-права дают CLI разрешение обращаться к се�
 - `yandex_disk_ls` - список файлов и папок;
 - `yandex_disk_mkdir` - создать папку;
 - `yandex_disk_find` - найти файл или папку;
+- `yandex_disk_stat` - метаданные файла или папки;
+- `yandex_disk_exists` - проверка существования;
+- `yandex_disk_read_text` - чтение небольшого текстового файла;
 - `yandex_disk_save_text` - сохранить текстовый результат на Диск;
 - `yandex_disk_upload` - загрузить локальный файл на Диск;
 - `yandex_disk_download` - скачать файл с Диска;
+- `yandex_disk_move` - переместить файл или папку;
+- `yandex_disk_copy` - скопировать файл или папку;
+- `yandex_disk_rename` - переименовать файл или папку;
 - `yandex_disk_share` - создать публичную ссылку;
+- `yandex_disk_share_qr` - создать публичную ссылку и QR-код, сохранить QR PNG на Диск;
+- `yandex_disk_share_email` - создать ссылку, QR-код и отправить их по Яндекс Почте;
 - `yandex_disk_unshare` - снять публичную ссылку;
 - `yandex_disk_delete` - удалить файл или папку;
+- `yandex_disk_trash_list` - показать корзину;
+- `yandex_disk_restore` - восстановить из корзины;
+- `yandex_disk_empty_trash` - очистить корзину;
+
+QR-код:
+
+В веб-интерфейсе Яндекс Диска QR-код доступен при работе с публичной ссылкой. В REST API отдельное поле готового QR-кода не документировано. Поэтому `iola-cli` берет публичную ссылку через API, локально создает PNG QR-кода, загружает этот PNG на Яндекс Диск рядом с исходным объектом и при необходимости публикует отдельную ссылку на QR.
 - `yandex_mail_status` - проверить доступ к Почте;
 - `yandex_mail_list` - показать последние письма;
 - `yandex_mail_search` - найти письма;
@@ -132,8 +147,38 @@ OAuth-права дают CLI разрешение обращаться к се�
 - `yandex_calendar_create_event` - создать событие;
 - `yandex_contacts_status` - проверить доступ к Контактам;
 - `yandex_contacts_list` - показать контакты;
-- `yandex_contacts_search` - найти контакт;
+- `yandex_contacts_search` - найти контакт по имени, email, телефону, организации, адресу или заметке;
+- `yandex_contacts_get` - открыть карточку контакта;
+- `yandex_contacts_create` - создать контакт;
+- `yandex_contacts_update` - обновить поля контакта;
+- `yandex_contacts_delete` - удалить контакт;
+- `yandex_contacts_add_email`, `yandex_contacts_add_phone`, `yandex_contacts_add_address`, `yandex_contacts_add_note`, `yandex_contacts_add_birthday`, `yandex_contacts_add_org` - добавить отдельные поля;
+- `yandex_contacts_remove_email`, `yandex_contacts_remove_phone` - удалить отдельные поля;
+- `yandex_contacts_export_vcard`, `yandex_contacts_export_csv` - экспортировать контакты;
+- `yandex_contacts_import_vcard`, `yandex_contacts_import_csv` - импортировать контакты;
+- `yandex_contacts_find_incomplete` - найти неполные карточки;
+- `yandex_contacts_find_duplicates` - найти дубликаты;
+- `yandex_contacts_backup_to_disk` - сохранить backup контактов на Яндекс Диск;
+- `yandex_contacts_birthdays_to_calendar` - создать события дней рождения в календаре;
+- `yandex_contact_send_mail` - отправить письмо контакту;
+- `yandex_contact_send_disk_link_qr` - отправить контакту ссылку и QR-код на объект Диска;
+- `yandex_contact_create_disk_folder` - создать папку контакта на Диске с vCard и README;
+- `yandex_contact_create_calendar_event` - создать встречу с контактом;
+- `yandex_contact_create_telemost_event` - создать событие для Телемоста с контактом;
+- `yandex_contact_from_public_entity` - создать контакт из открытого городского слоя;
 - `yandex_telemost_create_event` - создать календарное событие для встречи.
+
+Регулярная проверка контактов:
+
+```bash
+iola yandex contacts-maintenance on --days 7
+iola yandex contacts-maintenance on --days 7 --backup
+iola yandex contacts-maintenance status
+iola yandex contacts-maintenance tick
+iola yandex contacts-maintenance off
+```
+
+Проверка ищет дубликаты и неполные карточки. Если включен `--backup`, при tick сохраняется CSV-копия контактов на Яндекс Диск.
 
 Включение сервиса в `/yandex` разрешает CLI использовать соответствующую категорию. Отправка письма, удаление файлов, публикация ссылок и создание событий требуют явного намерения пользователя и подтверждения в tool-вызове.
 
