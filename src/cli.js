@@ -11862,7 +11862,7 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
 
   const amountRub = units * YAKUNIN_ROUTER_RUB_PER_UNIT;
   console.log(`Сумма: ${units} у.е. = ${amountRub} руб.`);
-  console.log("Создаю платеж Ozon Bank...");
+  console.log("Создаю платеж...");
 
   const orderResponse = await fetch(`${YAKUNIN_ROUTER_BASE_URL}/order`, {
     method: "POST",
@@ -11876,13 +11876,13 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
 
   if (!orderResponse.ok) {
     const text = await orderResponse.text();
-    throw new Error(`Yakunin-Router payment request failed: ${orderResponse.status} ${orderResponse.statusText}\n${text.slice(0, 2000)}`);
+    throw new Error(formatYakuninRouterPaymentError(orderResponse.status, orderResponse.statusText, text));
   }
 
   const order = await orderResponse.json();
   const sbpPayload = order.sbp_payload || "";
   if (!sbpPayload) {
-    throw new Error("Ozon Bank не вернул SBP payload для QR-кода.");
+    throw new Error("Платежный сервер не вернул данные для QR-кода.");
   }
 
   console.log("");
@@ -11899,7 +11899,7 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
   }
 
   console.log("");
-  console.log("Жду подтверждение оплаты от Ozon Bank...");
+  console.log("Жду подтверждение оплаты...");
   const result = await waitYakuninRouterPayment(order.order_id, order.claim_token);
   if (!result.openrouter_key && !existingHash) {
     throw new Error("Оплата подтверждена, но сервер не вернул ключ, совместимый с OpenRouter. Проверьте backend logs.");
@@ -11946,6 +11946,29 @@ async function chooseYakuninRouterUnits() {
   console.log("  0. Отмена");
   const answer = Number(await askText("Номер: "));
   return YAKUNIN_ROUTER_UNITS[answer - 1] || 0;
+}
+
+function formatYakuninRouterPaymentError(status, statusText, text) {
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+
+  const detail = payload.detail || {};
+  const upstreamText = String(detail.body || detail.message || text || "");
+  if (detail.error === "payment_provider_token_inactive" || /токен не активен/i.test(upstreamText)) {
+    return [
+      "Платежный токен на сервере пока не активен.",
+      "Проверьте в личном кабинете эквайринга, что токен включен, переведен в рабочий режим и для него указаны страницы статусов оплаты и POST-уведомления.",
+      "После активации повторите пополнение в /model -> Yakunin-Router.",
+    ].join("\n");
+  }
+  if (detail.error === "payment_provider_error" || detail.error === "ozon_error") {
+    return `Платежный сервер отклонил создание платежа: ${detail.message || `${status} ${statusText}`}`;
+  }
+  return `Yakunin-Router не смог создать платеж: ${status} ${statusText}\n${text.slice(0, 1000)}`;
 }
 
 async function printTerminalQr(text) {
