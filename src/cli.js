@@ -3832,11 +3832,17 @@ function isAmbiguousPersonalYandexGoPoint(query) {
 function normalizeYandexGoGeocoderQuery(query) {
   const text = String(query || "").trim();
   const lower = text.toLocaleLowerCase("ru-RU");
-  if (/администрац/iu.test(lower) && /(йошкар|иошкар|йошк|yoshkar|yoshkar-ola)/iu.test(lower)) {
+  if (/администрац/iu.test(lower) && /(медведевск|медведево)/iu.test(lower)) {
+    return "Россия, Республика Марий Эл, Медведево, Советская улица, 20";
+  }
+  if (/(администрац|мэри)/iu.test(lower) && /(йошкар|иошкар|йошк|yoshkar|yoshkar-ola)/iu.test(lower)) {
     return "Россия, Республика Марий Эл, Йошкар-Ола, Ленинский проспект, 27";
   }
   if (/^(?:администрац(?:ия|ии)?|мэрия)$/iu.test(lower)) {
     return "Россия, Республика Марий Эл, Йошкар-Ола, Ленинский проспект, 27";
+  }
+  if (/^(?:пгт\s+)?медведево\s+.+/iu.test(lower) && !/(ул\.|улица)/iu.test(lower)) {
+    return `Россия, Республика Марий Эл, Медведево, ${text.replace(/^(?:пгт\s+)?медведево\s+/iu, "")}`;
   }
   if (!/(йошкар|медведево|сем[её]новк|республика\s+марий\s+эл|марий\s+эл)/iu.test(lower)
     && /(администрац|мэрия|школ|сад|лицей|гимназ|ул\.|улица|проспект|пр-т|бульвар|переулок|дом|д\.|\d)/iu.test(lower)) {
@@ -3918,7 +3924,7 @@ function formatYandexGoDeeplinkResult(result) {
   ].join("\n");
 }
 
-function extractYandexGoRouteFromText(text) {
+function extractYandexGoRouteFromText(text, previousText = "") {
   const source = String(text || "").trim();
   const tariffMatch = source.match(/(эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*|econom|business|comfortplus|minivan|vip)/iu);
   const cleaned = source
@@ -3929,7 +3935,18 @@ function extractYandexGoRouteFromText(text) {
     .trim();
   const match = cleaned.match(/(?:от|из|с)\s+(.+?)\s+(?:до|в|на)\s+(.+)$/iu)
     || cleaned.match(/^(.+?)\s*,?\s+(?:до|в)\s+(.+)$/iu);
-  if (!match) return { from: "", to: "", tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
+  if (!match) {
+    const partialFrom = cleaned.match(/(?:^|\s)(?:от|из|с)\s+(.+)$/iu)?.[1]?.trim() || "";
+    const previousRoute = previousText ? extractYandexGoRouteFromText(previousText, "") : { from: "", to: "" };
+    if (partialFrom && previousRoute.to) {
+      return { from: partialFrom.replace(/[,.;]\s*$/u, "").trim(), to: previousRoute.to, tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
+    }
+    const partialTo = cleaned.match(/(?:^|\s)(?:до|в)\s+(.+)$/iu)?.[1]?.trim() || "";
+    if (partialTo && previousRoute.from && !isAmbiguousPersonalYandexGoPoint(previousRoute.from)) {
+      return { from: previousRoute.from, to: partialTo.replace(/[,.;]\s*$/u, "").trim(), tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
+    }
+    return { from: "", to: "", tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
+  }
   const from = match[1].replace(/[,.;]\s*$/u, "").trim();
   const to = match[2].replace(/[,.;]\s*(?:тариф|эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*).*$/iu, "").trim();
   return { from, to, tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
@@ -12547,9 +12564,12 @@ async function buildDirectDataAnswer(question, dataContext) {
 async function buildYandexDirectAnswer(question, history = []) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   const previousAssistantText = [...(history || [])].reverse().find((item) => item.role === "assistant")?.content || "";
+  const previousUserText = [...(history || [])].reverse().find((item) => item.role === "user")?.content || "";
   const mailContext = /Яндекс Почта|Письмо #|\bUID\b|#\d{3,}/iu.test(previousAssistantText);
   const mailFollowup = mailContext && isYandexMailFollowupQuestion(normalized, question);
-  if (!isYandexServiceQuestion(normalized) && !mailFollowup) return "";
+  const goContext = /(?:Ссылка Яндекс Go|Для ссылки Яндекс Go|Не знаю адрес|Геокодер вернул|Укажите полный адрес отправления)/iu.test(previousAssistantText);
+  const goFollowup = goContext && /(?:^|\s)(?:от|из|с|до|в)\s+/iu.test(normalized);
+  if (!isYandexServiceQuestion(normalized) && !mailFollowup && !goFollowup) return "";
   try {
     if (mailFollowup && (isYandexMailReadRequest(normalized) || isYandexMailSelectionQuestion(question))) {
       const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText)
@@ -12569,9 +12589,10 @@ async function buildYandexDirectAnswer(question, history = []) {
       ].join("\n");
     }
 
-    if (/(яндекс\s*go|яндекс\s*го|такси|deeplink|диплинк|ссылк.*маршрут)/iu.test(normalized)
-      && /(маршрут|ссылк|откуда|куда|поездк|такси|от\s+.+\s+до\s+)/iu.test(normalized)) {
-      const route = extractYandexGoRouteFromText(question);
+    if (goFollowup
+      || (/(яндекс\s*go|яндекс\s*го|такси|deeplink|диплинк|ссылк.*маршрут)/iu.test(normalized)
+        && /(маршрут|ссылк|откуда|куда|поездк|такси|от\s+.+\s+до\s+)/iu.test(normalized))) {
+      const route = extractYandexGoRouteFromText(question, previousUserText);
       if (!route.from || !route.to) {
         return 'Для ссылки Яндекс Go нужны два адреса. Пример: "такси от Медведево, Школьная 15 до Медведево, Советская 20".';
       }
