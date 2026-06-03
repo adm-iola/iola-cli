@@ -16668,6 +16668,7 @@ async function onboard(args = []) {
   if (components.includes("workspace")) await handleWorkspace(["init"]);
   if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
   if (components.includes("archive")) await ensureArchiveTool({ install: true });
+  if (components.includes("city-data")) await checkHealth([]);
   if (components.includes("iola")) {
     await setupIolaLocal(["--yes"]);
   }
@@ -16754,15 +16755,16 @@ async function chooseOnboardComponents(status = null) {
       3: "archive",
       4: "index",
       5: "browser",
-      6: "iola",
-      7: "ollama",
-      8: "gigachat",
-      9: "yandex",
-      10: "yandex-cloud",
-      11: "openai",
-      12: "openrouter",
-      13: "codex",
-      14: "codex-mcp",
+      6: "city-data",
+      7: "codex-mcp",
+      8: "iola",
+      9: "ollama",
+      10: "gigachat",
+      11: "yandex",
+      12: "yandex-cloud",
+      13: "openai",
+      14: "openrouter",
+      15: "codex",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -16775,7 +16777,7 @@ function isOnboardExitAnswer(answer) {
 }
 
 async function getOnboardComponentStatus() {
-  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey, secrets] = await Promise.all([
+  const [config, readiness, browser, archive, codexVersion, ollamaVersion, yandexGeocoderKey, secrets, cityDataHealth] = await Promise.all([
     loadConfig(),
     getAiReadiness(),
     getBrowserStatus(),
@@ -16784,6 +16786,7 @@ async function getOnboardComponentStatus() {
     getOllamaVersion(),
     getYandexGeocoderKey(),
     loadSecrets(),
+    getMcpBaseUrl().then((baseUrl) => probeEndpoint(`${baseUrl}/mcp-health`)),
   ]);
   const workspaceReady = existsSync(PROJECT_CONTEXT_FILE) || existsSync(PROJECT_CONTEXT_DIR_FILE) || existsSync(PROJECT_IOLA_DIR);
   const policyReady = (config.toolsets?.enabled || []).includes("analyst");
@@ -16798,6 +16801,7 @@ async function getOnboardComponentStatus() {
     openrouter: Boolean(readiness.openrouter),
     codex: Boolean(codexVersion !== "не найден" && readiness.codex),
     "codex-mcp": false,
+    "city-data": cityDataHealth === "доступен",
     archive: Boolean(archive),
     index: false,
     browser: browser.installed === "yes",
@@ -16818,32 +16822,38 @@ function onboardComponentGroups(status) {
       ],
     },
     {
+      title: "Городские сервисы",
+      rows: [
+        ["6", "city-data", "Открытые данные Йошкар-Олы", "API/MCP gateway доступен"],
+        ["7", "codex-mcp", "Подключить городские данные к Codex", "MCP для Codex"],
+      ],
+    },
+    {
       title: "Локальный AI",
       rows: [
-        ["6", "iola", "IOLA локальная модель", "локальная модель найдена"],
-        ["7", "ollama", "Ollama", "опциональный локальный runtime"],
+        ["8", "iola", "IOLA локальная модель", "локальная модель найдена"],
+        ["9", "ollama", "Ollama", "опциональный локальный runtime"],
       ],
     },
     {
       title: "Российские AI и сервисы",
       rows: [
-        ["8", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
-        ["9", "yandex", "Yandex Connector", "Диск, Почта, Календарь, Контакты"],
-        ["10", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
+        ["10", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
+        ["11", "yandex", "Yandex Connector", "Диск, Почта, Календарь, Контакты"],
+        ["12", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
       ],
     },
     {
       title: "Зарубежные AI",
       rows: [
-        ["11", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
-        ["12", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+        ["13", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
+        ["14", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
       ],
     },
     {
       title: "Codex",
       rows: [
-        ["13", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
-        ["14", "codex-mcp", "Подключение IOLA к Codex", "MCP для Codex"],
+        ["15", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
       ],
     },
   ];
@@ -16862,12 +16872,12 @@ function defaultOnboardSelection(status) {
   if (!status.workspace) defaults.push("1");
   if (!status.policy) defaults.push("2");
   if (!status.archive) defaults.push("3");
-  if (!status.iola) defaults.push("6");
+  if (!status.iola) defaults.push("8");
   return defaults.length ? defaults : ["1", "2"];
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "iola", 7: "ollama", 8: "gigachat", 9: "yandex", 10: "yandex-cloud", 11: "openai", 12: "openrouter", 13: "codex", 14: "codex-mcp" };
+  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "city-data", 7: "codex-mcp", 8: "iola", 9: "ollama", 10: "gigachat", 11: "yandex", 12: "yandex-cloud", 13: "openai", 14: "openrouter", 15: "codex" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
