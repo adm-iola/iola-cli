@@ -81,7 +81,7 @@ assertIncludes(cliSource, "язндекс", "Yandex direct router should tolerat
 assertIncludes(cliSource, "yandexMailCount", "Yandex mail should answer unread count questions directly");
 assertIncludes(cliSource, "resolveYandexMailUidFromQuestion", "Yandex mail follow-ups should resolve selected message UID");
 assertIncludes(cliSource, "extractYandexMailUidByOrdinal", "Yandex mail follow-ups should support numbered selections");
-assertIncludes(cliSource, "BODY[TEXT]", "Yandex mail read should mark opened messages as seen");
+assertIncludes(cliSource, "BODY[]", "Yandex mail read should fetch full MIME messages and mark opened messages as seen");
 assertIncludes(cliSource, "markSeen === false", "Yandex mail read should keep an explicit no-mark fallback");
 assertIncludes(cliSource, "yandex_mail_folders", "Yandex mail should expose folders as a tool");
 assertIncludes(cliSource, "yandex_mail_reply", "Yandex mail should expose reply as a tool");

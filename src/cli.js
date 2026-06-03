@@ -4148,8 +4148,13 @@ async function yandexMailCount(options = {}) {
 async function yandexMailSearch(query, options = {}) {
   const normalized = normalizeGeoText(query);
   if (!normalized) return yandexMailList(options);
+  const tokens = normalized.split(/\s+/u).filter((token) => token.length > 2 && !/^(про|обо?|где|что|кто|как)$/iu.test(token));
   const rows = await yandexMailList({ ...options, limit: Math.max(50, Number(options.limit || 20) * 3) });
-  return rows.filter((row) => normalizeGeoText(`${row.from} ${row.subject} ${row.snippet}`).includes(normalized)).slice(0, Number(options.limit || 20));
+  return rows.filter((row) => {
+    const haystack = normalizeGeoText(`${row.from} ${row.subject} ${row.snippet}`);
+    if (haystack.includes(normalized)) return true;
+    return tokens.length > 0 && tokens.every((token) => haystack.includes(token));
+  }).slice(0, Number(options.limit || 20));
 }
 
 async function yandexMailWatchTick(options = {}) {
@@ -4205,7 +4210,7 @@ async function yandexMailRead(uid, options = {}) {
   try {
     await imapAuthenticate(session, email, token);
     await imapCommand(session, `SELECT ${quoteImapMailbox(options.mailbox || "INBOX")}`);
-    const bodyAccessor = options.markSeen === false ? "BODY.PEEK[TEXT]" : "BODY[TEXT]";
+    const bodyAccessor = options.markSeen === false ? "BODY.PEEK[]" : "BODY[]";
     const fetch = await imapCommand(session, `UID FETCH ${Number(uid)} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT MESSAGE-ID REFERENCES)] ${bodyAccessor})`, { timeout: 60000 });
     return parseImapFetchSummaries(fetch, { full: true })[0] || { uid, status: "not-found" };
   } finally {
@@ -4646,14 +4651,14 @@ function stripMailBody(value) {
   const raw = String(value || "").replace(/\r/g, "");
   const withoutFetch = raw
     .replace(/^\* \d+ FETCH[^\n]*\n?/u, "")
-    .replace(/^BODY\[[^\n]*\]\s*\{\d+\}\n?/imu, "")
+    .replace(/^BODY(?:\.PEEK)?\[[^\n]*\]\s*\{\d+\}\n?/imu, "")
     .replace(/\n\)\s*$/u, "");
-  const bodyMatch = withoutFetch.match(/BODY\[TEXT\]\s*\{\d+\}\s*([\s\S]*)/iu);
+  const bodyMatch = withoutFetch.match(/BODY(?:\.PEEK)?\[[^\n]*\]\s*\{\d+\}\s*([\s\S]*)/iu);
   if (bodyMatch?.[1]) return extractMimeText(bodyMatch[1]);
   const headerEnd = withoutFetch.indexOf("\n\n");
   if (headerEnd < 0) return withoutFetch.replace(/[^\S\n]+/g, " ").trim();
   const headers = withoutFetch.slice(0, headerEnd);
-  const body = withoutFetch.slice(headerEnd + 2).replace(/^BODY\[[^\n]*\]\s*\{\d+\}\n?/imu, "");
+  const body = withoutFetch.slice(headerEnd + 2).replace(/^BODY(?:\.PEEK)?\[[^\n]*\]\s*\{\d+\}\n?/imu, "");
   return extractMimeText(`${headers}\n\n${body}`);
 }
 
@@ -4690,15 +4695,50 @@ function decodeMailPart(part) {
   const encoding = headers.match(/^Content-Transfer-Encoding:\s*([^\n]+)/imu)?.[1]?.trim().toLocaleLowerCase("en-US") || "";
   let decoded = body;
   if (encoding === "base64") {
-    decoded = Buffer.from(body.replace(/\s+/g, ""), "base64").toString("utf8");
+    const clean = body.replace(/\s+/g, "");
+    decoded = /^[A-Z0-9+/]+={0,2}$/iu.test(clean) && clean.length >= 8
+      ? Buffer.from(clean, "base64").toString("utf8")
+      : body;
   } else if (encoding === "quoted-printable") {
     decoded = decodeQuotedPrintable(body);
+  } else {
+    const clean = body.replace(/\s+/g, "");
+    if (/^[A-Z0-9+/]+={0,2}$/iu.test(clean) && clean.length >= 80) {
+      const candidate = Buffer.from(clean, "base64").toString("utf8");
+      if (/(<!doctype|<html|<body|[А-Яа-яЁё]{3,})/u.test(candidate)) decoded = candidate;
+    }
   }
-  return decoded.replace(/<[^>]+>/g, " ").replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  decoded = decodeEmbeddedBase64MailBody(decoded);
+  const cleaned = decoded
+    .replace(/<style\b[\s\S]*?<\/style>/giu, " ")
+    .replace(/<script\b[\s\S]*?<\/script>/giu, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]+/gu, " ")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const firstCyrillic = cleaned.search(/[А-Яа-яЁё]{3,}/u);
+  if (firstCyrillic > 0 && firstCyrillic < 120 && cleaned.slice(0, firstCyrillic).includes("�")) {
+    return cleaned.slice(firstCyrillic).trim();
+  }
+  return cleaned;
 }
 
 function decodeQuotedPrintable(value) {
   return Buffer.from(String(value || "").replace(/=\n/gu, "").replace(/=([A-F0-9]{2})/giu, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "binary").toString("utf8");
+}
+
+function decodeEmbeddedBase64MailBody(value) {
+  const text = String(value || "");
+  if (/(<!doctype|<html|<body|[А-Яа-яЁё]{3,})/u.test(text) && !/[A-Z0-9+/]{120,}/u.test(text)) return text;
+  const matches = text.match(/[A-Z0-9+/=\s]{160,}/giu) || [];
+  for (const match of matches) {
+    const clean = match.replace(/\s+/g, "");
+    if (!/^[A-Z0-9+/]+={0,2}$/iu.test(clean) || clean.length < 160) continue;
+    const candidate = Buffer.from(clean, "base64").toString("utf8");
+    if (/(<!doctype|<html|<body|[А-Яа-яЁё]{3,})/u.test(candidate)) return candidate;
+  }
+  return text;
 }
 
 async function yandexDavRequest(url, token, options = {}) {
@@ -10236,7 +10276,7 @@ async function buildYandexDirectAnswer(question, history = []) {
         if (!rows.length) return "В письме не нашел совпадений со слоями школ и детских садов.";
         return ["Нашел в городских слоях:", ...rows.map((row, index) => `${index + 1}. ${row.name}${row.inn ? `, ИНН ${row.inn}` : ""}${row.address ? `, ${row.address}` : ""}`)].join("\n");
       }
-      if (/(адрес|карт|гео|место|где)/iu.test(normalized) && /(письм|письма|письме)/iu.test(normalized)) {
+      if (/(адрес|карт|место|где)/iu.test(normalized) && /(письм|письма|письме)/iu.test(normalized)) {
         const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
         if (!uid) return "Из какого письма взять адрес? Укажите номер из списка или UID.";
         const rows = await yandexMailMapAddresses(uid, { mailbox: extractYandexMailboxName(question) || "INBOX" });
@@ -10366,7 +10406,7 @@ function isYandexServiceQuestion(normalized) {
 
 function isYandexIdentityQuestion(normalized) {
   const text = String(normalized || "");
-  return /(аккаунт|профил|логин|кто подключен|какой.*подключен|email|e-mail)/iu.test(text)
+  return /(аккаунт|аккант|акант|акаунт|акк?аунт|профил|логин|кто подключен|какой.*подключ|email|e-mail)/iu.test(text)
     && /(яндекс|яндес|язндекс|язндекс|яндкс|yandex)/iu.test(text);
 }
 
@@ -10378,7 +10418,7 @@ function isYandexMailFollowupQuestion(normalized, question) {
 }
 
 function cleanupYandexQuery(question) {
-  const stop = /^(?:в|на|у|из|для|по|яндекс|yandex|найди|поиск|покажи|посмотри|проверь|почт\p{L}*|письм\p{L}*|календар\p{L}*|контакт\p{L}*)$/iu;
+  const stop = /^(?:в|на|у|из|для|по|про|о|об|обо|яндекс|yandex|найди|поиск|покажи|посмотри|проверь|почт\p{L}*|письм\p{L}*|календар\p{L}*|контакт\p{L}*)$/iu;
   return String(question || "")
     .replace(/[?.!]+$/u, "")
     .split(/[^\p{L}\p{N}@._+-]+/gu)
