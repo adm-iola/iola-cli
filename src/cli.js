@@ -1187,7 +1187,7 @@ async function startAgentReadline() {
 }
 
 async function startAgentRawInput() {
-  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, rawMode: true, pendingOutput: "", aiStatus: null, statusBar: false, statusRows: 0 };
+  const state = { history: [], buffer: "", selected: 0, slashOffset: 0, slashOpen: false, running: false, renderedInputLines: 0, renderedLines: 0, rawMode: true, pendingOutput: "", pendingAction: null, aiStatus: null, statusBar: false, statusRows: 0 };
   const wasRaw = input.isRaw;
   activateRawInput(input);
   setupAgentStatusBar(state);
@@ -1195,6 +1195,7 @@ async function startAgentRawInput() {
   await refreshAgentAiStatus(state);
   const render = () => renderAgentInput(state);
   render();
+  const stopUfanetNotifications = setupAgentUfanetNotifications(state, render);
 
   try {
     while (true) {
@@ -1271,6 +1272,7 @@ async function startAgentRawInput() {
       }
     }
   } finally {
+    stopUfanetNotifications();
     clearAgentInputArea(state);
     finishAgentTerminalLine(state);
     if (!wasRaw) input.setRawMode(false);
@@ -1280,7 +1282,8 @@ async function startAgentRawInput() {
 
 async function handleAgentLine(line, state) {
   if (!line.startsWith("/")) {
-    const answer = await aiAsk(state.rawMode ? [line, "--quiet"] : [line], { history: state.history });
+    const pendingAnswer = await handlePendingAgentAction(line, state);
+    const answer = pendingAnswer || await aiAsk(state.rawMode ? [line, "--quiet"] : [line], { history: state.history, state });
     state.history.push({ role: "user", content: line });
     state.history.push({ role: "assistant", content: answer });
     if (state.rawMode) state.pendingOutput = answer;
@@ -1600,6 +1603,21 @@ async function handleAgentLine(line, state) {
     return false;
   }
 
+  if (command === "ufanet") {
+    await handleUfanet(args.length ? args : ["menu"], state);
+    return false;
+  }
+
+  if (command === "dom_ru" || command === "domru") {
+    await handleDomRu(args);
+    return false;
+  }
+
+  if (command === "rostelecom") {
+    await handleRostelecom(args);
+    return false;
+  }
+
   const mapped = {
     health: ["health", args],
     doctor: ["doctor", args],
@@ -1615,10 +1633,6 @@ async function handleAgentLine(line, state) {
     files: ["files", args],
     archive: ["archive", args],
     yandex: ["yandex", args.length ? args : ["menu"]],
-    ufanet: ["ufanet", args.length ? args : ["menu"]],
-    dom_ru: ["dom_ru", args],
-    domru: ["dom_ru", args],
-    rostelecom: ["rostelecom", args],
     changes: ["changes", args],
     index: ["index", args],
     reports: ["reports", args],
@@ -1899,6 +1913,131 @@ function flushPendingAgentOutput(state) {
   state.pendingOutput = "";
   if (!text) return;
   printAiAnswer(text);
+}
+
+async function handlePendingAgentAction(line, state) {
+  const action = state?.pendingAction;
+  if (!action) return "";
+  const text = String(line || "").trim();
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  if (/^(нет|не|отмена|cancel|no|n)$/iu.test(normalized)) {
+    state.pendingAction = null;
+    return "Действие отменено.";
+  }
+  if (action.type === "ufanet_select_open") {
+    const number = Number(text.match(/\d+/u)?.[0] || 0);
+    if (!number || number < 1 || number > action.choices.length) {
+      return formatUfanetChoicePrompt(action.choices);
+    }
+    const choice = action.choices[number - 1];
+    state.pendingAction = null;
+    const result = await ufanetOpenIntercom(choice.id, { confirm: true });
+    return formatUfanetOpenResult(result, choice);
+  }
+  if (action.type === "ufanet_confirm_open") {
+    if (!/^(да|д|yes|y|ok|ок|открой|да\s+открой|открывай|пусти)/iu.test(normalized)) {
+      return "Ответьте `да`, чтобы открыть домофон, или `нет`, чтобы отменить.";
+    }
+    state.pendingAction = null;
+    const result = await ufanetOpenIntercom(action.id, { confirm: true });
+    return formatUfanetOpenResult(result, action);
+  }
+  return "";
+}
+
+function setupAgentUfanetNotifications(state, render) {
+  if (!input.isTTY) return () => {};
+  let stopped = false;
+  let timer = null;
+  let busy = false;
+  const schedule = (seconds = 10) => {
+    if (stopped) return;
+    timer = setTimeout(loop, normalizeUfanetPollInterval(seconds) * 1000);
+  };
+  const loop = async () => {
+    if (stopped || busy) {
+      schedule(10);
+      return;
+    }
+    busy = true;
+    let nextInterval = 10;
+    try {
+      const config = await loadConfig();
+      const notificationConfig = config.domophones?.providers?.ufanet?.notifications || {};
+      nextInterval = normalizeUfanetPollInterval(notificationConfig.intervalSeconds || 10);
+      if (notificationConfig.enabled) {
+        const history = await ufanetGetCallHistory({ page: 1, pageSize: 10 });
+        const rows = history.results || [];
+        let lastSeen = notificationConfig.lastSeen || "";
+        if (!lastSeen && rows[0]) {
+          await updateUfanetLastSeen(ufanetCallKey(rows[0]));
+        } else {
+          const fresh = [];
+          for (const row of rows) {
+            const key = ufanetCallKey(row);
+            if (!key || key === lastSeen) break;
+            fresh.push(row);
+          }
+          if (fresh.length > 0) {
+            for (const row of fresh.reverse()) {
+              await announceUfanetCallInAgent(row, state, render);
+            }
+            await updateUfanetLastSeen(ufanetCallKey(rows[0]) || lastSeen);
+          }
+        }
+      }
+    } catch (error) {
+      if (process.env.IOLA_DEBUG === "1") {
+        printAgentAsyncMessage(state, render, `Уфанет: ошибка проверки вызовов: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      busy = false;
+      schedule(nextInterval);
+    }
+  };
+  schedule(2);
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+async function announceUfanetCallInAgent(row, state, render) {
+  const match = await resolveUfanetIntercomForCall(row).catch(() => null);
+  if (match?.id) {
+    state.pendingAction = {
+      type: "ufanet_confirm_open",
+      id: match.id,
+      address: match.address || row.address || "",
+      name: match.name || "",
+      createdAt: new Date().toISOString(),
+    };
+    printAgentAsyncMessage(state, render, [
+      "Новый вызов домофона Уфанет:",
+      `Адрес: ${row.address || match.address || "-"}`,
+      `Время: ${row.calledAt || "-"}`,
+      "Открыть? Ответьте `да` или `нет`.",
+    ].join("\n"));
+    return;
+  }
+  const intercoms = await ufanetGetIntercoms().catch(() => []);
+  const choices = intercoms.map((item) => ({ id: item.id, name: item.name, address: item.address }));
+  state.pendingAction = choices.length
+    ? { type: "ufanet_select_open", choices, createdAt: new Date().toISOString() }
+    : null;
+  printAgentAsyncMessage(state, render, [
+    "Новый вызов домофона Уфанет:",
+    `Адрес: ${row.address || "-"}`,
+    `Время: ${row.calledAt || "-"}`,
+    choices.length ? "Открыть? Выберите домофон номером:" : "Не смог сопоставить вызов с домофоном.",
+    choices.length ? formatUfanetChoicePrompt(choices) : "",
+  ].filter(Boolean).join("\n"));
+}
+
+function printAgentAsyncMessage(state, render, text) {
+  clearAgentInputArea(state);
+  output.write(`${text}\n`);
+  render();
 }
 
 function colorSlashSelection(row) {
@@ -3571,7 +3710,7 @@ async function handleRostelecom() {
   console.log("Пока доступна заготовка пункта в городских сервисах. API/авторизация будут добавлены после исследования провайдера.");
 }
 
-async function handleUfanet(args = []) {
+async function handleUfanet(args = [], agentState = null) {
   const [action = process.stdin.isTTY ? "menu" : "status", target, ...rest] = args;
   const options = parseOptions(rest);
 
@@ -3598,7 +3737,11 @@ async function handleUfanet(args = []) {
 
   if (action === "open") {
     const intercomId = target || options.id || options.intercom;
-    if (!intercomId) throw new Error("Укажите ID домофона. Пример: iola ufanet open 123");
+    if (!intercomId) {
+      const result = await ufanetOpenSmart({ state: agentState });
+      console.log(formatUfanetSmartOpenResult(result));
+      return;
+    }
     const ok = options.yes || options.confirm || await confirm(`Открыть домофон Уфанет #${intercomId}? [y/N] `);
     if (!ok) {
       console.log("Открытие отменено.");
@@ -3917,7 +4060,9 @@ function ufanetCallKey(row = {}) {
 async function executeUfanetTool(tool, args = {}) {
   if (tool === "ufanet_status") return getUfanetStatus();
   if (tool === "ufanet_intercoms") return ufanetGetIntercoms();
-  if (tool === "ufanet_open_intercom") return ufanetOpenIntercom(args.id || args.intercomId || args.intercom_id, args);
+  if (tool === "ufanet_open_intercom") return args.id || args.intercomId || args.intercom_id
+    ? ufanetOpenIntercom(args.id || args.intercomId || args.intercom_id, args)
+    : ufanetOpenSmart({ ...args, state: args.state });
   if (tool === "ufanet_call_history") return ufanetGetCallHistory({ page: args.page || 1, pageSize: args.pageSize || args.page_size || args.limit || 10 });
   if (tool === "ufanet_call_links") return ufanetGetCallLinks(args.uuid || args.id);
   if (tool === "ufanet_cameras") return ufanetGetCameras();
@@ -4009,6 +4154,59 @@ async function ufanetOpenIntercom(intercomId, options = {}) {
   if (!intercomId) throw new Error("ID домофона обязателен.");
   const payload = await ufanetRequest("GET", `api/v0/skud/shared/${encodeURIComponent(intercomId)}/open/`, { timeout: 30000 });
   return { provider: "ufanet", status: payload?.result ? "opened" : "not-opened", id: Number(intercomId), result: Boolean(payload?.result) };
+}
+
+async function ufanetOpenSmart(options = {}) {
+  const intercomId = options.id || options.intercomId || options.intercom_id;
+  if (intercomId) {
+    const result = await ufanetOpenIntercom(intercomId, { confirm: true });
+    return { type: "opened", result, choice: { id: intercomId } };
+  }
+  const intercoms = await ufanetGetIntercoms();
+  if (intercoms.length === 0) return { type: "empty" };
+  const choices = intercoms.map((item) => ({ id: item.id, name: item.name, address: item.address }));
+  if (intercoms.length === 1) {
+    const result = await ufanetOpenIntercom(intercoms[0].id, { confirm: true });
+    return { type: "opened", result, choice: choices[0] };
+  }
+  if (options.state) {
+    options.state.pendingAction = { type: "ufanet_select_open", choices, createdAt: new Date().toISOString() };
+  }
+  return { type: "select", choices };
+}
+
+function formatUfanetSmartOpenResult(value) {
+  if (value.type === "empty") return "Уфанет подключен, но доступных домофонов не найдено.";
+  if (value.type === "select") return formatUfanetChoicePrompt(value.choices);
+  if (value.type === "opened") return formatUfanetOpenResult(value.result, value.choice);
+  return "Не удалось выполнить действие с домофоном.";
+}
+
+function formatUfanetChoicePrompt(choices = []) {
+  return [
+    "Найдено несколько домофонов. Какой открыть? Ответьте цифрой:",
+    ...choices.map((item, index) => `${index + 1}. ${item.address || item.name || `Домофон #${item.id}`} — ID ${item.id}`),
+  ].join("\n");
+}
+
+function formatUfanetOpenResult(result, choice = {}) {
+  const label = choice.address || choice.name || `ID ${result.id}`;
+  return result.result
+    ? `Домофон открыт: ${label}.`
+    : `Уфанет не подтвердил открытие домофона: ${label}.`;
+}
+
+async function resolveUfanetIntercomForCall(row = {}) {
+  const address = normalizeGeoText(row.address || "");
+  if (!address) return null;
+  const intercoms = await ufanetGetIntercoms();
+  const matches = intercoms.filter((item) => {
+    const itemAddress = normalizeGeoText(item.address || item.name || "");
+    return itemAddress && (itemAddress.includes(address) || address.includes(itemAddress));
+  });
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return null;
+  return intercoms.length === 1 ? intercoms[0] : null;
 }
 
 async function ufanetGetCallHistory(options = {}) {
@@ -12915,6 +13113,7 @@ async function setupIolaLocal(args) {
 
 async function aiAsk(args, context = {}) {
   const options = parseOptions(args);
+  if (context.state) options.state = context.state;
   const question = options._.join(" ").trim();
 
   if (!question) {
@@ -12963,6 +13162,20 @@ async function aiAsk(args, context = {}) {
     }
     if (!options.quiet) console.log(userSkillAnswer);
     return userSkillAnswer;
+  }
+  const ufanetAnswer = await buildUfanetDirectAnswer(question, context);
+  if (ufanetAnswer) {
+    if (historyEnabled) {
+      recordAskHistory({ question, answer: ufanetAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, ufanetAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: ufanetAnswer.length, sessionId, direct: true, ufanet: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, ufanetAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(ufanetAnswer);
+    return ufanetAnswer;
   }
   if (/(контакт|адресн)/iu.test(question) && !isExplicitYandexDiskPathDelete(question)) {
     const yandexContactAnswer = await buildYandexDirectAnswer(question, context.history || history);
@@ -14561,6 +14774,48 @@ function cleanupCloudSaveText(question) {
     .trim();
 }
 
+async function buildUfanetDirectAnswer(question, context = {}) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (!/(домофон|уфанет|ufanet|дверь|подъезд)/iu.test(normalized)) return "";
+  if (/(дом\.?ру|dom\.?ru)/iu.test(normalized)) return "Мой домофон Дом.ру пока в разработке. Сейчас реализован Уфанет: /ufanet.";
+  if (/(ростелеком|rostelecom)/iu.test(normalized)) return "Мой домофон Ростелеком пока в разработке. Сейчас реализован Уфанет: /ufanet.";
+  if (/(уведом|оповещ|сообщ).{0,40}(включ|получ|on|вкл)/iu.test(normalized) || /(включ|получ).{0,40}(уведом|оповещ|сообщ).{0,40}(домофон)/iu.test(normalized)) {
+    await setUfanetNotifications(true, { intervalSeconds: extractSecondsFromText(question) || 10 });
+    return "Уведомления Уфанет включены. Когда в CLI придет новый вызов, можно ответить `да`, чтобы открыть, или `нет`, чтобы отменить.";
+  }
+  if (/(уведом|оповещ|сообщ).{0,40}(выключ|отключ|off|выкл)/iu.test(normalized) || /(выключ|отключ).{0,40}(уведом|оповещ|сообщ).{0,40}(домофон)/iu.test(normalized)) {
+    await setUfanetNotifications(false);
+    return "Уведомления Уфанет выключены.";
+  }
+  if (/(статус|подключ|аккаунт|договор)/iu.test(normalized)) {
+    const status = await getUfanetStatus();
+    return `Уфанет: ${status.configured ? "настроен" : "не настроен"}, уведомления ${status.notifications}.`;
+  }
+  if (/(открой|открыть|открывай|пусти|впусти|двер)/iu.test(normalized)) {
+    const id = extractUfanetIntercomId(question);
+    const result = await ufanetOpenSmart({ id, state: context.state });
+    return formatUfanetSmartOpenResult(result);
+  }
+  if (/(истори|звонк|кто звонил|последн)/iu.test(normalized)) {
+    const rows = await ufanetGetCallHistory({ page: 1, pageSize: 10 });
+    if (!rows.results?.length) return "В истории Уфанет звонков не найдено.";
+    return ["История звонков Уфанет:", ...rows.results.map((row, index) => `${index + 1}. ${row.calledAt || "-"} — ${row.address || "-"}${row.uuid ? `, UUID ${row.uuid}` : ""}`)].join("\n");
+  }
+  if (/(камер|rtsp|видео)/iu.test(normalized)) {
+    const rows = await ufanetGetCameras();
+    if (!rows.length) return "Камеры Уфанет не найдены.";
+    return ["Камеры Уфанет:", ...rows.slice(0, 10).map((row, index) => `${index + 1}. ${row.title || row.number || "камера"} — ${row.address || "-"}${row.rtspUrl ? `, ${row.rtspUrl}` : ""}`)].join("\n");
+  }
+  const intercoms = await ufanetGetIntercoms();
+  if (!intercoms.length) return "Доступные домофоны Уфанет не найдены.";
+  return ["Доступные домофоны Уфанет:", ...intercoms.map((item, index) => `${index + 1}. ${item.address || item.name || `Домофон #${item.id}`} — ID ${item.id}`)].join("\n");
+}
+
+function extractSecondsFromText(text) {
+  const match = String(text || "").match(/(\d{1,3})\s*(?:сек|seconds|s)\b/iu);
+  return match ? Number(match[1]) : 0;
+}
+
 function detectDirectDataFields(normalizedQuestion) {
   const fields = [];
   if (/(директ|руководител|заведующ|кто возглавляет)/iu.test(normalizedQuestion)) fields.push("head");
@@ -15179,8 +15434,7 @@ function inferToolPlan(question, options = {}) {
     if (/(ростелеком|rostelecom)/iu.test(normalized)) return { directAnswer: "Мой домофон Ростелеком пока в разработке. Сейчас реализован Уфанет: /ufanet." };
     if (/(открой|открыть|пусти|впусти|двер)/iu.test(normalized)) {
       const id = extractUfanetIntercomId(question);
-      if (!id) return { directAnswer: "Для открытия домофона нужен ID. Посмотрите доступные домофоны командой /ufanet intercoms, затем: /ufanet open ID." };
-      return { steps: [{ tool: "ufanet_open_intercom", args: { id, confirm: true } }] };
+      return { steps: [{ tool: "ufanet_open_intercom", args: { ...(id ? { id } : {}), confirm: true } }] };
     }
     if (/(истори|звонк|кто\s+звонил|последн)/iu.test(normalized) && !/(ссылк|запис|видео)/iu.test(normalized)) {
       return { steps: [{ tool: "ufanet_call_history", args: { limit: 10 } }] };
@@ -15687,7 +15941,7 @@ async function executeToolPlan(plan, options = {}) {
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (UFANET_TOOLS.includes(step.tool)) {
         await assertPermission("externalApi");
-        const result = await executeUfanetTool(step.tool, step.args || {});
+        const result = await executeUfanetTool(step.tool, { ...(step.args || {}), state: options.state });
         current = Array.isArray(result) ? result : [result];
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (USER_SKILL_TOOLS.includes(step.tool)) {
@@ -15845,6 +16099,9 @@ function formatToolResult(result, options) {
       return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
     }
     if (row.date && row.time) return `Сегодня ${row.date}, ${row.time}.`;
+    if (row.type === "select" && Array.isArray(row.choices)) return formatUfanetChoicePrompt(row.choices);
+    if (row.type === "empty") return "Уфанет подключен, но доступных домофонов не найдено.";
+    if (row.type === "opened" && row.result) return formatUfanetOpenResult(row.result, row.choice || {});
     if (row.provider === "ufanet" && (row.status === "opened" || row.status === "not-opened")) return `Уфанет: домофон #${row.id} ${row.status === "opened" ? "открыт" : "не открылся"}.`;
     if (row.provider === "ufanet" && row.uuid && (row.url || row.preview)) return `Уфанет: запись звонка ${row.uuid}\nСсылка: ${row.url || "-"}\nПревью: ${row.preview || "-"}`;
     if (row.rtspUrl) return `Камера Уфанет ${row.title || row.number}: ${row.address || "-"}\nRTSP: ${row.rtspUrl}`;
