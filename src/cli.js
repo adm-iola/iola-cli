@@ -18,6 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const API_BASE_URL = process.env.IOLA_API_BASE_URL || "https://apiiola.yasg.ru/api/v1";
 const MCP_BASE_URL = process.env.IOLA_MCP_BASE_URL || "https://apiiola.yasg.ru";
 const AI_RELAY_BASE_URL = process.env.IOLA_AI_RELAY_BASE_URL || `${API_BASE_URL}/ai/relay`;
+const YAKUNIN_ROUTER_BASE_URL = process.env.IOLA_YAKUNIN_ROUTER_BASE_URL || `${API_BASE_URL}/pay/yakunin-router`;
 const AI_NETWORK_MODE = process.env.IOLA_AI_NETWORK_MODE || "";
 const MIN_NODE_VERSION = "22.5.0";
 const CONFIG_DIR = path.join(os.homedir(), ".iola");
@@ -354,6 +355,8 @@ const MAIN_OPENROUTER_DEVELOPERS = [
   ["microsoft", "Microsoft"],
   ["perplexity", "Perplexity"],
 ];
+const YAKUNIN_ROUTER_UNITS = [5, 10, 15, 20, 25, 30, 50, 100];
+const YAKUNIN_ROUTER_RUB_PER_UNIT = 120;
 const SKILL_BUNDLES = {
   analyst: {
     description: "Аналитик открытых данных: поиск, карточки, отчеты и память.",
@@ -400,6 +403,12 @@ const DEFAULT_AI_CONFIG = {
       },
       openrouter: {
         provider: "openrouter",
+        model: "openai/gpt-4.1-mini",
+        baseUrl: "https://openrouter.ai/api/v1",
+        networkMode: "gateway",
+      },
+      "yakunin-router": {
+        provider: "yakunin-router",
         model: "openai/gpt-4.1-mini",
         baseUrl: "https://openrouter.ai/api/v1",
         networkMode: "gateway",
@@ -946,19 +955,19 @@ Usage:
   iola update
   iola ask TEXT [--profile NAME] [--model MODEL] [--tools] [--files] [--plan] [--trace] [--reasoning fast|verify|vote] [--output FILE] [--schema json|table] [--events] [--no-history] [--bare] [--quiet] [--no-color] [--fail-on-empty]
   iola data LAYER [--limit 10] [--search TEXT] [--where FIELD=VALUE] [--columns a,b,c] [--format table|json|csv]
-  iola ai ask TEXT [--provider iola|ollama|yandexgpt|gigachat|openai|openrouter] [--model MODEL]
+  iola ai ask TEXT [--provider iola|ollama|yandexgpt|gigachat|openai|openrouter|yakunin-router] [--model MODEL]
   iola ai context TEXT [--json]
   iola ai key set yandexgpt
   iola ai key set gigachat
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
-  iola ai key delete yandexgpt|gigachat|openai|openrouter
+  iola ai key delete yandexgpt|gigachat|openai|openrouter|yakunin-router
   iola ai profiles
   iola ai profile add NAME --provider PROVIDER --model MODEL
   iola ai profile use NAME
   iola ai profile delete NAME
-  iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|codex [--search TEXT]
+  iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|yakunin-router|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup iola [--yes] [--force]
@@ -1106,6 +1115,7 @@ async function getAiReadiness() {
   const iola = await hasUsableIolaModel();
   const openai = Boolean(process.env.OPENAI_API_KEY || secrets.openai?.apiKey);
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY || secrets.openrouter?.apiKey);
+  const yakuninRouter = Boolean(process.env.YAKUNIN_ROUTER_API_KEY || secrets.yakuninRouter?.apiKey);
   const yandexgpt = Boolean((process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY || secrets.yandexgpt?.apiKey)
     && (process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexgpt?.folderId));
   const gigachat = Boolean(process.env.GIGACHAT_AUTH_KEY || process.env.GIGACHAT_API_KEY || secrets.gigachat?.apiKey);
@@ -1116,6 +1126,7 @@ async function getAiReadiness() {
     gigachat,
     openai,
     openrouter,
+    "yakunin-router": yakuninRouter,
     codex,
   };
   return {
@@ -1123,7 +1134,7 @@ async function getAiReadiness() {
     activeProfile: activeProfileName,
     activeProvider: activeProfile.provider || "-",
     activeModel: activeProfile.model || "-",
-    anyReady: Boolean(iola || ollama || yandexgpt || gigachat || openai || openrouter || codex),
+    anyReady: Boolean(iola || ollama || yandexgpt || gigachat || openai || openrouter || yakuninRouter || codex),
     profiles: config.ai.profiles || {},
     iola,
     ollama,
@@ -1131,12 +1142,13 @@ async function getAiReadiness() {
     gigachat,
     openai,
     openrouter,
+    "yakunin-router": yakuninRouter,
     codex,
   };
 }
 
 function getFallbackAiProfile(readiness) {
-  const priority = ["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"];
+  const priority = ["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router", "codex"];
   for (const provider of priority) {
     if (!readiness[provider]) continue;
     const entry = Object.entries(readiness.profiles || {}).find(([, profile]) => profile.provider === provider);
@@ -2812,19 +2824,19 @@ async function handleAi(args) {
   if (subcommand === "help") {
     await showBanner();
     console.log(`AI-команды:
-  iola ai ask TEXT [--provider iola|ollama|yandexgpt|gigachat|openai|openrouter] [--model MODEL]
+  iola ai ask TEXT [--provider iola|ollama|yandexgpt|gigachat|openai|openrouter|yakunin-router] [--model MODEL]
   iola ai context TEXT [--json]
   iola ai key set yandexgpt
   iola ai key set gigachat
   iola ai key set openai
   iola ai key set openrouter
   iola ai key status
-  iola ai key delete yandexgpt|gigachat|openai|openrouter
+  iola ai key delete yandexgpt|gigachat|openai|openrouter|yakunin-router
   iola ai profiles
-  iola ai profile add NAME --provider iola|ollama|yandexgpt|gigachat|openai|openrouter|codex --model MODEL
+  iola ai profile add NAME --provider iola|ollama|yandexgpt|gigachat|openai|openrouter|yakunin-router|codex --model MODEL
   iola ai profile use NAME
   iola ai profile delete NAME
-  iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|codex [--search TEXT]
+  iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|yakunin-router|codex [--search TEXT]
   iola ai doctor [--json]
   iola ai setup
   iola ai setup iola [--yes] [--force]
@@ -10909,11 +10921,12 @@ async function aiSetup(args) {
     return;
   }
 
-  if (provider === "openai" || provider === "openrouter" || provider === "yandexgpt" || provider === "gigachat") {
+  if (provider === "openai" || provider === "openrouter" || provider === "yakunin-router" || provider === "yandexgpt" || provider === "gigachat") {
     const options = parseOptions(args.slice(1));
     const model = options.model || {
       openai: "gpt-4.1-mini",
       openrouter: "openai/gpt-4.1-mini",
+      "yakunin-router": "openai/gpt-4.1-mini",
       yandexgpt: "yandexgpt-lite/latest",
       gigachat: "GigaChat-2",
     }[provider];
@@ -10938,6 +10951,7 @@ async function aiSetup(args) {
     const envHint = {
       openai: "OPENAI_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
+      "yakunin-router": "YAKUNIN_ROUTER_API_KEY",
       yandexgpt: "YANDEXGPT_API_KEY и YANDEXGPT_FOLDER_ID",
       gigachat: "GIGACHAT_AUTH_KEY",
     }[provider];
@@ -10996,8 +11010,9 @@ async function handleAiKey(args) {
   iola ai key set gigachat
   iola ai key set openai
   iola ai key set openrouter
+  iola ai key set yakunin-router
   iola ai key status
-  iola ai key delete yandexgpt|gigachat|openai|openrouter`);
+  iola ai key delete yandexgpt|gigachat|openai|openrouter|yakunin-router`);
 }
 
 async function handleAiProfile(args) {
@@ -11039,8 +11054,8 @@ async function aiModels(args) {
   const [provider] = args;
   const options = parseOptions(args.slice(1));
 
-  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер обязателен: iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|codex");
+  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router", "codex"].includes(provider)) {
+    throw new Error("Провайдер обязателен: iola ai models iola|ollama|yandexgpt|gigachat|openai|openrouter|yakunin-router|codex");
   }
 
   const models = await listAiModels(provider);
@@ -11124,9 +11139,9 @@ async function listAiModels(provider) {
       .sort(sortModelsByFreshness);
   }
 
-  if (provider === "openrouter") {
-    const apiKey = await getApiKey("openrouter");
-    const relayConfig = await getApiProviderNetworkConfig("openrouter");
+  if (provider === "openrouter" || provider === "yakunin-router") {
+    const apiKey = await getApiKey(provider);
+    const relayConfig = await getApiProviderNetworkConfig(provider);
     if (apiKey && getAiNetworkMode(relayConfig) === "gateway") {
       const payload = await callAiRelayModels(relayConfig, apiKey, "OpenRouter");
       return (payload.data || [])
@@ -11335,7 +11350,7 @@ async function printAiProfiles() {
     baseUrl: profile.baseUrl || "-",
     mode: profile.provider === "codex"
       ? `sandbox=${profile.sandbox || "read-only"}, approval=${profile.approval || "never"}`
-      : (profile.provider === "openai" || profile.provider === "openrouter" || profile.provider === "yandexgpt" || profile.provider === "gigachat" ? `network=${getAiNetworkMode(profile)}` : "-"),
+      : (isManagedApiProvider(profile.provider) ? `network=${getAiNetworkMode(profile)}` : "-"),
   }));
 
   printTable(rows, [
@@ -11368,8 +11383,8 @@ async function addAiProfile(name, args) {
   const options = parseOptions(args);
   const provider = options.provider;
 
-  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер должен быть iola, ollama, yandexgpt, gigachat, openai, openrouter или codex.");
+  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router", "codex"].includes(provider)) {
+    throw new Error("Провайдер должен быть iola, ollama, yandexgpt, gigachat, openai, openrouter, yakunin-router или codex.");
   }
 
   const profile = buildProfileFromOptions(provider, options);
@@ -11498,8 +11513,8 @@ async function useAiProvider(args) {
 
   const provider = providerOrProfile;
 
-  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(provider)) {
-    throw new Error("Провайдер должен быть iola, ollama, yandexgpt, gigachat, openai, openrouter, codex или именем AI-профиля.");
+  if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router", "codex"].includes(provider)) {
+    throw new Error("Провайдер должен быть iola, ollama, yandexgpt, gigachat, openai, openrouter, yakunin-router, codex или именем AI-профиля.");
   }
 
   const defaultModel = {
@@ -11509,6 +11524,7 @@ async function useAiProvider(args) {
     gigachat: config.ai.provider === "gigachat" ? config.ai.model : "GigaChat-2",
     openai: config.ai.provider === "openai" ? config.ai.model : "gpt-4.1-mini",
     openrouter: config.ai.provider === "openrouter" ? config.ai.model : "openai/gpt-4.1-mini",
+    "yakunin-router": config.ai.provider === "yakunin-router" ? config.ai.model : "openai/gpt-4.1-mini",
     codex: config.ai.provider === "codex" ? config.ai.model : "gpt-5.5",
   }[provider];
   const profileName = provider === "ollama" || provider === "iola" ? "local" : provider;
@@ -11555,6 +11571,7 @@ function normalizeModelMenuTarget(value = "") {
   if (["api", "апи"].includes(normalized)) return "api";
   if (normalized === "openai") return "openai";
   if (normalized === "openrouter" || normalized === "router") return "openrouter";
+  if (["yakunin-router", "yakunin", "yakunin-router-rf", "карты", "карты-рф"].includes(normalized)) return "yakunin-router";
   if (["codex", "кодекс"].includes(normalized)) return "codex";
   return "";
 }
@@ -11564,7 +11581,7 @@ async function chooseModelTarget() {
   console.log("Выберите AI-подключение:");
   console.log(`  1. Локальные модели${active.group === "local" ? " [выбрано]" : ""}`);
   console.log(`  2. Российские AI (YandexGPT/GigaChat)${active.group === "russian" ? " [выбрано]" : ""}`);
-  console.log(`  3. API (OpenAI/OpenRouter)${active.group === "api" ? " [выбрано]" : ""}`);
+  console.log(`  3. API (OpenAI/OpenRouter/Yakunin-Router)${active.group === "api" ? " [выбрано]" : ""}`);
   console.log(`  4. Codex CLI${active.group === "codex" ? " [выбрано]" : ""}`);
   console.log("  0. Отмена");
 
@@ -11584,7 +11601,7 @@ async function getActiveAiSummary() {
     ? "local"
     : provider === "yandexgpt" || provider === "gigachat"
       ? "russian"
-      : provider === "openai" || provider === "openrouter"
+      : isOpenAiCompatibleProvider(provider)
         ? "api"
         : provider === "codex"
           ? "codex"
@@ -11605,7 +11622,7 @@ async function openModelTargetMenu(target) {
     return;
   }
 
-  if (target === "openai" || target === "openrouter") {
+  if (target === "openai" || target === "openrouter" || target === "yakunin-router") {
     const model = await chooseAiModel(target);
     if (model) await switchModelTarget(target, model);
     return;
@@ -11627,6 +11644,10 @@ async function openModelTargetMenu(target) {
 
   const provider = await chooseApiProvider();
   if (!provider) return;
+  if (provider === "yakunin-router-topup") {
+    await setupYakuninRouterPayment({ topup: true });
+    return;
+  }
   const model = await chooseAiModel(provider);
   if (model) await switchModelTarget(provider, model);
 }
@@ -11635,12 +11656,14 @@ async function chooseApiProvider() {
   const config = await loadConfig();
   const active = await getActiveAiSummary();
   const apiProfiles = Object.entries(config.ai.profiles || {})
-    .filter(([, profile]) => profile.provider === "openai" || profile.provider === "openrouter")
+    .filter(([, profile]) => isOpenAiCompatibleProvider(profile.provider))
     .map(([name, profile]) => ({ id: profile.provider, label: `${name}: ${profile.provider} (${profile.model || "-"})${active.provider === profile.provider ? " [выбрано]" : ""}` }));
   const choices = [
     ...apiProfiles,
     { id: "openai", label: "OpenAI API" },
     { id: "openrouter", label: "OpenRouter API" },
+    { id: "yakunin-router", label: "Yakunin-Router (Карты РФ)" },
+    { id: "yakunin-router-topup", label: "Пополнить баланс Yakunin-Router" },
   ].filter((item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index);
 
   console.log("Выберите API-подключение:");
@@ -11674,8 +11697,8 @@ async function chooseRussianProvider() {
 async function getDefaultApiProviderForModelSwitch() {
   const config = await loadConfig();
   const activeProfile = config.ai.profiles?.[getActiveProfileName(config)];
-  if (activeProfile?.provider === "openai" || activeProfile?.provider === "openrouter") return activeProfile.provider;
-  const apiProfile = Object.values(config.ai.profiles || {}).find((profile) => profile.provider === "openai" || profile.provider === "openrouter");
+  if (isOpenAiCompatibleProvider(activeProfile?.provider)) return activeProfile.provider;
+  const apiProfile = Object.values(config.ai.profiles || {}).find((profile) => isOpenAiCompatibleProvider(profile.provider));
   return apiProfile?.provider || "openai";
 }
 
@@ -11713,8 +11736,8 @@ async function chooseLocalModel() {
 
 async function chooseAiModel(provider) {
   const active = await getActiveAiSummary();
-  if (provider === "openrouter") {
-    return chooseOpenRouterModel();
+  if (provider === "openrouter" || provider === "yakunin-router") {
+    return chooseOpenRouterModel(provider);
   }
 
   if (provider === "openai" || provider === "yandexgpt" || provider === "gigachat") {
@@ -11767,14 +11790,14 @@ async function chooseAiModel(provider) {
   return filtered[answer - 1]?.id || "";
 }
 
-async function chooseOpenRouterModel() {
+async function chooseOpenRouterModel(provider = "openrouter") {
   const active = await getActiveAiSummary();
-  const ready = await ensureApiKeyForModelSelection("openrouter");
+  const ready = await ensureApiKeyForModelSelection(provider);
   if (!ready) return "";
 
   let models;
   try {
-    models = await listAiModels("openrouter");
+    models = await listAiModels(provider);
   } catch (error) {
     console.log(error instanceof Error ? error.message : String(error));
     return "";
@@ -11788,7 +11811,7 @@ async function chooseOpenRouterModel() {
 
   while (true) {
     const developerChoices = buildOpenRouterDeveloperChoices(textModels);
-    console.log("Выберите разработчика моделей OpenRouter:");
+    console.log(`Выберите разработчика моделей ${provider === "yakunin-router" ? "Yakunin-Router" : "OpenRouter"}:`);
     developerChoices.forEach((choice, index) => {
       console.log(`  ${index + 1}. ${choice.label} (${choice.count})`);
     });
@@ -11813,7 +11836,7 @@ async function chooseOpenRouterModel() {
     filtered.forEach((model, index) => {
       const date = model.releaseDate || "дата неизвестна";
       const context = model.contextLength ? `, ctx ${formatCompactNumber(model.contextLength)}` : "";
-      const selected = active.provider === "openrouter" && active.model === model.id ? " [выбрано]" : "";
+      const selected = active.provider === provider && active.model === model.id ? " [выбрано]" : "";
       console.log(`  ${index + 1}. ${model.id} (${date}${context}) - ${model.note || model.id}${selected}`);
     });
     console.log("  0. Назад");
@@ -11824,9 +11847,153 @@ async function chooseOpenRouterModel() {
   }
 }
 
+async function setupYakuninRouterPayment({ topup = false } = {}) {
+  const secrets = await loadSecrets();
+  const existingHash = secrets.yakuninRouter?.keyHash || "";
+  const units = await chooseYakuninRouterUnits();
+  if (!units) {
+    console.log("Пополнение отменено.");
+    return false;
+  }
+
+  const amountRub = units * YAKUNIN_ROUTER_RUB_PER_UNIT;
+  console.log(`Сумма: ${units} у.е. = ${amountRub} руб.`);
+  console.log("Создаю платеж Ozon Bank...");
+
+  const orderResponse = await fetch(`${YAKUNIN_ROUTER_BASE_URL}/order`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      units,
+      client_id: `iola-cli:${os.userInfo().username || "user"}`,
+      existing_key_hash: topup && existingHash ? existingHash : undefined,
+    }),
+  });
+
+  if (!orderResponse.ok) {
+    const text = await orderResponse.text();
+    throw new Error(`Yakunin-Router payment request failed: ${orderResponse.status} ${orderResponse.statusText}\n${text.slice(0, 2000)}`);
+  }
+
+  const order = await orderResponse.json();
+  const sbpPayload = order.sbp_payload || "";
+  if (!sbpPayload) {
+    throw new Error("Ozon Bank не вернул SBP payload для QR-кода.");
+  }
+
+  console.log("");
+  console.log(`Заказ: ${order.order_id}`);
+  console.log("Отсканируйте QR-код банковским приложением и оплатите через СБП:");
+  await printTerminalQr(sbpPayload);
+  console.log("");
+  console.log("Если терминал не показывает QR корректно, откройте эту строку в банковском приложении/QR-генераторе:");
+  console.log(sbpPayload);
+  try {
+    await openUrl(sbpPayload);
+  } catch {
+    // Not every OS has an SBP handler. The terminal QR above is the primary path.
+  }
+
+  console.log("");
+  console.log("Жду подтверждение оплаты от Ozon Bank...");
+  const result = await waitYakuninRouterPayment(order.order_id, order.claim_token);
+  if (!result.openrouter_key && !existingHash) {
+    throw new Error("Оплата подтверждена, но сервер не вернул OpenRouter-compatible ключ. Проверьте backend logs.");
+  }
+
+  const nextSecrets = await loadSecrets();
+  nextSecrets.yakuninRouter = {
+    ...(nextSecrets.yakuninRouter || {}),
+    apiKey: result.openrouter_key || nextSecrets.yakuninRouter?.apiKey || "",
+    keyHash: result.openrouter_key_hash || nextSecrets.yakuninRouter?.keyHash || "",
+    limitUsd: result.openrouter_limit_usd || nextSecrets.yakuninRouter?.limitUsd || units,
+    updatedAt: new Date().toISOString(),
+  };
+  await saveSecrets(nextSecrets);
+
+  const config = await loadConfig();
+  const profile = {
+    ...(config.ai.profiles?.["yakunin-router"] || DEFAULT_AI_CONFIG.ai.profiles["yakunin-router"]),
+    provider: "yakunin-router",
+  };
+  await saveConfig({
+    ai: {
+      ...config.ai,
+      activeProfile: "yakunin-router",
+      provider: "yakunin-router",
+      model: profile.model,
+      baseUrl: profile.baseUrl,
+      profiles: {
+        ...(config.ai.profiles || {}),
+        "yakunin-router": profile,
+      },
+    },
+  });
+
+  console.log(`Yakunin-Router готов. Лимит: ${nextSecrets.yakuninRouter.limitUsd || units} у.е.`);
+  return true;
+}
+
+async function chooseYakuninRouterUnits() {
+  console.log("Выберите сумму пополнения:");
+  YAKUNIN_ROUTER_UNITS.forEach((units, index) => {
+    console.log(`  ${index + 1}. ${units} у.е. (${units * YAKUNIN_ROUTER_RUB_PER_UNIT} руб.)`);
+  });
+  console.log("  0. Отмена");
+  const answer = Number(await askText("Номер: "));
+  return YAKUNIN_ROUTER_UNITS[answer - 1] || 0;
+}
+
+async function printTerminalQr(text) {
+  try {
+    const QRCode = await import("qrcode");
+    const qr = await QRCode.toString(String(text || ""), { type: "terminal", small: true });
+    process.stdout.write(qr);
+  } catch {
+    console.log("[QR-код не удалось отрисовать в терминале]");
+  }
+}
+
+async function waitYakuninRouterPayment(orderId, claimToken) {
+  const url = `${YAKUNIN_ROUTER_BASE_URL}/order/${encodeURIComponent(orderId)}?claim_token=${encodeURIComponent(claimToken)}`;
+  const deadline = Date.now() + 15 * 60 * 1000;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    const response = await fetch(url, { headers: { accept: "application/json" } });
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = { raw: text };
+    }
+    if (!response.ok) {
+      throw new Error(`Yakunin-Router status failed: ${response.status} ${response.statusText}\n${text.slice(0, 2000)}`);
+    }
+    if (payload.status === "provisioned") return payload;
+    if (payload.status === "provision_failed") {
+      throw new Error(`Оплата прошла, но ключ не создан: ${payload.error || "ошибка provisioning"}`);
+    }
+    if (attempt === 1 || attempt % 6 === 0) {
+      console.log(`Статус платежа: ${payload.ozon_status || payload.status || "ожидание"}`);
+    }
+    await sleep(5000);
+  }
+  throw new Error("Истекло время ожидания оплаты. Повторите проверку позже через /model -> Yakunin-Router.");
+}
+
 async function ensureApiKeyForModelSelection(provider) {
-  if (!["openai", "openrouter", "yandexgpt", "gigachat"].includes(provider)) return true;
+  if (!isManagedApiProvider(provider)) return true;
   if (await getApiKey(provider) && (provider !== "yandexgpt" || await getYandexFolderId())) return true;
+  if (provider === "yakunin-router") {
+    console.log("Yakunin-Router нужен для оплаты российской картой и автоматической выдачи OpenRouter-compatible ключа.");
+    if (!process.stdin.isTTY) return false;
+    const ok = await askYesNo("Создать оплату и получить ключ сейчас? [Y/n] ", true);
+    if (!ok) return false;
+    await setupYakuninRouterPayment({ topup: false });
+    return Boolean(await getApiKey("yakunin-router"));
+  }
   if (provider === "yandexgpt") {
     console.log("YandexGPT требует Yandex Cloud Connector: API key и folder ID.");
     if (!process.stdin.isTTY) return false;
@@ -11841,6 +12008,7 @@ async function ensureApiKeyForModelSelection(provider) {
   const label = {
     openai: "OpenAI",
     openrouter: "OpenRouter",
+    "yakunin-router": "Yakunin-Router",
     yandexgpt: "YandexGPT",
     gigachat: "GigaChat",
   }[provider];
@@ -11981,6 +12149,7 @@ async function setAiKey(provider) {
   const envName = {
     openai: "OPENAI_API_KEY",
     openrouter: "OPENROUTER_API_KEY",
+    "yakunin-router": "YAKUNIN_ROUTER_API_KEY",
     yandexgpt: "YANDEXGPT_API_KEY",
     gigachat: "GIGACHAT_AUTH_KEY",
   }[provider];
@@ -11998,6 +12167,9 @@ async function setAiKey(provider) {
   } else if (provider === "gigachat") {
     const scope = (await askText("Scope [GIGACHAT_API_PERS]: ")).trim() || "GIGACHAT_API_PERS";
     secrets[provider] = { apiKey: key, scope };
+  } else if (provider === "yakunin-router") {
+    const keyHash = (await askText("OpenRouter key hash [Enter - если неизвестен]: ")).trim();
+    secrets.yakuninRouter = { ...(secrets.yakuninRouter || {}), apiKey: key, keyHash };
   } else {
     secrets[provider] = { apiKey: key };
   }
@@ -12007,17 +12179,18 @@ async function setAiKey(provider) {
 
 async function printAiKeyStatus() {
   const secrets = await loadSecrets();
-  const rows = ["yandexgpt", "gigachat", "openai", "openrouter"].map((provider) => {
+  const rows = ["yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router"].map((provider) => {
     const env = {
       openai: process.env.OPENAI_API_KEY,
       openrouter: process.env.OPENROUTER_API_KEY,
+      "yakunin-router": process.env.YAKUNIN_ROUTER_API_KEY,
       yandexgpt: process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY,
       gigachat: process.env.GIGACHAT_AUTH_KEY || process.env.GIGACHAT_API_KEY,
     }[provider];
     return {
       provider,
       env: env ? "yes" : "no",
-      local: secrets[provider]?.apiKey ? "yes" : "no",
+      local: provider === "yakunin-router" ? (secrets.yakuninRouter?.apiKey ? "yes" : "no") : (secrets[provider]?.apiKey ? "yes" : "no"),
       extra: provider === "yandexgpt"
         ? ((process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexgpt?.folderId) ? "folder ok" : "folder missing")
         : (provider === "gigachat" && secrets.gigachat?.scope ? `scope ${secrets.gigachat.scope}` : ""),
@@ -12035,7 +12208,8 @@ async function printAiKeyStatus() {
 async function deleteAiKey(provider) {
   assertKeyProvider(provider);
   const secrets = await loadSecrets();
-  delete secrets[provider];
+  if (provider === "yakunin-router") delete secrets.yakuninRouter;
+  else delete secrets[provider];
   await saveSecrets(secrets);
   console.log(`Локальный ключ ${provider} удален.`);
 }
@@ -13969,8 +14143,8 @@ function toCsv(rows) {
 }
 
 function assertKeyProvider(provider) {
-  if (!["openai", "openrouter", "yandexgpt", "gigachat"].includes(provider)) {
-    throw new Error("Провайдер должен быть yandexgpt, gigachat, openai или openrouter.");
+  if (!isManagedApiProvider(provider)) {
+    throw new Error("Провайдер должен быть yandexgpt, gigachat, openai, openrouter или yakunin-router.");
   }
 }
 
@@ -13982,7 +14156,8 @@ async function chooseAiProvider() {
   console.log("4. GigaChat API");
   console.log("5. OpenAI API");
   console.log("6. OpenRouter API");
-  console.log("7. Codex/MCP");
+  console.log("7. Yakunin-Router (Карты РФ)");
+  console.log("8. Codex/MCP");
 
   const answer = (await askText("Введите номер [1]: ")).trim() || "1";
   return {
@@ -13992,7 +14167,8 @@ async function chooseAiProvider() {
     4: "gigachat",
     5: "openai",
     6: "openrouter",
-    7: "codex",
+    7: "yakunin-router",
+    8: "codex",
   }[answer] || "iola";
 }
 
@@ -17714,6 +17890,10 @@ async function callAiProvider(config, messages) {
     return callOpenAiCompatible(config, messages, await getApiKey("openrouter"), "OpenRouter");
   }
 
+  if (config.provider === "yakunin-router") {
+    return callOpenAiCompatible(config, messages, await getApiKey("yakunin-router"), "Yakunin-Router");
+  }
+
   if (config.provider === "yandexgpt") {
     return callYandexGpt(config, messages);
   }
@@ -18109,7 +18289,9 @@ async function callOllama(config, messages) {
 
 async function callOpenAiCompatible(config, messages, apiKey, providerName) {
   if (!apiKey) {
-    throw new Error(`${providerName} API key не найден. Выполните iola ai key set ${providerName === "OpenAI" ? "openai" : "openrouter"} или задайте ${providerName === "OpenAI" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"}.`);
+    const keyCommand = providerName === "OpenAI" ? "openai" : providerName === "Yakunin-Router" ? "yakunin-router" : "openrouter";
+    const envName = providerName === "OpenAI" ? "OPENAI_API_KEY" : providerName === "Yakunin-Router" ? "YAKUNIN_ROUTER_API_KEY" : "OPENROUTER_API_KEY";
+    throw new Error(`${providerName} API key не найден. Выполните iola ai key set ${keyCommand} или задайте ${envName}.`);
   }
 
   const networkMode = getAiNetworkMode(config);
@@ -18161,7 +18343,7 @@ async function callAiRelay(config, messages, apiKey, providerName) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      provider: providerName === "OpenAI" ? "openai" : "openrouter",
+      provider: relayProviderFor(providerName),
       api_key: apiKey,
       model: config.model,
       messages,
@@ -18186,7 +18368,7 @@ async function callAiRelayModels(config, apiKey, providerName) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      provider: providerName === "OpenAI" ? "openai" : "openrouter",
+      provider: relayProviderFor(providerName),
       api_key: apiKey,
     }),
   });
@@ -18341,6 +18523,18 @@ function validateAiNetworkMode(value) {
   throw new Error("AI network mode должен быть direct, gateway или auto.");
 }
 
+function isOpenAiCompatibleProvider(provider) {
+  return ["openai", "openrouter", "yakunin-router"].includes(provider);
+}
+
+function isManagedApiProvider(provider) {
+  return ["openai", "openrouter", "yakunin-router", "yandexgpt", "gigachat"].includes(provider);
+}
+
+function relayProviderFor(providerName) {
+  return providerName === "OpenAI" ? "openai" : "openrouter";
+}
+
 function isNetworkFallbackError(error) {
   const message = String(error?.message || "");
   return /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|TLS|proxy|network/i.test(message);
@@ -18361,6 +18555,10 @@ async function getApiKey(provider) {
     return process.env.OPENROUTER_API_KEY;
   }
 
+  if (provider === "yakunin-router" && process.env.YAKUNIN_ROUTER_API_KEY) {
+    return process.env.YAKUNIN_ROUTER_API_KEY;
+  }
+
   if (provider === "yandexgpt" && (process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY)) {
     return process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY;
   }
@@ -18371,6 +18569,7 @@ async function getApiKey(provider) {
 
   const secrets = await loadSecrets();
   if (provider === "yandexgpt") return secrets.yandexCloud?.yandexgptApiKey || secrets.yandexgpt?.apiKey || "";
+  if (provider === "yakunin-router") return secrets.yakuninRouter?.apiKey || "";
   return secrets[provider]?.apiKey || "";
 }
 
@@ -18643,6 +18842,13 @@ async function onboard(args = []) {
       await chooseAndSaveApiModel("openrouter");
     }
   }
+  if (components.includes("yakunin-router")) {
+    await aiSetup(["yakunin-router"]);
+    if (process.stdin.isTTY) {
+      await setupYakuninRouterPayment({ topup: false });
+      await chooseAndSaveApiModel("yakunin-router");
+    }
+  }
   if (components.includes("gigachat")) {
     await aiSetup(["gigachat"]);
     if (process.stdin.isTTY) {
@@ -18720,7 +18926,8 @@ async function chooseOnboardComponents(status = null) {
       15: "yandex-cloud",
       16: "openai",
       17: "openrouter",
-      18: "codex",
+      18: "yakunin-router",
+      19: "codex",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -18755,6 +18962,7 @@ async function getOnboardComponentStatus() {
     gigachat: Boolean(readiness.gigachat),
     openai: Boolean(readiness.openai),
     openrouter: Boolean(readiness.openrouter),
+    "yakunin-router": Boolean(readiness["yakunin-router"]),
     codex: Boolean(codexVersion !== "не найден" && readiness.codex),
     "codex-mcp": false,
     "city-data": cityDataHealth === "доступен",
@@ -18810,12 +19018,13 @@ function onboardComponentGroups(status) {
       rows: [
         ["16", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
         ["17", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+        ["18", "yakunin-router", "Yakunin-Router (Карты РФ)", "оплата российской картой и OpenRouter-compatible ключ"],
       ],
     },
     {
       title: "Codex",
       rows: [
-        ["18", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
+        ["19", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
       ],
     },
   ];
@@ -18839,7 +19048,7 @@ function defaultOnboardSelection(status) {
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "city-data", 7: "codex-mcp", 8: "ufanet", 9: "domru", 10: "rostelecom", 11: "iola", 12: "ollama", 13: "gigachat", 14: "yandex", 15: "yandex-cloud", 16: "openai", 17: "openrouter", 18: "codex" };
+  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "city-data", 7: "codex-mcp", 8: "ufanet", 9: "domru", 10: "rostelecom", 11: "iola", 12: "ollama", 13: "gigachat", 14: "yandex", 15: "yandex-cloud", 16: "openai", 17: "openrouter", 18: "yakunin-router", 19: "codex" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -21184,7 +21393,7 @@ function sanitizeConfig(config) {
     next.ai.baseUrl = next.ai.baseUrl || "http://127.0.0.1:11434";
   }
   for (const profile of Object.values(next.ai?.profiles || {})) {
-    if (profile?.provider === "openai" || profile?.provider === "openrouter") {
+    if (isOpenAiCompatibleProvider(profile?.provider)) {
       profile.networkMode = profile.networkMode || "gateway";
     }
     if (profile?.provider === "yandexgpt" || profile?.provider === "gigachat") {
@@ -21202,7 +21411,7 @@ function validateConfig(config) {
   if (!config.ai?.profiles || typeof config.ai.profiles !== "object") errors.push("ai.profiles обязателен");
   if (config.ai?.activeProfile && !config.ai.profiles?.[config.ai.activeProfile]) errors.push(`ai.activeProfile не найден в profiles: ${config.ai.activeProfile}`);
   for (const [name, profile] of Object.entries(config.ai?.profiles || {})) {
-    if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
+    if (!["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router", "codex"].includes(profile.provider)) errors.push(`ai.profiles.${name}.provider неизвестен`);
     if (profile.provider !== "codex" && profile.provider !== "iola" && !profile.baseUrl) errors.push(`ai.profiles.${name}.baseUrl обязателен`);
     if (profile.networkMode && !["direct", "gateway", "auto"].includes(profile.networkMode)) errors.push(`ai.profiles.${name}.networkMode должен быть direct, gateway или auto`);
   }
@@ -21233,7 +21442,7 @@ function configSchema() {
     required: ["api", "ai"],
     properties: {
       api: { required: ["baseUrl", "mcpBaseUrl"] },
-      ai: { required: ["activeProfile", "profiles"], providers: ["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "codex"] },
+      ai: { required: ["activeProfile", "profiles"], providers: ["iola", "ollama", "yandexgpt", "gigachat", "openai", "openrouter", "yakunin-router", "codex"] },
       permissions: { localTools: ALL_LOCAL_TOOLS, runtime: ["readFiles", "writeFiles", "editFiles", "deleteFiles", "sync", "externalApi", "externalAi", "codex"] },
       toolsets: { available: Object.keys(TOOLSETS) },
       files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },
