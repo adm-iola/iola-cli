@@ -3787,10 +3787,10 @@ async function ensureYandexGoGeocoderReady() {
 async function buildYandexGoDeeplinkFromOptions(options = {}) {
   const from = options.from || options._?.[0] || "";
   const to = options.to || options._?.[1] || "";
-  if (!from || !to) throw new Error('Укажите маршрут: iola yandex go link --from "Медведево, Школьная 15" --to "Медведево, Советская 20"');
+  if (!from || !to) throw new Error('Укажите маршрут: iola yandex go link --from "Йошкар-Ола, Красноармейская 43" --to "Йошкар-Ола, Гагарина 8"');
   const ambiguous = [from, to].find((point) => isAmbiguousPersonalYandexGoPoint(point));
   if (ambiguous) {
-    throw new Error(`Не знаю адрес "${ambiguous}". Укажите полный адрес отправления или сохраните его в настройках позже. Пример: "такси от Йошкар-Ола, улица ..., дом ... до Администрации Йошкар-Олы".`);
+    throw new Error(`Не знаю адрес "${ambiguous}". Укажите полный адрес отправления или сохраните его в настройках позже. Пример: "такси от Йошкар-Ола, Красноармейская 43 до Администрации Йошкар-Олы".`);
   }
   const fromPoint = await resolveYandexGoPoint(from);
   const toPoint = await resolveYandexGoPoint(to);
@@ -3934,7 +3934,8 @@ function extractYandexGoRouteFromText(text, previousText = "") {
     .replace(/\s+/g, " ")
     .trim();
   const match = cleaned.match(/(?:от|из|с)\s+(.+?)\s+(?:до|в|на)\s+(.+)$/iu)
-    || cleaned.match(/^(.+?)\s*,?\s+(?:до|в)\s+(.+)$/iu);
+    || cleaned.match(/^(.+?)\s*,?\s+(?:до|в)\s+(.+)$/iu)
+    || splitYandexGoCommaRoute(cleaned);
   if (!match) {
     const partialFrom = cleaned.match(/(?:^|\s)(?:от|из|с)\s+(.+)$/iu)?.[1]?.trim() || "";
     const previousRoute = previousText ? extractYandexGoRouteFromText(previousText, "") : { from: "", to: "" };
@@ -3950,6 +3951,24 @@ function extractYandexGoRouteFromText(text, previousText = "") {
   const from = match[1].replace(/[,.;]\s*$/u, "").trim();
   const to = match[2].replace(/[,.;]\s*(?:тариф|эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*).*$/iu, "").trim();
   return { from, to, tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
+}
+
+function splitYandexGoCommaRoute(text) {
+  const source = String(text || "").trim();
+  const marker = source.match(/,\s*((?:администрац|мэри|йошкар|медведево|сем[её]новк)[\s\S]+)$/iu);
+  if (marker?.index && marker.index > 3) {
+    return [source, source.slice(0, marker.index).trim(), marker[1].trim()];
+  }
+  const parts = source.split(/\s*,\s*/u).filter(Boolean);
+  if (parts.length === 2) return [source, parts[0], parts[1]];
+  return null;
+}
+
+function looksLikeYandexGoAddressPair(text) {
+  const source = String(text || "").trim();
+  if (!source.includes(",")) return false;
+  if (!/(йошкар|медведево|сем[её]новк|администрац|мэри|ул\.|улица|проспект|пр-т|бульвар|переулок|\d)/iu.test(source)) return false;
+  return Boolean(splitYandexGoCommaRoute(source));
 }
 
 async function handleYandexMailWatch(args = []) {
@@ -12568,7 +12587,7 @@ async function buildYandexDirectAnswer(question, history = []) {
   const mailContext = /Яндекс Почта|Письмо #|\bUID\b|#\d{3,}/iu.test(previousAssistantText);
   const mailFollowup = mailContext && isYandexMailFollowupQuestion(normalized, question);
   const goContext = /(?:Ссылка Яндекс Go|Для ссылки Яндекс Go|Не знаю адрес|Геокодер вернул|Укажите полный адрес отправления)/iu.test(previousAssistantText);
-  const goFollowup = goContext && /(?:^|\s)(?:от|из|с|до|в)\s+/iu.test(normalized);
+  const goFollowup = goContext && (/(?:^|\s)(?:от|из|с|до|в)\s+/iu.test(normalized) || looksLikeYandexGoAddressPair(question));
   if (!isYandexServiceQuestion(normalized) && !mailFollowup && !goFollowup) return "";
   try {
     if (mailFollowup && (isYandexMailReadRequest(normalized) || isYandexMailSelectionQuestion(question))) {
@@ -12594,7 +12613,7 @@ async function buildYandexDirectAnswer(question, history = []) {
         && /(маршрут|ссылк|откуда|куда|поездк|такси|от\s+.+\s+до\s+)/iu.test(normalized))) {
       const route = extractYandexGoRouteFromText(question, previousUserText);
       if (!route.from || !route.to) {
-        return 'Для ссылки Яндекс Go нужны два адреса. Пример: "такси от Медведево, Школьная 15 до Медведево, Советская 20".';
+        return 'Для ссылки Яндекс Go нужны два адреса. Пример: "такси от Йошкар-Ола, Красноармейская 43 до Йошкар-Ола, Гагарина 8".';
       }
       await ensureYandexGoGeocoderReady();
       const result = await buildYandexGoDeeplinkFromOptions({ from: route.from, to: route.to, tariff: route.tariff });
