@@ -3826,7 +3826,7 @@ async function resolveYandexGoPoint(query) {
 
 function isAmbiguousPersonalYandexGoPoint(query) {
   const text = String(query || "").trim().toLocaleLowerCase("ru-RU");
-  return /^(?:дом|дома|мой дом|у меня|у меня дома|от меня|здесь|тут|текущее место|моя геопозиция|мое местоположение)$/iu.test(text);
+  return /^(?:дом|дома|из дома|с дома|мой дом|у меня|у меня дома|от меня|здесь|тут|текущее место|моя геопозиция|мое местоположение)$/iu.test(text);
 }
 
 function normalizeYandexGoGeocoderQuery(query) {
@@ -3922,11 +3922,13 @@ function extractYandexGoRouteFromText(text) {
   const source = String(text || "").trim();
   const tariffMatch = source.match(/(эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*|econom|business|comfortplus|minivan|vip)/iu);
   const cleaned = source
+    .replace(/(?:^|\s)(?:так|мне\s+нужно|мне\s+надо|нужно|надо)(?=\s|$)/giu, " ")
     .replace(/^(?:построй|создай|дай|открой|сделай|подготовь|вызови|закажи)\s+/iu, "")
-    .replace(/\b(?:яндекс\s*go|яндекс\s*го|такси|маршрут|ссылк[ау]?|диплинк|deeplink)\b/giu, " ")
+    .replace(/(?:^|\s)(?:яндекс\s*go|яндекс\s*го|такси|маршрут|ссылк[ау]?|диплинк|deeplink)(?=\s|$)/giu, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const match = cleaned.match(/(?:от|из|с)\s+(.+?)\s+(?:до|в|на)\s+(.+)$/iu);
+  const match = cleaned.match(/(?:от|из|с)\s+(.+?)\s+(?:до|в|на)\s+(.+)$/iu)
+    || cleaned.match(/^(.+?)\s*,?\s+(?:до|в)\s+(.+)$/iu);
   if (!match) return { from: "", to: "", tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
   const from = match[1].replace(/[,.;]\s*$/u, "").trim();
   const to = match[2].replace(/[,.;]\s*(?:тариф|эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*).*$/iu, "").trim();
@@ -5297,7 +5299,8 @@ async function yandexMailReply(args = {}) {
   if (!original || original.status === "not-found") throw new Error(`Письмо #${uid} не найдено.`);
   const to = [extractEmailAddress(original.from)].filter(Boolean);
   if (!to.length) throw new Error("Не удалось определить получателя ответа из поля From.");
-  const subject = /^re:/iu.test(original.subject || "") ? original.subject : `Re: ${original.subject || "(без темы)"}`;
+  const requestedSubject = String(args.subject || "").trim();
+  const subject = requestedSubject || (/^re:/iu.test(original.subject || "") ? original.subject : `Re: ${original.subject || "(без темы)"}`);
   const result = await yandexMailSend({
     to,
     subject,
@@ -12651,8 +12654,11 @@ async function buildYandexDirectAnswer(question, history = []) {
       if (/(ответь|ответить|напиши\s+ответ)/iu.test(normalized)) {
         const reply = parseYandexMailReplyRequest(question, previousAssistantText);
         if (!reply.uid || !reply.text) return "Для ответа укажите письмо и текст. Пример: ответь на письмо #2382 текст: спасибо, получил.";
+        if (/(пометь|отметь|сделай)/iu.test(normalized) && /(прочитан)/iu.test(normalized)) {
+          await yandexMailMark(reply.uid, !/непрочитан/iu.test(normalized), { mailbox: await resolveYandexMailbox(reply.mailbox || "INBOX") });
+        }
         const result = await yandexMailReply({ ...reply, confirm: true });
-        return `Ответ отправлен на письмо #${result.replyToUid}: ${result.to.join(", ")}. Тема: ${result.subject}.`;
+        return `Письмо #${result.replyToUid} обработано. Ответ отправлен: ${result.to.join(", ")}. Тема: ${result.subject}.`;
       }
       if (/(перешли|переслать|перешли\s+письмо|fwd|forward)/iu.test(normalized)) {
         const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText);
@@ -13295,7 +13301,7 @@ function resolveYandexMailUidFromQuestion(question, previousAssistantText = "") 
     const uid = extractYandexMailUidByOrdinal(previousAssistantText, Number(actionOrdinal));
     if (uid) return uid;
   }
-  if (/(самое\s+свеж|последн|получи|получить|текст\s+(?:то\s+)?(?:письм|где)|содержим)/iu.test(String(question || ""))) {
+  if (/(самое\s+свеж|последн|получи|получить|текст\s+(?:то\s+)?(?:письм|где)|содержим|ответь|ответить|им\b|ему\b|ей\b|пометь|отметь|сделай|удали|удалить)/iu.test(String(question || ""))) {
     return extractFirstYandexMailUid(previousAssistantText);
   }
   return 0;
@@ -13330,10 +13336,12 @@ function isExplicitYandexDiskPathDelete(question) {
 function parseYandexMailReplyRequest(question, previousAssistantText = "") {
   const text = String(question || "").replace(/\s+/g, " ").trim();
   const uid = resolveYandexMailUidFromQuestion(text, previousAssistantText);
+  const subjectMatch = text.match(/(?:тема|subject)\s*:\s*(.*?)(?=\s+(?:текст|body|сообщение)\s*:|$)/iu);
   const bodyMatch = text.match(/(?:текст|body|сообщение)\s*:\s*(.*)$/iu)
     || text.match(/(?:ответь|ответить|напиши\s+ответ)(?:\s+на\s+письмо\s+#?\d+|\s+#?\d+)?\s*:?\s*(.*)$/iu);
   return {
     uid,
+    subject: (subjectMatch?.[1] || "").trim(),
     text: (bodyMatch?.[1] || "").trim(),
     mailbox: extractYandexMailboxName(question) || "INBOX",
   };
