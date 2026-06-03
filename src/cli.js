@@ -492,7 +492,7 @@ const DEFAULT_AI_CONFIG = {
   domophones: {
     activeProvider: "",
     providers: {
-      ufanet: { enabled: false },
+      ufanet: { enabled: false, notifications: { enabled: false, intervalSeconds: 10, lastSeen: "" } },
       domru: { enabled: false, status: "backlog" },
       rostelecom: { enabled: false, status: "backlog" },
     },
@@ -600,6 +600,7 @@ const SLASH_COMMANDS = [
   { command: "/cloud status", description: "облачные диски" },
   { command: "/yandex", description: "выбор сервисов Yandex Connector" },
   { command: "/ufanet", description: "Мой домофон Уфанет" },
+  { command: "/ufanet watch", description: "уведомления о новых вызовах домофона" },
   { command: "/dom_ru", description: "Мой домофон Дом.ру (в разработке)" },
   { command: "/rostelecom", description: "Мой домофон Ростелеком (в разработке)" },
   { command: "/archive doctor", description: "архиватор" },
@@ -872,7 +873,7 @@ Usage:
   iola files status|mode|approvals|tree|read|search|write|patch
   iola cloud setup|status|ls|find|upload|download|share|save|backup
   iola yandex setup|menu|status|services|enable|disable|oauth-url|token
-  iola ufanet setup|status|intercoms|open|history|links|cameras|delete
+  iola ufanet setup|status|intercoms|open|history|links|cameras|watch|notifications|delete
   iola dom_ru                  Мой домофон Дом.ру (в разработке)
   iola rostelecom              Мой домофон Ростелеком (в разработке)
   iola archive doctor|list|test|extract|create|index
@@ -1614,6 +1615,10 @@ async function handleAgentLine(line, state) {
     files: ["files", args],
     archive: ["archive", args],
     yandex: ["yandex", args.length ? args : ["menu"]],
+    ufanet: ["ufanet", args.length ? args : ["menu"]],
+    dom_ru: ["dom_ru", args],
+    domru: ["dom_ru", args],
+    rostelecom: ["rostelecom", args],
     changes: ["changes", args],
     index: ["index", args],
     reports: ["reports", args],
@@ -3610,6 +3615,16 @@ async function handleUfanet(args = []) {
     return;
   }
 
+  if (action === "watch" || action === "listen") {
+    await watchUfanetCalls({ ...options, once: options.once, intervalSeconds: options.seconds || options.interval || target });
+    return;
+  }
+
+  if (action === "notifications" || action === "notify") {
+    await handleUfanetNotifications([target, ...rest].filter(Boolean));
+    return;
+  }
+
   if (action === "links" || action === "record" || action === "recording") {
     const uuid = target || options.uuid;
     if (!uuid) throw new Error("Укажите UUID звонка. Пример: iola ufanet links UUID");
@@ -3641,6 +3656,8 @@ async function handleUfanet(args = []) {
   iola ufanet history [--limit 10]
   iola ufanet links UUID
   iola ufanet cameras
+  iola ufanet watch [--seconds 10]
+  iola ufanet notifications on|off|status
   iola ufanet delete`);
 }
 
@@ -3652,6 +3669,20 @@ async function printUfanetMenu() {
     { id: "domru", provider: "Дом.ру", status: "в разработке", command: "iola dom_ru" },
     { id: "rostelecom", provider: "Ростелеком", status: "в разработке", command: "iola rostelecom" },
   ], [["id", "ID"], ["provider", "Провайдер"], ["status", "Статус"], ["command", "Команда"]]);
+  console.log("");
+  console.log("Команды Уфанет:");
+  printTable([
+    { command: "/ufanet status", action: "статус подключения" },
+    { command: "/ufanet intercoms", action: "список доступных домофонов и их ID" },
+    { command: "/ufanet open ID", action: "открыть домофон по ID, только после подтверждения" },
+    { command: "/ufanet history", action: "история последних звонков" },
+    { command: "/ufanet links UUID", action: "ссылка/превью записи звонка по UUID" },
+    { command: "/ufanet cameras", action: "список камер и RTSP-ссылок, если доступны" },
+    { command: "/ufanet watch", action: "показывать новые вызовы, пока CLI открыт" },
+    { command: "/ufanet notifications on", action: "включить уведомления о вызовах в настройках" },
+    { command: "/ufanet notifications off", action: "выключить уведомления о вызовах" },
+    { command: "/ufanet delete", action: "удалить локальное подключение Уфанет" },
+  ], [["command", "Команда"], ["action", "Что делает"]]);
 }
 
 async function setupUfanetConnector() {
@@ -3730,6 +3761,8 @@ async function printUfanetStatus(options = {}) {
     enabled: status.enabled ? "yes" : "no",
     contract: status.contract || "-",
     source: status.source || "-",
+    notifications: status.notifications,
+    intervalSeconds: status.intervalSeconds,
   });
   if (options.check) {
     if (!status.configured) {
@@ -3754,7 +3787,131 @@ async function getUfanetStatus() {
     enabled: Boolean(config.domophones?.providers?.ufanet?.enabled || (config.toolsets?.enabled || []).includes("ufanet")),
     contract: contract ? maskSecret(contract, 2) : "",
     source: contract && process.env.UFANET_CONTRACT ? "env" : contract ? "local" : "",
+    notifications: config.domophones?.providers?.ufanet?.notifications?.enabled ? "on" : "off",
+    intervalSeconds: config.domophones?.providers?.ufanet?.notifications?.intervalSeconds || 10,
   };
+}
+
+async function handleUfanetNotifications(args = []) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+  const normalized = String(action || "status").toLocaleLowerCase("ru-RU");
+  if (["on", "enable", "start", "вкл", "включить"].includes(normalized)) {
+    const seconds = Number(options.seconds || options.interval || options.wait || 10);
+    await setUfanetNotifications(true, { intervalSeconds: seconds });
+    console.log(`Уведомления Уфанет включены. Интервал проверки: ${normalizeUfanetPollInterval(seconds)} сек.`);
+    console.log("Чтобы получать события в текущей CLI-сессии, запустите: /ufanet watch");
+    return;
+  }
+  if (["off", "disable", "stop", "выкл", "выключить"].includes(normalized)) {
+    await setUfanetNotifications(false);
+    console.log("Уведомления Уфанет выключены.");
+    return;
+  }
+  const status = await getUfanetStatus();
+  console.log(`Уведомления Уфанет: ${status.notifications}, интервал ${status.intervalSeconds} сек.`);
+  console.log("Команды: /ufanet notifications on, /ufanet notifications off, /ufanet watch");
+}
+
+async function setUfanetNotifications(enabled, options = {}) {
+  const config = await loadConfig();
+  const current = config.domophones?.providers?.ufanet || {};
+  const currentNotifications = current.notifications || {};
+  await saveConfig({
+    domophones: {
+      ...(config.domophones || {}),
+      providers: {
+        ...(config.domophones?.providers || {}),
+        ufanet: {
+          ...current,
+          notifications: {
+            ...currentNotifications,
+            enabled: Boolean(enabled),
+            intervalSeconds: normalizeUfanetPollInterval(options.intervalSeconds || currentNotifications.intervalSeconds || 10),
+          },
+        },
+      },
+    },
+  });
+}
+
+async function updateUfanetLastSeen(lastSeen) {
+  if (!lastSeen) return;
+  const config = await loadConfig();
+  const current = config.domophones?.providers?.ufanet || {};
+  const currentNotifications = current.notifications || {};
+  await saveConfig({
+    domophones: {
+      ...(config.domophones || {}),
+      providers: {
+        ...(config.domophones?.providers || {}),
+        ufanet: {
+          ...current,
+          notifications: {
+            ...currentNotifications,
+            lastSeen,
+          },
+        },
+      },
+    },
+  });
+}
+
+async function watchUfanetCalls(options = {}) {
+  const config = await loadConfig();
+  const notificationConfig = config.domophones?.providers?.ufanet?.notifications || {};
+  const intervalSeconds = normalizeUfanetPollInterval(options.intervalSeconds || notificationConfig.intervalSeconds || 10);
+  const pageSize = Number(options.limit || options["page-size"] || 10);
+  let lastSeen = notificationConfig.lastSeen || "";
+  const initial = await ufanetGetCallHistory({ page: 1, pageSize });
+  const initialRows = initial.results || [];
+  if (!lastSeen && initialRows[0]) {
+    lastSeen = ufanetCallKey(initialRows[0]);
+    await updateUfanetLastSeen(lastSeen);
+  }
+  if (options.once) {
+    printTable(initialRows, [["uuid", "UUID"], ["calledAt", "Когда"], ["address", "Адрес"], ["porch", "Подъезд"], ["flat", "Кв"]]);
+    return;
+  }
+  console.log(`Уфанет: слежу за новыми вызовами каждые ${intervalSeconds} сек. Остановить: Ctrl+C.`);
+  while (true) {
+    await sleep(intervalSeconds * 1000);
+    const history = await ufanetGetCallHistory({ page: 1, pageSize }).catch((error) => {
+      console.error(`Уфанет: ошибка проверки вызовов: ${error instanceof Error ? error.message : String(error)}`);
+      return { results: [] };
+    });
+    const rows = history.results || [];
+    const fresh = [];
+    for (const row of rows) {
+      const key = ufanetCallKey(row);
+      if (!key || key === lastSeen) break;
+      fresh.push(row);
+    }
+    if (fresh.length === 0) continue;
+    for (const row of fresh.reverse()) {
+      console.log("");
+      console.log("Новый вызов домофона Уфанет:");
+      printKeyValue({
+        uuid: row.uuid || "-",
+        calledAt: row.calledAt || "-",
+        address: row.address || "-",
+        porch: row.porch || "-",
+        flat: row.flat || "-",
+      });
+    }
+    lastSeen = ufanetCallKey(rows[0]) || lastSeen;
+    await updateUfanetLastSeen(lastSeen);
+  }
+}
+
+function normalizeUfanetPollInterval(value) {
+  const seconds = Number(value || 10);
+  if (!Number.isFinite(seconds)) return 10;
+  return Math.max(5, Math.min(300, Math.round(seconds)));
+}
+
+function ufanetCallKey(row = {}) {
+  return String(row.uuid || `${row.calledAt || ""}|${row.address || ""}|${row.porch || ""}|${row.flat || ""}`);
 }
 
 async function executeUfanetTool(tool, args = {}) {
@@ -17316,7 +17473,7 @@ function parseOptions(args) {
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app" || arg === "--tariff" || arg === "--class" || arg === "--level" || arg === "--ref" || arg === "--lang" || arg === "--id" || arg === "--uuid" || arg === "--intercom" || arg === "--page-size") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app" || arg === "--tariff" || arg === "--class" || arg === "--level" || arg === "--ref" || arg === "--lang" || arg === "--id" || arg === "--uuid" || arg === "--intercom" || arg === "--page-size" || arg === "--seconds" || arg === "--interval") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
