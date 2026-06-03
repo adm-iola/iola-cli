@@ -143,8 +143,24 @@ QR-код:
 - `yandex_mail_read` - прочитать письмо по UID;
 - `yandex_mail_send` - отправить письмо;
 - `yandex_calendar_status` - проверить доступ к Календарю;
-- `yandex_calendar_list` - показать события;
-- `yandex_calendar_create_event` - создать событие;
+- `yandex_calendar_calendars` - показать доступные календари;
+- `yandex_calendar_list` - показать ближайшие события;
+- `yandex_calendar_search` - найти событие;
+- `yandex_calendar_get` - открыть карточку события;
+- `yandex_calendar_create_event` - создать событие с участниками, местом и напоминаниями;
+- `yandex_calendar_create_recurring_event` - создать повторяющееся событие;
+- `yandex_calendar_update` - изменить событие;
+- `yandex_calendar_move` - перенести событие;
+- `yandex_calendar_add_reminder` - добавить напоминание;
+- `yandex_calendar_delete` - удалить событие;
+- `yandex_docs_status` - проверить Документы / 360 через Диск;
+- `yandex_docs_list` - показать документы;
+- `yandex_docs_find` - найти документ;
+- `yandex_docs_create_text` - создать текстовый документ на Яндекс Диске;
+- `yandex_docs_read` - прочитать небольшой текстовый документ;
+- `yandex_docs_share` - создать ссылку и QR-код на документ;
+- `yandex_docs_rename` - переименовать документ;
+- `yandex_docs_delete` - удалить документ;
 - `yandex_contacts_status` - проверить доступ к Контактам;
 - `yandex_contacts_list` - показать контакты;
 - `yandex_contacts_search` - найти контакт по имени, email, телефону, организации, адресу или заметке;
@@ -166,7 +182,8 @@ QR-код:
 - `yandex_contact_create_calendar_event` - создать встречу с контактом;
 - `yandex_contact_create_telemost_event` - создать событие для Телемоста с контактом;
 - `yandex_contact_from_public_entity` - создать контакт из открытого городского слоя;
-- `yandex_telemost_create_event` - создать календарное событие для встречи.
+- `yandex_telemost_status` - проверить режим Телемоста;
+- `yandex_telemost_create_event` - создать встречу: прямой Telemost API используется только если он доступен аккаунту; иначе создается календарное событие без выдуманной ссылки.
 
 Регулярная проверка контактов:
 

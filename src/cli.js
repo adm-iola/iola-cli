@@ -193,8 +193,25 @@ const YANDEX_TOOLS = [
   "yandex_mail_map_addresses",
   "yandex_mail_create_task",
   "yandex_calendar_status",
+  "yandex_calendar_calendars",
   "yandex_calendar_create_event",
   "yandex_calendar_list",
+  "yandex_calendar_get",
+  "yandex_calendar_search",
+  "yandex_calendar_update",
+  "yandex_calendar_move",
+  "yandex_calendar_delete",
+  "yandex_calendar_create_recurring_event",
+  "yandex_calendar_add_reminder",
+  "yandex_docs_status",
+  "yandex_docs_list",
+  "yandex_docs_find",
+  "yandex_docs_create_text",
+  "yandex_docs_read",
+  "yandex_docs_share",
+  "yandex_docs_rename",
+  "yandex_docs_delete",
+  "yandex_docs_save_answer",
   "yandex_contacts_status",
   "yandex_contacts_list",
   "yandex_contacts_search",
@@ -224,6 +241,7 @@ const YANDEX_TOOLS = [
   "yandex_contact_create_calendar_event",
   "yandex_contact_create_telemost_event",
   "yandex_contact_from_public_entity",
+  "yandex_telemost_status",
   "yandex_telemost_create_event",
 ];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...USER_SKILL_TOOLS];
@@ -4147,8 +4165,25 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_mail_map_addresses") return yandexMailMapAddresses(args.uid || args.id, args);
   if (tool === "yandex_mail_create_task") return yandexMailCreateTask(args.uid || args.id, args);
   if (tool === "yandex_calendar_status") return yandexCalendarStatus();
+  if (tool === "yandex_calendar_calendars") return yandexCalendarCalendars(args);
   if (tool === "yandex_calendar_create_event") return yandexCalendarCreateEvent(args);
   if (tool === "yandex_calendar_list") return yandexCalendarList(args);
+  if (tool === "yandex_calendar_get") return yandexCalendarGet(args.query || args.uid || args.title || "", args);
+  if (tool === "yandex_calendar_search") return yandexCalendarSearch(args.query || args.title || "", args);
+  if (tool === "yandex_calendar_update") return yandexCalendarUpdate(args.query || args.uid || args.title || "", args);
+  if (tool === "yandex_calendar_move") return yandexCalendarMove(args.query || args.uid || args.title || "", args);
+  if (tool === "yandex_calendar_delete") return yandexCalendarDelete(args.query || args.uid || args.title || "", args);
+  if (tool === "yandex_calendar_create_recurring_event") return yandexCalendarCreateRecurringEvent(args);
+  if (tool === "yandex_calendar_add_reminder") return yandexCalendarAddReminder(args.query || args.uid || args.title || "", args);
+  if (tool === "yandex_docs_status") return yandexDocsStatus();
+  if (tool === "yandex_docs_list") return yandexDocsList(args);
+  if (tool === "yandex_docs_find") return yandexDocsFind(args.query || args.name || "", args);
+  if (tool === "yandex_docs_create_text") return yandexDocsCreateText(args);
+  if (tool === "yandex_docs_read") return yandexDocsRead(args.path || args.remotePath || args.query || args.name, args);
+  if (tool === "yandex_docs_share") return yandexDocsShare(args.path || args.remotePath || args.query || args.name, args);
+  if (tool === "yandex_docs_rename") return yandexDocsRename(args.path || args.remotePath || args.query || args.name, args.name || args.newName || args.to, args);
+  if (tool === "yandex_docs_delete") return yandexDocsDelete(args.path || args.remotePath || args.query || args.name, args);
+  if (tool === "yandex_docs_save_answer") return yandexDocsCreateText({ ...args, text: args.text || args.answer || args.content });
   if (tool === "yandex_contacts_status") return yandexContactsStatus();
   if (tool === "yandex_contacts_list") return yandexContactsList(args);
   if (tool === "yandex_contacts_search") return yandexContactsSearch(args.query || "", args);
@@ -4178,6 +4213,7 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_contact_create_calendar_event") return yandexContactCreateCalendarEvent(args);
   if (tool === "yandex_contact_create_telemost_event") return yandexContactCreateTelemostEvent(args);
   if (tool === "yandex_contact_from_public_entity") return yandexContactFromPublicEntity(args);
+  if (tool === "yandex_telemost_status") return yandexTelemostStatus();
   if (tool === "yandex_telemost_create_event") return yandexTelemostCreateEvent(args);
   throw new Error(`Yandex tool неизвестен: ${tool}`);
 }
@@ -4980,29 +5016,53 @@ async function yandexDavRequest(url, token, options = {}) {
 
 async function yandexCalendarStatus() {
   const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
-  const url = await yandexCalendarBaseUrl(token);
+  const calendars = await yandexCalendarCollections(token);
+  const selected = pickYandexCalendar(calendars, {});
+  const url = selected.url;
   const text = await yandexDavRequest(url, token, { method: "PROPFIND", headers: { Depth: "0" }, xml: true, body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/></d:prop></d:propfind>" });
-  return { status: "ok", url, displayName: stripXmlTags(text.match(/<[^:>]*:?displayname[^>]*>([\s\S]*?)<\/[^:>]*:?displayname>/iu)?.[1] || "") || "calendar" };
+  return { status: "ok", url, displayName: stripXmlTags(text.match(/<[^:>]*:?displayname[^>]*>([\s\S]*?)<\/[^:>]*:?displayname>/iu)?.[1] || "") || selected.name || "calendar", calendars: calendars.length };
+}
+
+async function yandexCalendarCalendars(args = {}) {
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
+  const calendars = await yandexCalendarCollections(token);
+  return calendars.slice(0, Number(args.limit || 50));
 }
 
 async function yandexCalendarCreateEvent(args = {}) {
   if (!args.confirm) throw new Error("Для создания события в календаре нужен аргумент confirm=true.");
   const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
-  const baseUrl = await yandexCalendarBaseUrl(token);
+  const baseUrl = await yandexCalendarBaseUrl(token, args);
   const uid = `${randomUUID()}@iola-cli`;
   const start = toIcsDate(args.start || args.date || new Date(Date.now() + 3600000).toISOString());
   const end = toIcsDate(args.end || new Date(Date.now() + 7200000).toISOString());
   const summary = args.title || args.summary || "Событие IOLA";
   const description = args.description || "";
-  const ics = buildIcsEvent({ uid, start, end, summary, description, location: args.location || "", attendees: args.attendees || args.to || [] });
+  const ics = buildIcsEvent({
+    uid,
+    start,
+    end,
+    summary,
+    description,
+    location: args.location || "",
+    attendees: args.attendees || args.to || [],
+    rrule: args.rrule || buildIcsRrule(args),
+    reminders: normalizeCalendarReminders(args.reminders || args.reminder || args.alarm),
+  });
   const url = `${baseUrl}${encodeURIComponent(uid)}.ics`;
   await yandexDavRequest(url, token, { method: "PUT", ics: true, body: ics, timeout: 45000 });
-  return { status: "created", uid, title: summary, start: args.start || args.date || "", url };
+  return { status: "calendar-event-created", uid, title: summary, start: args.start || args.date || "", end: args.end || "", url };
+}
+
+async function yandexCalendarCreateRecurringEvent(args = {}) {
+  if (!args.confirm) throw new Error("Для создания повторяющегося события нужен аргумент confirm=true.");
+  const rrule = args.rrule || buildIcsRrule({ ...args, repeat: args.repeat || args.frequency || "weekly" });
+  return yandexCalendarCreateEvent({ ...args, rrule, confirm: true });
 }
 
 async function yandexCalendarList(args = {}) {
   const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
-  const baseUrl = await yandexCalendarBaseUrl(token);
+  const baseUrl = await yandexCalendarBaseUrl(token, args);
   const start = toIcsDate(args.start || new Date().toISOString());
   const end = toIcsDate(args.end || new Date(Date.now() + 14 * 86400000).toISOString());
   const body = `<?xml version="1.0"?>
@@ -5011,10 +5071,113 @@ async function yandexCalendarList(args = {}) {
   <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${start}" end="${end}"/></c:comp-filter></c:comp-filter></c:filter>
 </c:calendar-query>`;
   const text = await yandexDavRequest(baseUrl, token, { method: "REPORT", headers: { Depth: "1" }, xml: true, body, timeout: 45000 });
-  return parseIcsEvents(text).slice(0, Number(args.limit || 20));
+  return parseIcsEvents(text, { baseUrl }).slice(0, Number(args.limit || 20));
 }
 
-async function yandexCalendarBaseUrl(token) {
+async function yandexCalendarSearch(query, args = {}) {
+  const needle = normalizeGeoText(query || args.query || args.title || "");
+  const rows = await yandexCalendarList({
+    ...args,
+    start: args.start || new Date(Date.now() - 90 * 86400000).toISOString(),
+    end: args.end || new Date(Date.now() + 365 * 86400000).toISOString(),
+    limit: Math.max(200, Number(args.limit || 20) * 10),
+  });
+  if (!needle) return rows.slice(0, Number(args.limit || 20));
+  return rows.filter((row) => normalizeGeoText([
+    row.title,
+    row.description,
+    row.location,
+    row.uid,
+  ].filter(Boolean).join(" ")).includes(needle)).slice(0, Number(args.limit || 20));
+}
+
+async function yandexCalendarGet(query, args = {}) {
+  const resolved = await resolveYandexCalendarEvent(query, args);
+  if (resolved.status !== "ok") return resolved;
+  return stripCalendarPrivateFields(resolved.event);
+}
+
+async function yandexCalendarUpdate(query, args = {}) {
+  if (!args.confirm) throw new Error("Для изменения события нужен аргумент confirm=true.");
+  const resolved = await resolveYandexCalendarEvent(query, args);
+  if (resolved.status !== "ok") return resolved;
+  const event = resolved.event;
+  const start = toIcsDate(args.start || args.date || event.startIso || event.start);
+  const end = toIcsDate(args.end || event.endIso || event.end || new Date(new Date(args.start || event.startIso || Date.now()).getTime() + 3600000).toISOString());
+  const next = buildIcsEvent({
+    uid: event.uid || `${randomUUID()}@iola-cli`,
+    start,
+    end,
+    summary: args.title || args.summary || event.title || "Событие IOLA",
+    description: args.description ?? event.description ?? "",
+    location: args.location ?? event.location ?? "",
+    attendees: args.attendees || args.to || event.attendees || [],
+    rrule: args.rrule === null ? "" : (args.rrule || event.rrule || buildIcsRrule(args)),
+    reminders: args.reminders || args.reminder || args.alarm ? normalizeCalendarReminders(args.reminders || args.reminder || args.alarm) : event.reminders || [],
+  });
+  await yandexDavRequest(event.url, await requireYandexOAuthToken("organizer", "Яндекс Календарь"), { method: "PUT", ics: true, body: next, timeout: 45000 });
+  return { status: "calendar-event-updated", uid: event.uid, title: args.title || event.title, href: event.href };
+}
+
+async function yandexCalendarMove(query, args = {}) {
+  if (!args.confirm) throw new Error("Для переноса события нужен аргумент confirm=true.");
+  const dateTime = args.start || args.date ? {} : extractDateTimeFromText(args.text || args.source_question || "");
+  const start = args.start || args.date || dateTime.start;
+  if (!start) throw new Error("Укажите новую дату/время события.");
+  const end = args.end || dateTime.end || new Date(new Date(start).getTime() + 3600000).toISOString();
+  return yandexCalendarUpdate(query, { ...args, start, end, confirm: true });
+}
+
+async function yandexCalendarAddReminder(query, args = {}) {
+  if (!args.confirm) throw new Error("Для добавления напоминания нужен аргумент confirm=true.");
+  const minutes = Number(args.minutes || args.beforeMinutes || String(args.reminder || "").match(/\d+/u)?.[0] || 15);
+  return yandexCalendarUpdate(query, { ...args, reminders: [`-${minutes}`], confirm: true });
+}
+
+async function yandexCalendarDelete(query, args = {}) {
+  if (!args.confirm) throw new Error("Для удаления события нужен аргумент confirm=true.");
+  const resolved = await resolveYandexCalendarEvent(query, args);
+  if (resolved.status !== "ok") return resolved;
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
+  await yandexDavRequest(resolved.event.url, token, { method: "DELETE", timeout: 45000 });
+  return { status: "calendar-event-deleted", uid: resolved.event.uid, title: resolved.event.title, href: resolved.event.href };
+}
+
+async function resolveYandexCalendarEvent(query, args = {}) {
+  const uid = String(args.uid || "").trim();
+  const href = String(args.href || "").trim();
+  if (href) {
+    const token = await requireYandexOAuthToken("organizer", "Яндекс Календарь");
+    const url = new URL(href, "https://caldav.yandex.ru/").toString();
+    const ics = await yandexDavRequest(url, token, { method: "GET", timeout: 45000 });
+    const event = parseIcsEvents(ics, { baseUrl: url.replace(/[^/]+$/u, "") })[0];
+    return event ? { status: "ok", event: { ...event, href, url, ics } } : { status: "not-found", query: href };
+  }
+  const needle = normalizeGeoText(uid || query || args.query || args.title || "");
+  const rows = await yandexCalendarSearch("", {
+    ...args,
+    start: args.startRange || args.start || new Date(Date.now() - 365 * 86400000).toISOString(),
+    end: args.endRange || args.end || new Date(Date.now() + 365 * 86400000).toISOString(),
+    limit: 500,
+  });
+  const matches = rows.filter((row) => {
+    if (uid && row.uid === uid) return true;
+    const haystack = normalizeGeoText([row.title, row.description, row.location, row.start, row.startIso, row.end, row.endIso, row.uid, row.href].filter(Boolean).join(" "));
+    return needle && haystack.includes(needle);
+  });
+  if (!matches.length) return { status: "not-found", kind: "calendar-event", query: query || uid };
+  if (matches.length > 1 && !args.selectFirst) return { status: "ambiguous", kind: "calendar-event", query: query || uid, events: matches.slice(0, 10).map(stripCalendarPrivateFields) };
+  return { status: "ok", event: matches[0] };
+}
+
+async function yandexCalendarBaseUrl(token, args = {}) {
+  const calendars = await yandexCalendarCollections(token);
+  const selected = pickYandexCalendar(calendars, args);
+  if (!selected) throw new Error("В Яндекс Календаре не найдена календарная коллекция.");
+  return selected.url;
+}
+
+async function yandexCalendarCollections(token) {
   const root = "https://caldav.yandex.ru/";
   const principalXml = await yandexDavRequest(root, token, {
     method: "PROPFIND",
@@ -5038,9 +5201,99 @@ async function yandexCalendarBaseUrl(token) {
     xml: true,
     body: "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>",
   });
-  const calendarHref = extractCalendarCollectionHref(listXml);
-  if (!calendarHref) throw new Error("В Яндекс Календаре не найдена календарная коллекция.");
-  return new URL(calendarHref, root).toString();
+  return extractCalendarCollections(listXml).map((row) => ({ ...row, url: new URL(row.href, root).toString() }));
+}
+
+function pickYandexCalendar(calendars, args = {}) {
+  const query = normalizeGeoText(args.calendar || args.calendarName || args.name || "");
+  if (query) {
+    const found = calendars.find((row) => normalizeGeoText(`${row.name} ${row.href}`).includes(query));
+    if (found) return found;
+  }
+  return calendars.find((row) => !/\/(?:inbox|outbox)\//iu.test(row.href)) || calendars[0] || null;
+}
+
+async function yandexDocsStatus() {
+  const info = await yandexDiskInfo();
+  await ensureYandexDiskDir(`${CLOUD_DEFAULT_REMOTE_DIR}/docs`, { allowExisting: true });
+  return { status: "ok", provider: "yandex-disk", folder: `${CLOUD_DEFAULT_REMOTE_DIR}/docs`, totalSpace: info.totalSpace, usedSpace: info.usedSpace };
+}
+
+async function yandexDocsList(args = {}) {
+  const folder = normalizeCloudUserPath(args.path || args.folder || `${CLOUD_DEFAULT_REMOTE_DIR}/docs`, "yandex-disk");
+  const rows = await yandexDiskListRecursive(folder, { depth: Number(args.depth || 3), limit: Number(args.limit || 100) }).catch(() => []);
+  return rows.filter(isYandexDocumentResource).slice(0, Number(args.limit || 50));
+}
+
+async function yandexDocsFind(query, args = {}) {
+  const needle = normalizeGeoText(query || args.query || "");
+  const rows = await yandexDocsList({ ...args, limit: Math.max(200, Number(args.limit || 20) * 10) });
+  if (!needle) return rows.slice(0, Number(args.limit || 20));
+  return rows.filter((row) => normalizeGeoText(`${row.name} ${row.path}`).includes(needle)).slice(0, Number(args.limit || 20));
+}
+
+async function yandexDocsCreateText(args = {}) {
+  if (!args.confirm) throw new Error("Для создания документа нужен аргумент confirm=true.");
+  const text = String(args.text || args.content || "").trim();
+  if (!text) throw new Error("Текст документа пустой.");
+  const ext = normalizeYandexDocExtension(args.format || args.ext || path.extname(args.path || args.remotePath || ""));
+  const title = slugYandexDiskName(args.title || args.name || `document-${timestampForFile()}`);
+  const remotePath = normalizeCloudUserPath(args.path || args.remotePath || `${CLOUD_DEFAULT_REMOTE_DIR}/docs/${title}${title.endsWith(ext) ? "" : ext}`, "yandex-disk");
+  const saved = await yandexDiskSaveText(text, remotePath);
+  return { ...saved, status: "document-created", title: path.posix.basename(remotePath), remote: remotePath };
+}
+
+async function yandexDocsRead(target, args = {}) {
+  const doc = await resolveYandexDoc(target, args);
+  if (doc.status !== "ok") return doc;
+  if (!/\.(txt|md|csv|json|html)$/iu.test(doc.path)) {
+    return { status: "binary-document", remote: doc.path, name: doc.name, message: "Этот документ не текстовый. Его можно скачать, переименовать, удалить или опубликовать ссылкой." };
+  }
+  return yandexDiskReadText(doc.path, args);
+}
+
+async function yandexDocsShare(target, args = {}) {
+  if (!args.confirm) throw new Error("Для публикации документа нужен аргумент confirm=true.");
+  const doc = await resolveYandexDoc(target, args);
+  if (doc.status !== "ok") return doc;
+  return yandexDiskShareWithQr(doc.path, { ...args, confirm: true });
+}
+
+async function yandexDocsRename(target, newName, args = {}) {
+  if (!args.confirm) throw new Error("Для переименования документа нужен аргумент confirm=true.");
+  const doc = await resolveYandexDoc(target, args);
+  if (doc.status !== "ok") return doc;
+  if (!newName) throw new Error("Укажите новое имя документа.");
+  return yandexDiskRename(doc.path, newName, { ...args, confirm: true, overwrite: args.overwrite !== false });
+}
+
+async function yandexDocsDelete(target, args = {}) {
+  if (!args.confirm) throw new Error("Для удаления документа нужен аргумент confirm=true.");
+  const doc = await resolveYandexDoc(target, args);
+  if (doc.status !== "ok") return doc;
+  return yandexDiskDelete(doc.path, args);
+}
+
+async function resolveYandexDoc(target, args = {}) {
+  const value = String(target || "").trim();
+  if (value.startsWith("/")) {
+    const statRow = await yandexDiskStat(value);
+    return isYandexDocumentResource(statRow) ? { status: "ok", ...statRow } : { status: "not-document", path: value };
+  }
+  const rows = await yandexDocsFind(value, { ...args, limit: 10 });
+  if (!rows.length) return { status: "not-found", query: value };
+  if (rows.length > 1 && !args.selectFirst) return { status: "ambiguous", query: value, docs: rows.slice(0, 10) };
+  return { status: "ok", ...rows[0] };
+}
+
+function isYandexDocumentResource(row = {}) {
+  return row.type !== "dir" && /\.(docx|xlsx|pptx|pdf|txt|md|html|csv|json)$/iu.test(row.name || row.path || "");
+}
+
+function normalizeYandexDocExtension(value) {
+  const ext = String(value || "").replace(/^\./u, "").toLocaleLowerCase("en-US");
+  if (["txt", "md", "html", "csv", "json"].includes(ext)) return `.${ext}`;
+  return ".md";
 }
 
 async function yandexContactsStatus() {
@@ -5639,25 +5892,92 @@ async function yandexContactsBaseUrl(token) {
   return new URL(addressBookHref, root).toString();
 }
 
+async function yandexTelemostStatus() {
+  const calendar = await yandexCalendarStatus();
+  return {
+    status: "calendar-fallback",
+    provider: "yandex-telemost",
+    calendar: calendar.displayName,
+    message: "Для обычного OAuth-подключения CLI использует календарное событие. Прямой Telemost API проверяется отдельно и может быть доступен только аккаунтам/организациям Яндекс 360.",
+  };
+}
+
 async function yandexTelemostCreateEvent(args = {}) {
+  if (!args.confirm) throw new Error("Для создания встречи нужен аргумент confirm=true.");
+  const telemost = await tryCreateYandexTelemostMeeting(args).catch((error) => ({
+    status: "telemost-api-unavailable",
+    error: error instanceof Error ? error.message : String(error),
+  }));
   const description = [
     args.description || "",
     "",
-    "Телемост: создайте ссылку в Яндекс Календаре, если интерфейс календаря предложит видеовстречу.",
+    telemost.joinUrl ? `Ссылка Телемоста: ${telemost.joinUrl}` : "Телемост: прямое создание ссылки через API недоступно для текущего OAuth-подключения. Событие создано в календаре как встреча; ссылку можно добавить вручную в Яндекс Календаре.",
   ].join("\n").trim();
-  return yandexCalendarCreateEvent({ ...args, description });
+  const event = await yandexCalendarCreateEvent({
+    ...args,
+    title: args.title || args.summary || "Телемост IOLA",
+    description,
+    location: telemost.joinUrl || args.location || "Яндекс Телемост",
+    confirm: true,
+  });
+  return { ...event, status: telemost.joinUrl ? "telemost-event-created" : "telemost-calendar-fallback-created", telemost };
 }
 
-function buildIcsEvent({ uid, start, end, summary, description, location, attendees = [] }) {
+async function tryCreateYandexTelemostMeeting(args = {}) {
+  const token = await requireYandexOAuthToken("organizer", "Яндекс Телемост");
+  const endpoints = [
+    "https://cloud-api.yandex.net/v1/telemost/meetings",
+    "https://api360.yandex.net/v1/telemost/meetings",
+  ];
+  let lastError = "";
+  for (const endpoint of endpoints) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `OAuth ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        title: args.title || args.summary || "Телемост IOLA",
+        description: args.description || "",
+      }),
+      signal: AbortSignal.timeout(15000),
+    }).catch((error) => ({ ok: false, status: 0, statusText: error.message, text: async () => error.message }));
+    const text = await response.text().catch(() => "");
+    if (response.ok) {
+      const payload = text ? JSON.parse(text) : {};
+      return {
+        status: "telemost-api-created",
+        endpoint,
+        id: payload.id || payload.meeting_id || "",
+        joinUrl: payload.join_url || payload.url || payload.link || payload.meeting_url || "",
+        raw: payload,
+      };
+    }
+    lastError = `${endpoint}: ${response.status} ${response.statusText} ${sanitizeSecretFromText(text.slice(0, 500), token)}`;
+    if (![404, 405].includes(Number(response.status))) break;
+  }
+  throw new Error(lastError || "Telemost API недоступен.");
+}
+
+function buildIcsEvent({ uid, start, end, summary, description, location, attendees = [], rrule = "", reminders = [] }) {
   const escape = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
   const attendeeLines = (Array.isArray(attendees) ? attendees : [attendees])
     .map((email) => String(email || "").trim())
     .filter((email) => /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu.test(email))
     .map((email) => `ATTENDEE;CN=${escape(email)};ROLE=REQ-PARTICIPANT:mailto:${email}`);
+  const reminderBlocks = normalizeCalendarReminders(reminders).map((minutes) => [
+    "BEGIN:VALARM",
+    `TRIGGER:-PT${Math.max(1, Math.abs(Number(minutes) || 15))}M`,
+    "ACTION:DISPLAY",
+    `DESCRIPTION:${escape(summary || "Напоминание")}`,
+    "END:VALARM",
+  ].join("\r\n"));
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//IOLA CLI//Yandex Calendar//RU",
+    "CALSCALE:GREGORIAN",
     "BEGIN:VEVENT",
     `UID:${uid}`,
     `DTSTAMP:${toIcsDate(new Date().toISOString())}`,
@@ -5666,7 +5986,9 @@ function buildIcsEvent({ uid, start, end, summary, description, location, attend
     `SUMMARY:${escape(summary)}`,
     description ? `DESCRIPTION:${escape(description)}` : "",
     location ? `LOCATION:${escape(location)}` : "",
+    rrule ? `RRULE:${rrule}` : "",
     ...attendeeLines,
+    ...reminderBlocks,
     "END:VEVENT",
     "END:VCALENDAR",
     "",
@@ -5679,15 +6001,105 @@ function toIcsDate(value) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/u, "Z");
 }
 
-function parseIcsEvents(xmlOrIcs) {
-  const decoded = decodeXml(stripXmlTags(xmlOrIcs));
-  return decoded.split("BEGIN:VEVENT").slice(1).map((chunk) => ({
-    uid: chunk.match(/\nUID:([^\n\r]+)/u)?.[1] || "",
-    title: chunk.match(/\nSUMMARY:([^\n\r]+)/u)?.[1] || "",
-    start: chunk.match(/\nDTSTART[^:]*:([^\n\r]+)/u)?.[1] || "",
-    end: chunk.match(/\nDTEND[^:]*:([^\n\r]+)/u)?.[1] || "",
-    location: chunk.match(/\nLOCATION:([^\n\r]+)/u)?.[1] || "",
-  })).filter((item) => item.uid || item.title);
+function parseIcsEvents(xmlOrIcs, options = {}) {
+  const text = String(xmlOrIcs || "");
+  const responses = text.split(/<[^:>]*:?response[^>]*>/iu).slice(1);
+  if (responses.length) {
+    return responses.flatMap((response) => {
+      const href = decodeXml(stripXmlTags(response.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/iu)?.[1] || "")).trim();
+      const calendarData = response.match(/<[^:>]*:?calendar-data[^>]*>([\s\S]*?)<\/[^:>]*:?calendar-data>/iu)?.[1] || response;
+      return parseIcsEvents(calendarData, options).map((row) => ({
+        ...row,
+        href: row.href || href,
+        url: row.url || (href ? new URL(href, options.baseUrl || "https://caldav.yandex.ru/").toString() : ""),
+      }));
+    });
+  }
+  const decoded = decodeXml(stripXmlTags(text));
+  return decoded.split("BEGIN:VEVENT").slice(1).map((chunk) => {
+    const lines = unfoldIcsLines(`BEGIN:VEVENT${chunk}`);
+    const uid = icsValue(lines, "UID");
+    const start = icsValue(lines, "DTSTART");
+    const end = icsValue(lines, "DTEND");
+    return {
+      uid,
+      title: unescapeIcsValue(icsValue(lines, "SUMMARY")),
+      start,
+      end,
+      startIso: icsDateToIso(start),
+      endIso: icsDateToIso(end),
+      location: unescapeIcsValue(icsValue(lines, "LOCATION")),
+      description: unescapeIcsValue(icsValue(lines, "DESCRIPTION")),
+      rrule: icsValue(lines, "RRULE"),
+      attendees: icsValues(lines, "ATTENDEE").map((value) => value.replace(/^mailto:/iu, "")),
+      reminders: parseIcsReminderMinutes(lines),
+      ics: decoded.includes("BEGIN:VCALENDAR") ? decoded : "",
+    };
+  }).filter((item) => item.uid || item.title);
+}
+
+function unfoldIcsLines(value) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\n[ \t]/g, "")
+    .split(/\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function icsValues(lines, property) {
+  const prop = String(property || "").toLocaleUpperCase("en-US");
+  return lines
+    .filter((line) => line.toLocaleUpperCase("en-US").startsWith(`${prop};`) || line.toLocaleUpperCase("en-US").startsWith(`${prop}:`))
+    .map((line) => line.slice(line.indexOf(":") + 1).trim())
+    .filter(Boolean);
+}
+
+function icsValue(lines, property) {
+  return icsValues(lines, property)[0] || "";
+}
+
+function unescapeIcsValue(value) {
+  return String(value || "")
+    .replace(/\\n/giu, "\n")
+    .replace(/\\,/gu, ",")
+    .replace(/\\;/gu, ";")
+    .replace(/\\\\/gu, "\\")
+    .trim();
+}
+
+function icsDateToIso(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})(\d{2})(\d{2})T?(\d{2})?(\d{2})?(\d{2})?Z?$/u);
+  if (!match) return "";
+  const iso = `${match[1]}-${match[2]}-${match[3]}T${match[4] || "00"}:${match[5] || "00"}:${match[6] || "00"}${text.endsWith("Z") ? "Z" : ""}`;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function parseIcsReminderMinutes(lines) {
+  return lines
+    .filter((line) => /^TRIGGER:/iu.test(line))
+    .map((line) => Number(line.match(/PT(\d+)M/iu)?.[1] || 0))
+    .filter(Boolean);
+}
+
+function normalizeCalendarReminders(value) {
+  const rows = Array.isArray(value) ? value : String(value || "").split(/[;,]/u);
+  return rows.map((item) => Number(String(item).match(/\d+/u)?.[0] || 0)).filter(Boolean);
+}
+
+function buildIcsRrule(args = {}) {
+  const repeat = String(args.repeat || args.frequency || "").toLocaleLowerCase("ru-RU");
+  if (!repeat && !args.count && !args.until) return "";
+  const freq = /день|daily|day/iu.test(repeat) ? "DAILY"
+    : /месяц|monthly|month/iu.test(repeat) ? "MONTHLY"
+      : /год|year|yearly|annual/iu.test(repeat) ? "YEARLY"
+        : "WEEKLY";
+  const parts = [`FREQ=${freq}`];
+  if (args.count) parts.push(`COUNT=${Number(args.count)}`);
+  if (args.until) parts.push(`UNTIL=${toIcsDate(args.until)}`);
+  return parts.join(";");
 }
 
 function extractDavHref(xml, propertyName) {
@@ -5704,6 +6116,24 @@ function extractCalendarCollectionHref(xml) {
     if (href && !/\/(?:inbox|outbox)\//iu.test(href)) return href;
   }
   return "";
+}
+
+function extractCalendarCollections(xml) {
+  const responses = String(xml || "").split(/<[^:>]*:?response[^>]*>/iu).slice(1);
+  const rows = [];
+  for (const response of responses) {
+    if (!/<[^:>]*:?calendar(?:\s|>|\/)/iu.test(response)) continue;
+    const href = decodeXml(stripXmlTags(response.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/iu)?.[1] || "")).trim();
+    if (!href || /\/(?:inbox|outbox)\//iu.test(href)) continue;
+    const name = stripXmlTags(response.match(/<[^:>]*:?displayname[^>]*>([\s\S]*?)<\/[^:>]*:?displayname>/iu)?.[1] || "").trim() || path.posix.basename(href.replace(/\/$/u, ""));
+    rows.push({ provider: "yandex-calendar", href, name, type: "calendar" });
+  }
+  return rows;
+}
+
+function stripCalendarPrivateFields(row = {}) {
+  const { ics: _ics, url: _url, ...rest } = row;
+  return rest;
 }
 
 function extractAddressBookCollectionHref(xml) {
@@ -11356,10 +11786,93 @@ async function buildYandexDirectAnswer(question, history = []) {
       return ["Яндекс Почта:", ...rows.map((row, index) => `${index + 1}. ${formatYandexMailSummary(row)}`)].join("\n");
     }
 
-    if (/(календар|событи)/iu.test(normalized) && !/(создай|добавь|запланируй)/iu.test(normalized)) {
+    if (/(документ|документы|docs|360)/iu.test(normalized) && /(яндекс|диск|облак|360|docs)/iu.test(normalized)) {
+      if (/(статус|проверь|работает|доступ)/iu.test(normalized)) {
+        const result = await yandexDocsStatus();
+        return `Яндекс Документы через Диск подключены. Папка: ${result.folder}.`;
+      }
+      if (/(создай|сделай|запиши|сохрани)/iu.test(normalized)) {
+        const text = extractShareMessage(question) || cleanupCloudSaveText(question);
+        if (!text) return "Укажите текст документа. Пример: создай документ на Яндекс Диске текст: ...";
+        const result = await yandexDocsCreateText({
+          title: extractYandexDocTitle(question),
+          text,
+          format: /html/iu.test(normalized) ? "html" : /txt|текстов/iu.test(normalized) ? "txt" : "md",
+          confirm: true,
+        });
+        return `Документ создан на Яндекс Диске: ${result.remote}.`;
+      }
+      if (/(прочитай|открой|покажи\s+текст)/iu.test(normalized)) {
+        const result = await yandexDocsRead(extractCloudPath(question) || cleanupYandexQuery(question), {});
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(ссылк|поделись|опубликуй|qr|qr-код)/iu.test(normalized)) {
+        const result = await yandexDocsShare(extractCloudPath(question) || cleanupYandexQuery(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(переимен|rename)/iu.test(normalized)) {
+        const result = await yandexDocsRename(extractCloudPath(question) || cleanupYandexQuery(question), extractCloudNewName(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(удали|удалить)/iu.test(normalized)) {
+        const result = await yandexDocsDelete(extractCloudPath(question) || cleanupYandexQuery(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      const rows = /(найди|поиск)/iu.test(normalized)
+        ? await yandexDocsFind(cleanupYandexQuery(question), { limit: 20 })
+        : await yandexDocsList({ limit: 20 });
+      if (!rows.length) return "Документы на Яндекс Диске не найдены.";
+      return ["Документы на Яндекс Диске:", ...rows.map((row, index) => `${index + 1}. ${row.name} — ${row.path}`)].join("\n");
+    }
+
+    if (/(календар|событи|встреч|телемост)/iu.test(normalized)) {
+      if (/(статус|проверь|работает|доступ)/iu.test(normalized) && /(календар|телемост)/iu.test(normalized)) {
+        const result = /телемост/iu.test(normalized) ? await yandexTelemostStatus() : await yandexCalendarStatus();
+        return /телемост/iu.test(normalized)
+          ? `${result.message} Календарь: ${result.calendar || "-"}.`
+          : `Яндекс Календарь подключен: ${result.displayName || result.url}. Календарей: ${result.calendars || 1}.`;
+      }
+      if (/(какие|список).{0,30}(календар|календари)|календари/iu.test(normalized)) {
+        const rows = await yandexCalendarCalendars({ limit: 20 });
+        if (!rows.length) return "Календари Яндекса не найдены.";
+        return ["Яндекс Календари:", ...rows.map((row, index) => `${index + 1}. ${row.name} — ${row.href}`)].join("\n");
+      }
+      if (/(напомин|уведом)/iu.test(normalized) && /(добав|постав|создай)/iu.test(normalized)) {
+        const minutes = Number(question.match(/(\d+)\s*(?:мин|минут)/iu)?.[1] || 15);
+        const result = await yandexCalendarAddReminder(cleanupCalendarEventQuery(question), { minutes, confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(создай|добавь|запланируй|назначь)/iu.test(normalized)) {
+        const dateTime = extractDateTimeFromText(question);
+        const title = extractCalendarTitle(question) || (/телемост/iu.test(normalized) ? "Телемост IOLA" : "Событие IOLA");
+        const args = { ...dateTime, title, description: extractShareMessage(question) || "", confirm: true };
+        const result = /телемост/iu.test(normalized)
+          ? await yandexTelemostCreateEvent(args)
+          : /кажд|еженед|ежеднев|ежемесяч|повтор/iu.test(normalized)
+            ? await yandexCalendarCreateRecurringEvent({ ...args, ...extractCalendarRepeat(question), confirm: true })
+            : await yandexCalendarCreateEvent(args);
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(перенеси|перемести|измени\s+время|смени\s+время)/iu.test(normalized)) {
+        const result = await yandexCalendarMove(cleanupCalendarEventQuery(question), { ...extractDateTimeFromText(question), confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(переимен|измени\s+назв|смени\s+назв)/iu.test(normalized)) {
+        const result = await yandexCalendarUpdate(cleanupCalendarEventQuery(question), { title: extractCalendarTitle(question), confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(удали|удалить|отмени|отменить)/iu.test(normalized)) {
+        const result = await yandexCalendarDelete(cleanupCalendarEventQuery(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(найди|поиск|где|покажи).{0,40}(событи|встреч|телемост)/iu.test(normalized)) {
+        const rows = await yandexCalendarSearch(cleanupCalendarEventQuery(question), { limit: 20 });
+        if (!rows.length) return "События в Яндекс Календаре по запросу не найдены.";
+        return ["Яндекс Календарь:", ...rows.map((row, index) => `${index + 1}. ${row.title || "(без названия)"} — ${row.startIso || row.start || "-"}${row.location ? `, ${row.location}` : ""}`)].join("\n");
+      }
       const rows = await yandexCalendarList({ limit: 10 });
       if (!rows.length) return "В ближайшие дни событий в Яндекс Календаре не найдено.";
-      return ["Яндекс Календарь:", ...rows.map((row, index) => `${index + 1}. ${row.title || "(без названия)"} — ${row.start || "-"}`)].join("\n");
+      return ["Яндекс Календарь:", ...rows.map((row, index) => `${index + 1}. ${row.title || "(без названия)"} — ${row.startIso || row.start || "-"}${row.location ? `, ${row.location}` : ""}`)].join("\n");
     }
 
     if (/(контакт|адресн)/iu.test(normalized)) {
@@ -11682,7 +12195,7 @@ async function buildUserSkillDirectAnswer(question) {
 }
 
 function isYandexServiceQuestion(normalized) {
-  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост|спам|чернов|отправлен|исходящ|корзин)/iu.test(String(normalized || ""));
+  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост|документ|docs|360|спам|чернов|отправлен|исходящ|корзин)/iu.test(String(normalized || ""));
 }
 
 function isYandexIdentityQuestion(normalized) {
@@ -11967,6 +12480,38 @@ async function buildCloudDirectAnswer(question) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   try {
     const provider = await getCloudProvider();
+    if (provider === "yandex-disk" && /(документ|docs|360)/iu.test(normalized)) {
+      if (/(ссылк|поделись|опубликуй|qr|qr-код)/iu.test(normalized)) {
+        const result = await yandexDocsShare(extractCloudPath(question) || cleanupCloudQuery(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(создай|сделай|запиши|сохрани)/iu.test(normalized)) {
+        const text = extractShareMessage(question) || cleanupCloudSaveText(question);
+        if (!text) return "Укажите текст документа.";
+        const result = await yandexDocsCreateText({ title: extractYandexDocTitle(question), text, confirm: true });
+        return `Документ создан на Яндекс Диске: ${result.remote}.`;
+      }
+      if (/(прочитай|открой|покажи\s+текст)/iu.test(normalized)) {
+        const result = await yandexDocsRead(extractCloudPath(question) || cleanupCloudQuery(question), {});
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(переимен|rename)/iu.test(normalized)) {
+        const result = await yandexDocsRename(extractCloudPath(question) || cleanupCloudQuery(question), extractCloudNewName(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(удали|удалить)/iu.test(normalized)) {
+        const result = await yandexDocsDelete(extractCloudPath(question) || cleanupCloudQuery(question), { confirm: true });
+        return formatToolResult({ rows: [result], outputs: [] }, {});
+      }
+      if (/(найди|поиск)/iu.test(normalized)) {
+        const rows = await yandexDocsFind(cleanupCloudQuery(question), { limit: 20 });
+        if (!rows.length) return "Документы на Яндекс Диске не найдены.";
+        return ["Документы на Яндекс Диске:", ...rows.map((row, index) => `${index + 1}. ${row.name} — ${row.path}`)].join("\n");
+      }
+      const rows = await yandexDocsList({ limit: 20 });
+      if (!rows.length) return "Документы на Яндекс Диске не найдены.";
+      return ["Документы на Яндекс Диске:", ...rows.map((row, index) => `${index + 1}. ${row.name} — ${row.path}`)].join("\n");
+    }
     if (provider === "yandex-disk" && /(мест[оа]|сколько.*занято|сколько.*свобод|инфо|статус)/iu.test(normalized)) {
       const info = await yandexDiskInfo();
       return [
@@ -12200,6 +12745,7 @@ function extractCloudPath(question) {
 function cleanupCloudPathCandidate(value) {
   return String(value || "")
     .replace(/\s+(?:по\s+почт[еуы]|на\s+почт[уые]|контакту|получател[юя]|кому|с\s+темой|тема\s*:|текст\s*:).*$/iu, "")
+    .replace(/\s+(?:на\s+яндекс.?диск(?:е)?|на\s+диск(?:е)?|в\s+облак(?:е|о)?).*/iu, "")
     .replace(/[.!?]+$/u, "")
     .trim();
 }
@@ -12249,7 +12795,50 @@ function extractMailSubject(question) {
 }
 
 function extractShareMessage(question) {
-  return String(question || "").match(/(?:текст|сообщение|body)\s*:\s*(.*)$/iu)?.[1]?.trim() || "";
+  return String(question || "").match(/(?:текст|text|сообщение|body)\s*:\s*(.*)$/iu)?.[1]?.trim() || "";
+}
+
+function extractYandexDocTitle(question) {
+  const text = String(question || "");
+  const raw = text.match(/(?:названи(?:е|ем)|имя|title)\s*:?\s*["«]?([^"».,:;]+)["»]?/iu)?.[1]?.trim()
+    || text.match(/(?:документ|файл)\s+["«]?([^"».,:;]+)["»]?/iu)?.[1]?.trim()
+    || "";
+  return raw.replace(/\s+(?:текст|text|body|сообщение)\s*:?.*$/iu, "").trim();
+}
+
+function extractCalendarTitle(question) {
+  const text = String(question || "");
+  const raw = text.match(/(?:тема|названи(?:е|ем)|title)\s*:?\s*["«]?([^"».,:;]+)["»]?/iu)?.[1]?.trim()
+    || text.match(/(?:событи[ея]|встреч[ауи]|телемост)\s+["«]?([^"».,:;]+)["»]?/iu)?.[1]?.trim()
+    || "";
+  return raw
+    .replace(/\s+(?:сегодня|завтра|послезавтра)(?:\s|$).*$/iu, "")
+    .replace(/\s+(?:в\s+\d{1,2}(?::\d{2})?|на\s+\d{1,2}[.\-/]\d{1,2}[\d.\-/]*)(?:\s|$).*$/iu, "")
+    .trim();
+}
+
+function extractCalendarRepeat(question) {
+  const text = String(question || "").toLocaleLowerCase("ru-RU");
+  const count = Number(text.match(/(\d+)\s*(?:раз|повтор)/iu)?.[1] || 0);
+  return {
+    repeat: /ежеднев|каждый\s+день/iu.test(text) ? "daily"
+      : /ежемесяч|каждый\s+месяц/iu.test(text) ? "monthly"
+        : /ежегод|каждый\s+год/iu.test(text) ? "yearly"
+          : "weekly",
+    count: count || undefined,
+  };
+}
+
+function cleanupCalendarEventQuery(question) {
+  return String(question || "")
+    .replace(/(?:создай|добавь|запланируй|назначь|перенеси|перемести|измени|смени|удали|удалить|отмени|отменить|найди|поиск|покажи|добавь\s+напоминание|поставь\s+напоминание)/giu, " ")
+    .replace(/(?:^|\s)(?:событи\p{L}*|встреч\p{L}*|телемост\p{L}*|календар\p{L}*|напомин\p{L}*|уведом\p{L}*|яндекс|на|к|ко|в|во|сегодня|завтра|послезавтра|час|часа|часов|минут|минуты)(?=\s|$)/giu, " ")
+    .replace(/\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?/gu, " ")
+    .replace(/\d{1,2}[:.]\d{2}/gu, " ")
+    .replace(/(?:^|\s)\d{1,3}(?=\s|$)/gu, " ")
+    .replace(/[,:;.!?«»"()]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseYandexDiskPackageRequest(question) {
@@ -12826,8 +13415,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
-    "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_calendar_list {start,end}, yandex_calendar_create_event {title,start,end,location,attendees,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}.",
-    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_calendar_create_event, yandex_telemost_create_event.",
+    "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}.",
+    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event.",
     "User skill tools: user_skill_create {name,description,instructions,tools,enable,confirm}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай skill только по явной просьбе пользователя и с confirm=true.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
@@ -12942,8 +13531,25 @@ function inferToolPlan(question, options = {}) {
     if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_mail_search", args: { mailbox, query: question, limit: 20 } }] };
     return { steps: [{ tool: "yandex_mail_list", args: { mailbox, limit: 10, unread: /непрочитан/iu.test(normalized) } }] };
   }
+  if (/(документ|docs|360)/iu.test(normalized) && /(яндекс|диск|облак|360|docs)/iu.test(normalized)) {
+    const target = extractCloudPath(question) || cleanupYandexQuery(question);
+    if (/(создай|сделай|запиши|сохрани)/iu.test(normalized)) return { steps: [{ tool: "yandex_docs_create_text", args: { title: extractYandexDocTitle(question), text: extractShareMessage(question) || cleanupCloudSaveText(question), confirm: true } }] };
+    if (/(прочитай|открой|текст)/iu.test(normalized)) return { steps: [{ tool: "yandex_docs_read", args: { query: target } }] };
+    if (/(ссылк|поделись|опубликуй|qr|qr-код)/iu.test(normalized)) return { steps: [{ tool: "yandex_docs_share", args: { query: target, confirm: true } }] };
+    if (/(переимен|rename)/iu.test(normalized)) return { steps: [{ tool: "yandex_docs_rename", args: { query: target, name: extractCloudNewName(question), confirm: true } }] };
+    if (/(удали|удалить)/iu.test(normalized)) return { steps: [{ tool: "yandex_docs_delete", args: { query: target, confirm: true } }] };
+    if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_docs_find", args: { query: cleanupYandexQuery(question), limit: 20 } }] };
+    return { steps: [{ tool: "yandex_docs_list", args: { limit: 20 } }] };
+  }
   if (/(календар|событи|встреч|телемост)/iu.test(normalized)) {
-    return { steps: [{ tool: normalized.includes("телемост") ? "yandex_telemost_create_event" : "yandex_calendar_list", args: { limit: 20 } }] };
+    if (/(создай|добавь|запланируй|назначь)/iu.test(normalized)) {
+      const dateTime = extractDateTimeFromText(question);
+      return { steps: [{ tool: /телемост/iu.test(normalized) ? "yandex_telemost_create_event" : "yandex_calendar_create_event", args: { ...dateTime, title: extractCalendarTitle(question) || (/телемост/iu.test(normalized) ? "Телемост IOLA" : "Событие IOLA"), confirm: true } }] };
+    }
+    if (/(перенеси|перемести|измени\s+время|смени\s+время)/iu.test(normalized)) return { steps: [{ tool: "yandex_calendar_move", args: { query: cleanupCalendarEventQuery(question), ...extractDateTimeFromText(question), confirm: true } }] };
+    if (/(удали|удалить|отмени|отменить)/iu.test(normalized)) return { steps: [{ tool: "yandex_calendar_delete", args: { query: cleanupCalendarEventQuery(question), confirm: true } }] };
+    if (/(найди|поиск)/iu.test(normalized)) return { steps: [{ tool: "yandex_calendar_search", args: { query: cleanupCalendarEventQuery(question), limit: 20 } }] };
+    return { steps: [{ tool: "yandex_calendar_list", args: { limit: 20 } }] };
   }
   if (/(контакт|адресн)/iu.test(normalized)) {
     if (/(дубликат|повтор)/iu.test(normalized)) return { steps: [{ tool: "yandex_contacts_find_duplicates", args: { limit: 20 } }] };
@@ -13537,6 +14143,18 @@ function formatToolResult(result, options) {
       return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
     }
     if (row.date && row.time) return `Сегодня ${row.date}, ${row.time}.`;
+    if (row.status === "calendar-event-created" || row.status === "telemost-event-created" || row.status === "telemost-calendar-fallback-created") {
+      return `${row.status === "calendar-event-created" ? "Событие" : "Телемост"} создан: ${row.title || row.uid}${row.start ? `, ${row.start}` : ""}${row.telemost?.joinUrl ? `\nСсылка: ${row.telemost.joinUrl}` : row.status === "telemost-calendar-fallback-created" ? "\nПрямая ссылка Телемоста через API недоступна, создано событие календаря." : ""}`;
+    }
+    if (row.status === "calendar-event-updated") return `Событие обновлено: ${row.title || row.uid}`;
+    if (row.status === "calendar-event-deleted") return `Событие удалено: ${row.title || row.uid}`;
+    if (row.status === "ambiguous" && row.events) return [`Нашел несколько событий. Уточните:`, ...row.events.map((event, index) => `${index + 1}. ${event.title || event.uid} — ${event.startIso || event.start || "-"}`)].join("\n");
+    if (row.status === "not-found" && row.kind === "calendar-event") return `Событие не найдено: ${row.query}`;
+    if (row.status === "document-created") return `Документ создан на Яндекс Диске: ${row.remote}`;
+    if (row.status === "binary-document") return `${row.name || row.remote}: ${row.message}`;
+    if (row.status === "not-document") return `Это не документ: ${row.path}`;
+    if (row.status === "ambiguous" && row.docs) return [`Нашел несколько документов. Уточните:`, ...row.docs.map((doc, index) => `${index + 1}. ${doc.name} — ${doc.path}`)].join("\n");
+    if (row.status === "not-found" && row.docs !== undefined) return `Документ не найден: ${row.query}`;
     if (row.status === "contact-mail-sent") return `Письмо контакту отправлено: ${row.contact}. Тема: ${row.subject || "-"}`;
     if (row.status === "contact-disk-link-sent") return `Отправил контакту ${row.contact} ссылку на Яндекс Диск.\nСсылка: ${row.publicUrl}\nQR-код: ${row.qrPublicUrl}`;
     if (row.status === "contact-folder-created") return `Папка контакта создана: ${row.remote}\nКарточка: ${row.cardPath}`;
@@ -15554,7 +16172,7 @@ function selectSkillsForPrompt(config, question = "", options = {}) {
   if (enabled.has("geo") && isGeoQuestion(normalized)) selected.add("geo");
   const cloudQuestion = isCloudQuestion(normalized);
   if (enabled.has("personal-docs") && cloudQuestion) selected.add("personal-docs");
-  if (enabled.has("yandex-services") && /(яндекс|диск|почт|письм|календар|контакт|телемост|облако)/iu.test(normalized)) selected.add("yandex-services");
+  if (enabled.has("yandex-services") && /(яндекс|диск|почт|письм|календар|контакт|телемост|документ|docs|360|облако)/iu.test(normalized)) selected.add("yandex-services");
   if (enabled.has("reports") && /(отчет|отчёт|выгруз|csv|xlsx|качество|провер)/iu.test(normalized)) selected.add("reports");
   if (enabled.has("local-files") && !cloudQuestion && (options.files || /(файл|папк|readme|документ|архив)/iu.test(normalized))) selected.add("local-files");
   if (enabled.has("browser-agent") && /(браузер|сайт|страниц|url|https?:\/\/)/iu.test(normalized)) selected.add("browser-agent");
