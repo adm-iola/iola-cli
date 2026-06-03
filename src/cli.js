@@ -152,7 +152,7 @@ const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const USER_SKILL_TOOLS = ["user_skill_create", "user_skill_update", "user_skill_enable", "user_skill_disable", "user_skill_delete", "user_skill_list", "user_skill_templates", "user_skill_validate", "user_skill_preview"];
-const UFANET_TOOLS = ["ufanet_status", "ufanet_intercoms", "ufanet_open_intercom", "ufanet_call_history", "ufanet_call_links", "ufanet_cameras"];
+const UFANET_TOOLS = ["ufanet_status", "ufanet_intercoms", "ufanet_open_intercom", "ufanet_call_history", "ufanet_call_links", "ufanet_cameras", "ufanet_camera_open", "ufanet_camera_snapshot"];
 const YANDEX_TOOLS = [
   "yandex_identity_me",
   "yandex_disk_info",
@@ -3792,14 +3792,18 @@ async function handleUfanet(args = [], agentState = null) {
   }
 
   if (action === "history" || action === "calls") {
-    const rows = await ufanetGetCallHistory({ page: target || options.page || 1, pageSize: options.limit || options["page-size"] || 10 });
-    printTable(rows.results || [], [["uuid", "UUID"], ["calledAt", "Когда"], ["address", "Адрес"], ["porch", "Подъезд"], ["flat", "Кв"]]);
+    const historyOptions = parseOptions([target, ...rest].filter(Boolean));
+    const page = target && !String(target).startsWith("--") ? target : historyOptions.page || 1;
+    const rows = await ufanetGetCallHistory({ page, pageSize: historyOptions.limit || historyOptions["page-size"] || 10 });
+    printTable(formatUfanetCallRows(rows.results || []), [["index", "#"], ["calledAt", "Когда"], ["address", "Адрес"], ["porch", "Подъезд"]]);
     if (rows.count !== undefined) console.log(`Всего: ${rows.count}`);
     return;
   }
 
   if (action === "watch" || action === "listen") {
-    await watchUfanetCalls({ ...options, once: options.once, intervalSeconds: options.seconds || options.interval || target });
+    const watchOptions = parseOptions([target, ...rest].filter(Boolean));
+    const intervalTarget = target && !String(target).startsWith("--") ? target : "";
+    await watchUfanetCalls({ ...watchOptions, once: watchOptions.once, intervalSeconds: watchOptions.seconds || watchOptions.interval || intervalTarget });
     return;
   }
 
@@ -3815,9 +3819,30 @@ async function handleUfanet(args = [], agentState = null) {
     return;
   }
 
-  if (action === "cameras" || action === "camera") {
+  if (action === "cameras") {
     const rows = await ufanetGetCameras();
-    printTable(rows, [["number", "Номер"], ["title", "Название"], ["address", "Адрес"], ["type", "Тип"], ["rtspUrl", "RTSP"]]);
+    console.log(formatUfanetCameraList(rows));
+    return;
+  }
+
+  if (action === "camera") {
+    const subaction = target || "list";
+    const selector = rest[0] || options.number || options.id || options.camera || options._?.[0];
+    if (subaction === "list" || subaction === "ls" || subaction === "cameras") {
+      console.log(formatUfanetCameraList(await ufanetGetCameras()));
+      return;
+    }
+    if (subaction === "open" || subaction === "view" || subaction === "play") {
+      const result = await ufanetOpenCamera(selector || 1);
+      console.log(result.message);
+      return;
+    }
+    if (subaction === "snapshot" || subaction === "screen" || subaction === "screenshot" || subaction === "photo" || subaction === "frame") {
+      const result = await ufanetCameraSnapshot(selector || 1);
+      console.log(`Снимок с камеры сохранен: ${result.file}`);
+      return;
+    }
+    throw new Error("Команды камеры: iola ufanet camera list | open НОМЕР | snapshot НОМЕР");
     return;
   }
 
@@ -3839,6 +3864,8 @@ async function handleUfanet(args = [], agentState = null) {
   iola ufanet history [--limit 10]
   iola ufanet links UUID
   iola ufanet cameras
+  iola ufanet camera open НОМЕР
+  iola ufanet camera snapshot НОМЕР
   iola ufanet watch [--seconds 10]
   iola ufanet notifications on|off|status
   iola ufanet delete`);
@@ -3899,7 +3926,7 @@ async function executeUfanetMenuItem(item, agentState = null) {
   if (item.key === "history") {
     const rows = await ufanetGetCallHistory({ page: 1, pageSize: 10 });
     if (!rows.results?.length) return "В истории Уфанет звонков не найдено.";
-    return ["История звонков Уфанет:", ...rows.results.map((row, index) => `${index + 1}. ${row.calledAt || "-"} — ${row.address || "-"}${row.uuid ? `, UUID ${row.uuid}` : ""}`)].join("\n");
+    return formatUfanetCallHistory(rows.results);
   }
   if (item.key === "notifications-on") {
     await setUfanetNotifications(true);
@@ -3915,8 +3942,7 @@ async function executeUfanetMenuItem(item, agentState = null) {
   }
   if (item.key === "cameras") {
     const rows = await ufanetGetCameras();
-    if (!rows.length) return "Камеры Уфанет не найдены.";
-    return ["Камеры Уфанет:", ...rows.slice(0, 10).map((row, index) => `${index + 1}. ${row.title || row.number || "камера"} — ${row.address || "-"}${row.rtspUrl ? `, ${row.rtspUrl}` : ""}`)].join("\n");
+    return formatUfanetCameraList(rows);
   }
   if (item.key === "status") {
     const status = await getUfanetStatus();
@@ -4113,7 +4139,7 @@ async function watchUfanetCalls(options = {}) {
     await updateUfanetLastSeen(lastSeen);
   }
   if (options.once) {
-    printTable(initialRows, [["uuid", "UUID"], ["calledAt", "Когда"], ["address", "Адрес"], ["porch", "Подъезд"], ["flat", "Кв"]]);
+    printTable(formatUfanetCallRows(initialRows), [["index", "#"], ["calledAt", "Когда"], ["address", "Адрес"], ["porch", "Подъезд"]]);
     return;
   }
   console.log(`Уфанет: слежу за новыми вызовами каждые ${intervalSeconds} сек. Остановить: Ctrl+C.`);
@@ -4135,11 +4161,9 @@ async function watchUfanetCalls(options = {}) {
       console.log("");
       console.log("Новый вызов домофона Уфанет:");
       printKeyValue({
-        uuid: row.uuid || "-",
-        calledAt: row.calledAt || "-",
+        calledAt: formatUfanetCallDate(row.calledAt),
         address: row.address || "-",
         porch: row.porch || "-",
-        flat: row.flat || "-",
       });
     }
     lastSeen = ufanetCallKey(rows[0]) || lastSeen;
@@ -4166,6 +4190,8 @@ async function executeUfanetTool(tool, args = {}) {
   if (tool === "ufanet_call_history") return ufanetGetCallHistory({ page: args.page || 1, pageSize: args.pageSize || args.page_size || args.limit || 10 });
   if (tool === "ufanet_call_links") return ufanetGetCallLinks(args.uuid || args.id);
   if (tool === "ufanet_cameras") return ufanetGetCameras();
+  if (tool === "ufanet_camera_open") return ufanetOpenCamera(args.number || args.id || args.camera || 1);
+  if (tool === "ufanet_camera_snapshot") return ufanetCameraSnapshot(args.number || args.id || args.camera || 1);
   throw new Error(`Ufanet tool неизвестен: ${tool}`);
 }
 
@@ -4347,6 +4373,126 @@ async function ufanetGetCameras() {
     type: item.type || "",
     rtspUrl: item.servers?.domain && item.number && item.token_l ? `rtsp://${item.servers.domain}/${item.number}?token=${item.token_l}` : "",
   }));
+}
+
+function formatUfanetCameraList(rows = []) {
+  if (!rows.length) return "Камеры Уфанет не найдены.";
+  const lines = [
+    "Камеры Уфанет:",
+    ...rows.slice(0, 20).map((row, index) => {
+      const title = formatUfanetCameraTitle(row);
+      const video = row.rtspUrl ? "видео доступно" : "видео недоступно";
+      return `${index + 1}. ${title} — ${row.address || "-"} (${video})`;
+    }),
+    "",
+    "Что можно сделать:",
+    "- открыть видео: /ufanet camera open НОМЕР",
+    "- сохранить снимок: /ufanet camera snapshot НОМЕР",
+    "",
+    "RTSP-ссылки с токенами не выводятся в консоль. Для просмотра нужен установленный видеоплеер, например VLC; для снимка нужен ffmpeg.",
+  ];
+  return lines.join("\n");
+}
+
+function formatUfanetCameraTitle(row = {}) {
+  const title = String(row.title || "").trim().replace(/^\d+\s*,\s*/u, "");
+  return title || "Камера";
+}
+
+function formatUfanetCallRows(rows = []) {
+  return rows.map((row, index) => ({
+    index: index + 1,
+    calledAt: formatUfanetCallDate(row.calledAt),
+    address: row.address || "-",
+    porch: row.porch || "-",
+  }));
+}
+
+function formatUfanetCallHistory(rows = []) {
+  if (!rows.length) return "В истории Уфанет звонков не найдено.";
+  return [
+    "История звонков Уфанет:",
+    ...formatUfanetCallRows(rows).map((row) => `${row.index}. ${row.calledAt} — ${row.address}${row.porch && row.porch !== "-" ? `, подъезд ${row.porch}` : ""}`),
+    "",
+    "Служебные UUID скрыты. Если нужна запись конкретного звонка, запросите ее по номеру из истории.",
+  ].join("\n");
+}
+
+function formatUfanetCallDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(date);
+  }
+  return String(value);
+}
+
+function safeUfanetCamera(row = {}) {
+  return {
+    provider: "ufanet",
+    title: row.title || "",
+    address: row.address || "",
+    type: row.type || "",
+    hasVideo: Boolean(row.rtspUrl),
+  };
+}
+
+function resolveUfanetCamera(rows = [], selector = 1) {
+  if (!rows.length) throw new Error("Камеры Уфанет не найдены.");
+  const raw = String(selector || "1").trim();
+  const index = Number(raw);
+  if (Number.isInteger(index) && index >= 1 && index <= rows.length) return rows[index - 1];
+  const normalized = normalizeGeoText(raw);
+  const match = rows.find((row) => String(row.number || "") === raw)
+    || rows.find((row) => normalizeGeoText(`${row.title || ""} ${row.address || ""}`).includes(normalized));
+  if (match) return match;
+  throw new Error(`Не нашел камеру: ${raw}. Сначала посмотрите список: /ufanet cameras`);
+}
+
+async function ufanetOpenCamera(selector = 1) {
+  const rows = await ufanetGetCameras();
+  const camera = resolveUfanetCamera(rows, selector);
+  if (!camera.rtspUrl) throw new Error("У этой камеры нет доступного видеопотока.");
+  await openUrl(camera.rtspUrl);
+  return {
+    ...safeUfanetCamera(camera),
+    status: "camera-opened",
+    message: "Открываю видеопоток во внешнем плеере. Если окно не появилось, установите VLC и назначьте его для RTSP-ссылок.",
+  };
+}
+
+async function ufanetCameraSnapshot(selector = 1) {
+  const rows = await ufanetGetCameras();
+  const camera = resolveUfanetCamera(rows, selector);
+  if (!camera.rtspUrl) throw new Error("У этой камеры нет доступного видеопотока для снимка.");
+  const outputDir = path.join(CONFIG_DIR, "artifacts", "ufanet");
+  await mkdir(outputDir, { recursive: true });
+  const fileName = `${slugForFile(formatUfanetCameraTitle(camera))}-${timestampForFile()}.jpg`;
+  const outputFile = path.join(outputDir, fileName);
+  try {
+    await runCommand("ffmpeg", [
+      "-y",
+      "-rtsp_transport",
+      "tcp",
+      "-i",
+      camera.rtspUrl,
+      "-frames:v",
+      "1",
+      outputFile,
+    ], { timeoutMs: 20000 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/ENOENT|not recognized|не является|cannot find|spawn/i.test(message)) {
+      throw new Error("Для снимков с камеры нужен ffmpeg. Установите ffmpeg и повторите: /ufanet camera snapshot НОМЕР");
+    }
+    throw new Error(`Не смог сохранить снимок с камеры: ${message}`);
+  }
+  saveArtifact("ufanet-camera-snapshot", formatUfanetCameraTitle(camera), outputFile, safeUfanetCamera(camera));
+  return {
+    ...safeUfanetCamera(camera),
+    status: "camera-snapshot-saved",
+    file: outputFile,
+  };
 }
 
 function printYandexServices(options = {}) {
@@ -14899,12 +15045,19 @@ async function buildUfanetDirectAnswer(question, context = {}) {
   if (/(истори|звонк|кто звонил|последн)/iu.test(normalized)) {
     const rows = await ufanetGetCallHistory({ page: 1, pageSize: 10 });
     if (!rows.results?.length) return "В истории Уфанет звонков не найдено.";
-    return ["История звонков Уфанет:", ...rows.results.map((row, index) => `${index + 1}. ${row.calledAt || "-"} — ${row.address || "-"}${row.uuid ? `, UUID ${row.uuid}` : ""}`)].join("\n");
+    return formatUfanetCallHistory(rows.results);
+  }
+  if (/(сним|скриншот|фото|кадр)/iu.test(normalized) && /(камер|видео|домофон)/iu.test(normalized)) {
+    const result = await ufanetCameraSnapshot(extractUfanetCameraSelector(question) || 1);
+    return `Снимок с камеры сохранен: ${result.file}`;
+  }
+  if (/(открой|покажи|запусти|включи)/iu.test(normalized) && /(камер|видео)/iu.test(normalized)) {
+    const result = await ufanetOpenCamera(extractUfanetCameraSelector(question) || 1);
+    return result.message;
   }
   if (/(камер|rtsp|видео)/iu.test(normalized)) {
     const rows = await ufanetGetCameras();
-    if (!rows.length) return "Камеры Уфанет не найдены.";
-    return ["Камеры Уфанет:", ...rows.slice(0, 10).map((row, index) => `${index + 1}. ${row.title || row.number || "камера"} — ${row.address || "-"}${row.rtspUrl ? `, ${row.rtspUrl}` : ""}`)].join("\n");
+    return formatUfanetCameraList(rows);
   }
   const intercoms = await ufanetGetIntercoms();
   if (!intercoms.length) return "Доступные домофоны Уфанет не найдены.";
@@ -14914,6 +15067,12 @@ async function buildUfanetDirectAnswer(question, context = {}) {
 function extractSecondsFromText(text) {
   const match = String(text || "").match(/(\d{1,3})\s*(?:сек|seconds|s)\b/iu);
   return match ? Number(match[1]) : 0;
+}
+
+function extractUfanetCameraSelector(text) {
+  return String(text || "").match(/(?:камер[ауые]?|номер|№|#)\s*(\d{1,4})/iu)?.[1]
+    || String(text || "").match(/\b(\d{1,4})\b/u)?.[1]
+    || "";
 }
 
 function detectDirectDataFields(normalizedQuestion) {
@@ -15428,8 +15587,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
     "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_mail_meeting_pack {uid,start,end,send,confirm}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}, yandex_contact_full_pack {contact,start,end,send,confirm}, yandex_cloud_status {}, yandex_go_deeplink {from,to,tariff}, yandex_daily_digest {save,email}, yandex_calendar_reminders_tick {}, yandex_disk_maintenance_tick {}.",
-    "Ufanet tools: ufanet_status {}, ufanet_intercoms {}, ufanet_open_intercom {id,confirm}, ufanet_call_history {page,limit}, ufanet_call_links {uuid}, ufanet_cameras {}.",
-    "Опасные Yandex/Ufanet tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event, ufanet_open_intercom.",
+    "Ufanet tools: ufanet_status {}, ufanet_intercoms {}, ufanet_open_intercom {id,confirm}, ufanet_call_history {page,limit}, ufanet_call_links {uuid}, ufanet_cameras {}, ufanet_camera_open {number}, ufanet_camera_snapshot {number}.",
+    "Опасные Yandex/Ufanet tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event, ufanet_open_intercom, ufanet_camera_open, ufanet_camera_snapshot.",
     "User skill tools: user_skill_create {name,description,instructions,tools,template,enable,confirm}, user_skill_update {name,instructions,tools,confirm}, user_skill_templates {}, user_skill_validate {name}, user_skill_preview {name,template,instructions}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай или меняй skill только по явной просьбе пользователя и с confirm=true.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
@@ -15539,12 +15698,18 @@ function inferToolPlan(question, options = {}) {
     if (/(истори|звонк|кто\s+звонил|последн)/iu.test(normalized) && !/(ссылк|запис|видео)/iu.test(normalized)) {
       return { steps: [{ tool: "ufanet_call_history", args: { limit: 10 } }] };
     }
-    if (/(ссылк|запис|видео|preview|превью)/iu.test(normalized)) {
+    if (/(сним|скриншот|фото|кадр)/iu.test(normalized) && /(камер|видео|домофон)/iu.test(normalized)) {
+      return { steps: [{ tool: "ufanet_camera_snapshot", args: { number: extractUfanetCameraSelector(question) || 1 } }] };
+    }
+    if (/(открой|покажи|запусти|включи)/iu.test(normalized) && /(камер|видео)/iu.test(normalized)) {
+      return { steps: [{ tool: "ufanet_camera_open", args: { number: extractUfanetCameraSelector(question) || 1 } }] };
+    }
+    if (/(камер|rtsp|видео)/iu.test(normalized)) return { steps: [{ tool: "ufanet_cameras", args: {} }] };
+    if (/(ссылк|запис|preview|превью)/iu.test(normalized)) {
       const uuid = extractUuid(question);
       if (!uuid) return { directAnswer: "Для ссылки на запись нужен UUID звонка. Сначала посмотрите историю: /ufanet history." };
       return { steps: [{ tool: "ufanet_call_links", args: { uuid } }] };
     }
-    if (/(камер|rtsp|видео)/iu.test(normalized)) return { steps: [{ tool: "ufanet_cameras", args: {} }] };
     if (/(статус|подключ|аккаунт|договор)/iu.test(normalized)) return { steps: [{ tool: "ufanet_status", args: {} }] };
     return { steps: [{ tool: "ufanet_intercoms", args: {} }] };
   }
@@ -16203,9 +16368,11 @@ function formatToolResult(result, options) {
     if (row.type === "empty") return "Уфанет подключен, но доступных домофонов не найдено.";
     if (row.type === "opened" && row.result) return formatUfanetOpenResult(row.result, row.choice || {});
     if (row.provider === "ufanet" && (row.status === "opened" || row.status === "not-opened")) return `Уфанет: домофон #${row.id} ${row.status === "opened" ? "открыт" : "не открылся"}.`;
+    if (row.provider === "ufanet" && row.status === "camera-opened") return row.message || `Открываю камеру Уфанет: ${row.title || row.number || row.address || "-"}.`;
+    if (row.provider === "ufanet" && row.status === "camera-snapshot-saved") return `Снимок с камеры сохранен: ${row.file}`;
     if (row.provider === "ufanet" && row.uuid && (row.url || row.preview)) return `Уфанет: запись звонка ${row.uuid}\nСсылка: ${row.url || "-"}\nПревью: ${row.preview || "-"}`;
-    if (row.rtspUrl) return `Камера Уфанет ${row.title || row.number}: ${row.address || "-"}\nRTSP: ${row.rtspUrl}`;
-    if (row.calledAt && row.uuid) return `Звонок Уфанет: ${row.calledAt}, ${row.address || "-"}, подъезд ${row.porch || "-"}, UUID ${row.uuid}`;
+    if (row.rtspUrl || row.hasVideo !== undefined) return `Камера Уфанет ${row.title || row.number || "-"}: ${row.address || "-"}${row.rtspUrl || row.hasVideo ? "\nВидео доступно. Открыть: /ufanet camera open НОМЕР. Снимок: /ufanet camera snapshot НОМЕР." : ""}`;
+    if (row.calledAt && row.uuid) return `Звонок Уфанет: ${formatUfanetCallDate(row.calledAt)}, ${row.address || "-"}, подъезд ${row.porch || "-"}`;
     if (row.id && (row.address || row.role || row.blocked !== undefined)) return `Домофон Уфанет #${row.id}: ${row.name || row.address || "-"}${row.blocked === "yes" ? " (заблокирован)" : ""}`;
     if (row.configured !== undefined && row.enabled !== undefined && row.contract !== undefined) return `Уфанет: ${row.configured ? "настроен" : "не настроен"}, ${row.enabled ? "включен" : "выключен"}${row.contract ? `, договор ${row.contract}` : ""}.`;
     if (row.status === "calendar-event-created" || row.status === "telemost-event-created" || row.status === "telemost-calendar-fallback-created") {
@@ -20348,6 +20515,7 @@ function runCommand(command, args, options = {}) {
         ...(options.env || {}),
       },
     }, (error, stdout, stderr) => {
+      if (timer) clearTimeout(timer);
       if (error) {
         if (process.platform === "win32" && (error.code === "ENOENT" || error.code === "EINVAL") && !options.cmdFallback) {
           runCommand(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", quoteWindowsCommand(command, args)], {
@@ -20363,6 +20531,10 @@ function runCommand(command, args, options = {}) {
 
       resolve({ stdout, stderr });
     });
+    const timer = options.timeoutMs ? setTimeout(() => {
+      child.kill();
+      reject(new Error(`Command timeout after ${options.timeoutMs} ms: ${command}`));
+    }, Number(options.timeoutMs)) : null;
 
     if (options.inherit) {
       child.stdout?.pipe(process.stdout);
