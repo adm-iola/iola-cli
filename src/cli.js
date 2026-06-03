@@ -376,6 +376,9 @@ const SKILL_BUNDLES = {
 };
 let onboardRanThisProcess = false;
 const DEFAULT_AI_CONFIG = {
+  client: {
+    installationId: "",
+  },
   api: {
     baseUrl: "https://apiiola.yasg.ru/api/v1",
     mcpBaseUrl: "https://apiiola.yasg.ru",
@@ -11850,6 +11853,7 @@ async function chooseOpenRouterModel(provider = "openrouter") {
 async function setupYakuninRouterPayment({ topup = false } = {}) {
   const secrets = await loadSecrets();
   const existingHash = secrets.yakuninRouter?.keyHash || "";
+  const installationId = await getInstallationId();
   const units = await chooseYakuninRouterUnits();
   if (!units) {
     console.log("Пополнение отменено.");
@@ -11865,7 +11869,7 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       units,
-      client_id: `iola-cli:${os.userInfo().username || "user"}`,
+      client_id: installationId,
       existing_key_hash: topup && existingHash ? existingHash : undefined,
     }),
   });
@@ -11898,7 +11902,7 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
   console.log("Жду подтверждение оплаты от Ozon Bank...");
   const result = await waitYakuninRouterPayment(order.order_id, order.claim_token);
   if (!result.openrouter_key && !existingHash) {
-    throw new Error("Оплата подтверждена, но сервер не вернул OpenRouter-compatible ключ. Проверьте backend logs.");
+    throw new Error("Оплата подтверждена, но сервер не вернул ключ, совместимый с OpenRouter. Проверьте backend logs.");
   }
 
   const nextSecrets = await loadSecrets();
@@ -11987,7 +11991,7 @@ async function ensureApiKeyForModelSelection(provider) {
   if (!isManagedApiProvider(provider)) return true;
   if (await getApiKey(provider) && (provider !== "yandexgpt" || await getYandexFolderId())) return true;
   if (provider === "yakunin-router") {
-    console.log("Yakunin-Router нужен для оплаты российской картой и автоматической выдачи OpenRouter-compatible ключа.");
+    console.log("Yakunin-Router нужен для оплаты российской картой и автоматической выдачи ключа, совместимого с OpenRouter.");
     if (!process.stdin.isTTY) return false;
     const ok = await askYesNo("Создать оплату и получить ключ сейчас? [Y/n] ", true);
     if (!ok) return false;
@@ -19018,7 +19022,7 @@ function onboardComponentGroups(status) {
       rows: [
         ["16", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
         ["17", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
-        ["18", "yakunin-router", "Yakunin-Router (Карты РФ)", "оплата российской картой и OpenRouter-compatible ключ"],
+        ["18", "yakunin-router", "Yakunin-Router (Карты РФ)", "оплата российской картой и ключ, совместимый с OpenRouter"],
       ],
     },
     {
@@ -21168,6 +21172,22 @@ async function saveConfig(value) {
     merged.ai.profiles = value.ai.profiles;
   }
   await writeConfig(merged);
+}
+
+async function getInstallationId() {
+  const config = await loadConfig();
+  const current = String(config.client?.installationId || "").trim();
+  if (current) return current;
+
+  const installationId = `iola-${randomUUID()}`;
+  await saveConfig({
+    client: {
+      ...(config.client || {}),
+      installationId,
+      createdAt: new Date().toISOString(),
+    },
+  });
+  return installationId;
 }
 
 async function writeConfig(value) {
