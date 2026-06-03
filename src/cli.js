@@ -3575,6 +3575,7 @@ async function handleYandexCloudConnector(args = []) {
   }
 
   if (action === "open") {
+    printYandexCloudSetupGuide({ includeYandexGpt: true });
     await openUrl("https://console.yandex.cloud/");
     return;
   }
@@ -3585,9 +3586,13 @@ async function handleYandexCloudConnector(args = []) {
 async function setupYandexCloudConnector(options = {}) {
   console.log("Yandex Cloud Connector: геокодинг и YandexGPT.");
   console.log("Геокодер будет включен по умолчанию. YandexGPT можно выбрать в /model после сохранения ключей.");
+  printYandexCloudSetupGuide({ includeYandexGpt: true });
   if (process.stdin.isTTY) {
     const openConsole = await askYesNo("Открыть Yandex Cloud Console для получения ключей? [Y/n] ", true);
-    if (openConsole) await openUrl("https://console.yandex.cloud/");
+    if (openConsole) {
+      console.log("Открыл Yandex Cloud Console. Вернитесь сюда после создания ключей и вставьте их в CLI.");
+      await openUrl("https://console.yandex.cloud/");
+    }
   }
 
   const secrets = await loadSecrets();
@@ -3601,6 +3606,8 @@ async function setupYandexCloudConnector(options = {}) {
     return;
   }
 
+  console.log("");
+  console.log("Вставьте ключ API Геокодера. Если ключ еще создается, оставьте мастер открытым, получите ключ в браузере и вернитесь сюда.");
   const geocoderKey = (await askText(`YANDEX_GEOCODER_API_KEY${currentGeocoder ? " [уже сохранен, Enter - оставить]" : ""}: `)).trim() || currentGeocoder;
   if (!geocoderKey) throw new Error("Для Cloud Connector нужен хотя бы Geocoder API key.");
 
@@ -3617,6 +3624,22 @@ async function setupYandexCloudConnector(options = {}) {
   await saveYandexCloudEnabledServices(setupGpt ? ["geocoder", "yandexgpt"] : ["geocoder"]);
   console.log(`Yandex Cloud Connector сохранен локально: ${SECRETS_FILE}`);
   await printYandexCloudConnectorStatus({ check: true });
+}
+
+function printYandexCloudSetupGuide(options = {}) {
+  console.log("");
+  console.log("Что делать в открывшейся консоли Яндекса:");
+  console.log("1. Войдите в свой Яндекс-аккаунт.");
+  console.log("2. Если Яндекс попросит создать облако или каталог, создайте их. Названия можно оставить простыми: iola-cli и default.");
+  console.log("3. Для геокодера откройте Кабинет разработчика: https://developer.tech.yandex.ru/services/2");
+  console.log("4. Выберите API Геокодера, создайте API key и скопируйте значение ключа.");
+  console.log("5. Вернитесь в это окно CLI и вставьте ключ в поле YANDEX_GEOCODER_API_KEY.");
+  if (options.includeYandexGpt) {
+    console.log("6. Если нужен YandexGPT: в Yandex Cloud откройте каталог, скопируйте ID каталога, затем создайте сервисный аккаунт и API-ключ с правом yc.ai.foundationModels.execute.");
+    console.log("7. После ключа геокодера CLI отдельно спросит, настраивать ли YandexGPT. Можно ответить n и подключить модель позже через /model.");
+  }
+  console.log("Подробная инструкция: https://github.com/adm-iola/iola-cli/wiki/Yandex-Cloud-Connector");
+  console.log("");
 }
 
 async function saveYandexCloudConnectorSecrets({ geocoderApiKey, yandexgptApiKey, folderId }) {
