@@ -1282,11 +1282,15 @@ async function startAgentRawInput() {
 
 async function handleAgentLine(line, state) {
   if (!line.startsWith("/")) {
+    if (/^\d{1,2}$/u.test(line.trim()) && (state.pendingAction?.type === "ufanet_menu" || state.lastCommand?.command === "ufanet")) {
+      state.pendingAction = state.pendingAction?.type === "ufanet_menu" ? state.pendingAction : buildUfanetMenuPendingAction();
+    }
     const pendingAnswer = await handlePendingAgentAction(line, state);
     const answer = pendingAnswer || await aiAsk(state.rawMode ? [line, "--quiet"] : [line], { history: state.history, state });
     state.history.push({ role: "user", content: line });
     state.history.push({ role: "assistant", content: answer });
     if (state.rawMode) state.pendingOutput = answer;
+    else if (pendingAnswer) printAiAnswer(pendingAnswer);
     return false;
   }
 
@@ -1308,6 +1312,10 @@ async function handleAgentLine(line, state) {
   }
 
   if (command === "help") {
+    if (state.pendingAction?.type === "ufanet_menu") {
+      await printUfanetMenu({ agentState: state, pending: true });
+      return false;
+    }
     printAgentHelp();
     return false;
   }
@@ -1941,6 +1949,21 @@ async function handlePendingAgentAction(line, state) {
     state.pendingAction = null;
     const result = await ufanetOpenIntercom(action.id, { confirm: true });
     return formatUfanetOpenResult(result, action);
+  }
+  if (action.type === "ufanet_menu") {
+    const number = Number(text.match(/^\s*(\d{1,2})\s*$/u)?.[1] || 0);
+    if (number === 0) {
+      state.pendingAction = null;
+      return "Выход из меню домофона.";
+    }
+    if (!number || number < 0 || number > action.items.length) {
+      state.pendingAction = buildUfanetMenuPendingAction();
+      return await formatUfanetMenu({ compact: true });
+    }
+    const item = action.items[number - 1];
+    state.pendingAction = null;
+    const answer = await executeUfanetMenuItem(item, state);
+    return answer || "";
   }
   return "";
 }
@@ -3714,8 +3737,25 @@ async function handleUfanet(args = [], agentState = null) {
   const [action = process.stdin.isTTY ? "menu" : "status", target, ...rest] = args;
   const options = parseOptions(rest);
 
-  if (action === "menu" || action === "choose") {
-    await printUfanetMenu();
+  if (action === "menu" || action === "choose" || action === "help") {
+    await printUfanetMenu({ agentState, pending: action !== "help" });
+    return;
+  }
+
+  if (/^\d{1,2}$/u.test(String(action))) {
+    const number = Number(action);
+    const items = getUfanetMenuItems();
+    if (number === 0) {
+      console.log("Выход из меню домофона.");
+      return;
+    }
+    const item = items[number - 1];
+    if (!item) {
+      console.log(formatUfanetMenu({ compact: true }));
+      return;
+    }
+    const answer = await executeUfanetMenuItem(item, agentState);
+    if (answer) console.log(answer);
     return;
   }
 
@@ -3804,28 +3844,88 @@ async function handleUfanet(args = [], agentState = null) {
   iola ufanet delete`);
 }
 
-async function printUfanetMenu() {
+async function printUfanetMenu(options = {}) {
+  if (options.agentState && options.pending) {
+    options.agentState.pendingAction = buildUfanetMenuPendingAction();
+  }
+  console.log(await formatUfanetMenu());
+}
+
+async function formatUfanetMenu(options = {}) {
   const status = await getUfanetStatus();
-  console.log("Мой домофон");
-  printTable([
-    { id: "ufanet", provider: "Уфанет", status: status.configured ? "готово" : "не настроено", command: "iola ufanet setup" },
-    { id: "domru", provider: "Дом.ру", status: "в разработке", command: "iola dom_ru" },
-    { id: "rostelecom", provider: "Ростелеком", status: "в разработке", command: "iola rostelecom" },
-  ], [["id", "ID"], ["provider", "Провайдер"], ["status", "Статус"], ["command", "Команда"]]);
-  console.log("");
-  console.log("Команды Уфанет:");
-  printTable([
-    { command: "/ufanet status", action: "статус подключения" },
-    { command: "/ufanet intercoms", action: "список доступных домофонов и их ID" },
-    { command: "/ufanet open ID", action: "открыть домофон по ID, только после подтверждения" },
-    { command: "/ufanet history", action: "история последних звонков" },
-    { command: "/ufanet links UUID", action: "ссылка/превью записи звонка по UUID" },
-    { command: "/ufanet cameras", action: "список камер и RTSP-ссылок, если доступны" },
-    { command: "/ufanet watch", action: "показывать новые вызовы, пока CLI открыт" },
-    { command: "/ufanet notifications on", action: "включить уведомления о вызовах в настройках" },
-    { command: "/ufanet notifications off", action: "выключить уведомления о вызовах" },
-    { command: "/ufanet delete", action: "удалить локальное подключение Уфанет" },
-  ], [["command", "Команда"], ["action", "Что делает"]]);
+  const lines = [
+    "Мой домофон",
+    `Уфанет: ${status.configured ? "готово" : "не настроено"}; уведомления: ${status.notifications}.`,
+    "Дом.ру: в разработке. Ростелеком: в разработке.",
+    "",
+    "Выберите действие:",
+    ...getUfanetMenuItems().map((item) => `${item.number}. ${item.title}`),
+    "0. Назад",
+    "",
+    "Введите цифру или команду вида `/ufanet 3`. Пока открыт этот раздел, `/help` показывает справку по домофону.",
+  ];
+  return options.compact ? lines.slice(4).join("\n") : lines.join("\n");
+}
+
+function getUfanetMenuItems() {
+  return [
+    { number: 1, key: "open", title: "Открыть домофон" },
+    { number: 2, key: "intercoms", title: "Показать мои домофоны" },
+    { number: 3, key: "history", title: "История звонков" },
+    { number: 4, key: "notifications-on", title: "Включить уведомления о вызовах" },
+    { number: 5, key: "notifications-off", title: "Выключить уведомления" },
+    { number: 6, key: "notifications-status", title: "Статус уведомлений" },
+    { number: 7, key: "cameras", title: "Камеры" },
+    { number: 8, key: "status", title: "Статус подключения" },
+    { number: 9, key: "delete", title: "Удалить подключение Уфанет" },
+  ];
+}
+
+function buildUfanetMenuPendingAction() {
+  return { type: "ufanet_menu", items: getUfanetMenuItems(), createdAt: new Date().toISOString() };
+}
+
+async function executeUfanetMenuItem(item, agentState = null) {
+  if (!item) return "";
+  if (item.key === "open") {
+    const result = await ufanetOpenSmart({ state: agentState });
+    return formatUfanetSmartOpenResult(result);
+  }
+  if (item.key === "intercoms") {
+    const rows = await ufanetGetIntercoms();
+    if (!rows.length) return "Доступные домофоны Уфанет не найдены.";
+    return ["Домофоны Уфанет:", ...rows.map((row, index) => `${index + 1}. ${row.address || row.name || `Домофон #${row.id}`} — ID ${row.id}`)].join("\n");
+  }
+  if (item.key === "history") {
+    const rows = await ufanetGetCallHistory({ page: 1, pageSize: 10 });
+    if (!rows.results?.length) return "В истории Уфанет звонков не найдено.";
+    return ["История звонков Уфанет:", ...rows.results.map((row, index) => `${index + 1}. ${row.calledAt || "-"} — ${row.address || "-"}${row.uuid ? `, UUID ${row.uuid}` : ""}`)].join("\n");
+  }
+  if (item.key === "notifications-on") {
+    await setUfanetNotifications(true);
+    return "Уведомления Уфанет включены. При новом вызове в CLI можно ответить `да` или `нет`.";
+  }
+  if (item.key === "notifications-off") {
+    await setUfanetNotifications(false);
+    return "Уведомления Уфанет выключены.";
+  }
+  if (item.key === "notifications-status") {
+    const status = await getUfanetStatus();
+    return `Уведомления Уфанет: ${status.notifications}, интервал ${status.intervalSeconds} сек.`;
+  }
+  if (item.key === "cameras") {
+    const rows = await ufanetGetCameras();
+    if (!rows.length) return "Камеры Уфанет не найдены.";
+    return ["Камеры Уфанет:", ...rows.slice(0, 10).map((row, index) => `${index + 1}. ${row.title || row.number || "камера"} — ${row.address || "-"}${row.rtspUrl ? `, ${row.rtspUrl}` : ""}`)].join("\n");
+  }
+  if (item.key === "status") {
+    const status = await getUfanetStatus();
+    return `Уфанет: ${status.configured ? "настроен" : "не настроен"}, ${status.enabled ? "включен" : "выключен"}, уведомления ${status.notifications}.`;
+  }
+  if (item.key === "delete") {
+    return "Удаление подключения выполняется явной командой: `/ufanet delete`.";
+  }
+  return "";
 }
 
 async function setupUfanetConnector() {
