@@ -207,6 +207,22 @@ Yandex tools уже доступны: профиль Yandex ID, расширен
 
 Инструкция: [Yandex Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Connector).
 
+Мой домофон:
+
+```bash
+iola ufanet setup
+iola ufanet intercoms
+iola ufanet open ID
+iola ufanet history
+iola ufanet cameras
+iola dom_ru
+iola rostelecom
+```
+
+Уфанет поддерживается как рабочий провайдер: список домофонов, открытие двери после подтверждения, история звонков, записи звонков и камеры/RTSP. Дом.ру и Ростелеком добавлены как видимые направления `в разработке`.
+
+Инструкция: [Мой домофон](https://github.com/adm-iola/iola-cli/wiki/Мой-домофон).
+
 Зарубежные API-ключи:
 
 - OpenAI Platform: регистрация `https://platform.openai.com/`, ключи `https://platform.openai.com/api-keys`;
@@ -236,6 +252,7 @@ iola version --check
 - [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key)
 - [Yandex Cloud Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Cloud-Connector)
 - [Yandex Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Connector)
+- [Мой домофон](https://github.com/adm-iola/iola-cli/wiki/Мой-домофон)
 - [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски)
 - [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей)
 - [Локальный инструментальный агент](https://github.com/adm-iola/iola-cli/wiki/Локальный-инструментальный-агент)
@@ -259,6 +276,7 @@ iola version --check
 - AI-профили для IOLA local, Ollama, YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
 - Yandex Connector: единая точка подключения пользовательских сервисов Яндекса с локальным хранением OAuth-токенов;
 - Yandex Cloud Connector: геокодер, YandexGPT и deeplink маршрута Яндекс Go;
+- Мой домофон Уфанет: домофоны, история звонков, записи, камеры и открытие двери после подтверждения;
 - локальный tool-agent для модели IOLA с tools открытых данных, файлов, браузера и сервисов Яндекса;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - личные облачные диски: Яндекс Диск и Облако Mail.ru для сохранения отчетов, backup и документов;

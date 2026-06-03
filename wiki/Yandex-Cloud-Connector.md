@@ -18,7 +18,7 @@ iola master
 В мастере выберите:
 
 ```text
-12. Yandex Cloud Connector - геокодинг и YandexGPT
+15. Yandex Cloud Connector - геокодинг и YandexGPT
 ```
 
 CLI не просто открывает консоль. Он печатает короткую инструкцию, что делать дальше, и только потом просит вставить ключи.

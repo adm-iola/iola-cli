@@ -14,6 +14,7 @@
 - geo-сценарии для жителей через Yandex Geocoder API;
 - Yandex Connector для пользовательских сервисов Яндекса;
 - Yandex Cloud Connector для геокодера, YandexGPT и deeplink Яндекс Go;
+- Мой домофон Уфанет;
 - личные облачные диски: Яндекс Диск и Облако Mail.ru;
 - подключение публичного MCP-сервера.
 
@@ -35,6 +36,7 @@ iola ask "найди школу 29"
 - [Yandex Geocoder API key](Yandex-Geocoder-API-key)
 - [Yandex Cloud Connector](Yandex-Cloud-Connector)
 - [Yandex Connector](Yandex-Connector)
+- [Мой домофон](Мой-домофон)
 - [Облачные диски](Облачные-диски)
 - [Скиллы для жителей](Скиллы-для-жителей)
 - [Локальный инструментальный агент](Локальный-инструментальный-агент)

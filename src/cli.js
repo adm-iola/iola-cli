@@ -152,6 +152,7 @@ const LOCAL_TOOLS = ["search_data", "search_entities", "resolve_entity_field", "
 const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_view"];
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const USER_SKILL_TOOLS = ["user_skill_create", "user_skill_update", "user_skill_enable", "user_skill_disable", "user_skill_delete", "user_skill_list", "user_skill_templates", "user_skill_validate", "user_skill_preview"];
+const UFANET_TOOLS = ["ufanet_status", "ufanet_intercoms", "ufanet_open_intercom", "ufanet_call_history", "ufanet_call_links", "ufanet_cameras"];
 const YANDEX_TOOLS = [
   "yandex_identity_me",
   "yandex_disk_info",
@@ -251,7 +252,7 @@ const YANDEX_TOOLS = [
   "yandex_cloud_status",
   "yandex_go_deeplink",
 ];
-const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...USER_SKILL_TOOLS];
+const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...UFANET_TOOLS, ...USER_SKILL_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
@@ -281,6 +282,13 @@ const TOOLSETS = {
     permissions: {
       externalApi: true,
       localTools: Object.fromEntries(YANDEX_TOOLS.map((tool) => [tool, true])),
+    },
+  },
+  ufanet: {
+    description: "Мой домофон Уфанет: домофоны, история звонков, камеры и открытие двери после подтверждения.",
+    permissions: {
+      externalApi: true,
+      localTools: Object.fromEntries(UFANET_TOOLS.map((tool) => [tool, true])),
     },
   },
   "local-files-read": {
@@ -436,6 +444,12 @@ const DEFAULT_AI_CONFIG = {
       yandex_mail_search: true,
       yandex_mail_read: true,
       yandex_mail_send: false,
+      ufanet_status: true,
+      ufanet_intercoms: true,
+      ufanet_open_intercom: false,
+      ufanet_call_history: true,
+      ufanet_call_links: true,
+      ufanet_cameras: true,
       yandex_calendar_status: true,
       yandex_calendar_create_event: false,
       yandex_calendar_list: true,
@@ -474,6 +488,14 @@ const DEFAULT_AI_CONFIG = {
   },
   skills: {
     enabled: ["education", "open-data", "geo", "personal-docs", "reports", "local-model", "local-files", "browser-agent", "yandex-services", "user-skills"],
+  },
+  domophones: {
+    activeProvider: "",
+    providers: {
+      ufanet: { enabled: false },
+      domru: { enabled: false, status: "backlog" },
+      rostelecom: { enabled: false, status: "backlog" },
+    },
   },
   cloud: {
     activeProvider: "",
@@ -577,6 +599,9 @@ const SLASH_COMMANDS = [
   { command: "/files status", description: "локальные файловые операции" },
   { command: "/cloud status", description: "облачные диски" },
   { command: "/yandex", description: "выбор сервисов Yandex Connector" },
+  { command: "/ufanet", description: "Мой домофон Уфанет" },
+  { command: "/dom_ru", description: "Мой домофон Дом.ру (в разработке)" },
+  { command: "/rostelecom", description: "Мой домофон Ростелеком (в разработке)" },
   { command: "/archive doctor", description: "архиватор" },
   { command: "/changes list", description: "подготовленные изменения" },
   { command: "/index status", description: "индекс документов" },
@@ -651,6 +676,10 @@ const COMMANDS = new Map([
   ["files", handleFiles],
   ["cloud", handleCloud],
   ["yandex", handleYandex],
+  ["ufanet", handleUfanet],
+  ["dom_ru", handleDomRu],
+  ["domru", handleDomRu],
+  ["rostelecom", handleRostelecom],
   ["archive", handleArchive],
   ["changes", handleChanges],
   ["import", handleImport],
@@ -801,6 +830,7 @@ async function showHelp() {
   iola browser status          браузерный runtime
   iola cloud status            облачные диски
   iola yandex status           Yandex Connector
+  iola ufanet status           Мой домофон Уфанет
   iola mcp status              MCP-подключение
   iola doctor                  диагностика
   iola wiki                    документация
@@ -842,6 +872,9 @@ Usage:
   iola files status|mode|approvals|tree|read|search|write|patch
   iola cloud setup|status|ls|find|upload|download|share|save|backup
   iola yandex setup|menu|status|services|enable|disable|oauth-url|token
+  iola ufanet setup|status|intercoms|open|history|links|cameras|delete
+  iola dom_ru                  Мой домофон Дом.ру (в разработке)
+  iola rostelecom              Мой домофон Ростелеком (в разработке)
   iola archive doctor|list|test|extract|create|index
   iola changes list|show|apply|discard
   iola import file|folder
@@ -3521,6 +3554,344 @@ async function handleYandex(args) {
   iola yandex token set
   iola yandex token delete    удалить локальные токены и настройки коннектора
   iola yandex backlog`);
+}
+
+async function handleDomRu() {
+  console.log("Мой домофон Дом.ру: в разработке.");
+  console.log("Пока доступна заготовка пункта в городских сервисах. API/авторизация будут добавлены после исследования провайдера.");
+}
+
+async function handleRostelecom() {
+  console.log("Мой домофон Ростелеком: в разработке.");
+  console.log("Пока доступна заготовка пункта в городских сервисах. API/авторизация будут добавлены после исследования провайдера.");
+}
+
+async function handleUfanet(args = []) {
+  const [action = process.stdin.isTTY ? "menu" : "status", target, ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "menu" || action === "choose") {
+    await printUfanetMenu();
+    return;
+  }
+
+  if (action === "setup" || action === "connect" || action === "onboard") {
+    await setupUfanetConnector();
+    return;
+  }
+
+  if (action === "status" || action === "doctor" || action === "check") {
+    await printUfanetStatus({ check: action !== "status" || options.check });
+    return;
+  }
+
+  if (action === "intercoms" || action === "list" || action === "ls") {
+    const rows = await ufanetGetIntercoms();
+    printTable(rows, [["id", "ID"], ["name", "Название"], ["address", "Адрес"], ["role", "Роль"], ["blocked", "Блок"]]);
+    return;
+  }
+
+  if (action === "open") {
+    const intercomId = target || options.id || options.intercom;
+    if (!intercomId) throw new Error("Укажите ID домофона. Пример: iola ufanet open 123");
+    const ok = options.yes || options.confirm || await confirm(`Открыть домофон Уфанет #${intercomId}? [y/N] `);
+    if (!ok) {
+      console.log("Открытие отменено.");
+      return;
+    }
+    printKeyValue(await ufanetOpenIntercom(intercomId, { confirm: true }));
+    return;
+  }
+
+  if (action === "history" || action === "calls") {
+    const rows = await ufanetGetCallHistory({ page: target || options.page || 1, pageSize: options.limit || options["page-size"] || 10 });
+    printTable(rows.results || [], [["uuid", "UUID"], ["calledAt", "Когда"], ["address", "Адрес"], ["porch", "Подъезд"], ["flat", "Кв"]]);
+    if (rows.count !== undefined) console.log(`Всего: ${rows.count}`);
+    return;
+  }
+
+  if (action === "links" || action === "record" || action === "recording") {
+    const uuid = target || options.uuid;
+    if (!uuid) throw new Error("Укажите UUID звонка. Пример: iola ufanet links UUID");
+    printKeyValue(await ufanetGetCallLinks(uuid));
+    return;
+  }
+
+  if (action === "cameras" || action === "camera") {
+    const rows = await ufanetGetCameras();
+    printTable(rows, [["number", "Номер"], ["title", "Название"], ["address", "Адрес"], ["type", "Тип"], ["rtspUrl", "RTSP"]]);
+    return;
+  }
+
+  if (action === "delete" || action === "disconnect" || action === "remove") {
+    const ok = !process.stdin.isTTY || await askYesNo("Удалить локальные данные подключения Уфанет? [y/N] ", false);
+    if (!ok) {
+      console.log("Удаление отменено.");
+      return;
+    }
+    await deleteUfanetConnector();
+    return;
+  }
+
+  throw new Error(`Команды ufanet:
+  iola ufanet setup
+  iola ufanet status|doctor
+  iola ufanet intercoms
+  iola ufanet open ID
+  iola ufanet history [--limit 10]
+  iola ufanet links UUID
+  iola ufanet cameras
+  iola ufanet delete`);
+}
+
+async function printUfanetMenu() {
+  const status = await getUfanetStatus();
+  console.log("Мой домофон");
+  printTable([
+    { id: "ufanet", provider: "Уфанет", status: status.configured ? "готово" : "не настроено", command: "iola ufanet setup" },
+    { id: "domru", provider: "Дом.ру", status: "в разработке", command: "iola dom_ru" },
+    { id: "rostelecom", provider: "Ростелеком", status: "в разработке", command: "iola rostelecom" },
+  ], [["id", "ID"], ["provider", "Провайдер"], ["status", "Статус"], ["command", "Команда"]]);
+}
+
+async function setupUfanetConnector() {
+  console.log("Мой домофон Уфанет.");
+  console.log("Нужны номер договора и пароль от сервиса Уфанет. Они сохраняются только локально в ~/.iola/secrets.json.");
+  if (!process.stdin.isTTY) {
+    console.log("Интерактивный ввод недоступен. Используйте env UFANET_CONTRACT и UFANET_PASSWORD или запустите iola ufanet setup в терминале.");
+    return;
+  }
+  const secrets = await loadSecrets();
+  const currentContract = secrets.ufanet?.contract || "";
+  const contract = (await askText(`Номер договора${currentContract ? " [Enter - оставить]" : ""}: `)).trim() || currentContract;
+  const password = (await askText(`Пароль Уфанет${secrets.ufanet?.password ? " [Enter - оставить]" : ""}: `)).trim() || secrets.ufanet?.password || "";
+  if (!contract || !password) throw new Error("Для Уфанет нужны номер договора и пароль.");
+  await saveUfanetConnectorSecrets({ contract, password });
+  await enableUfanetConnector();
+  console.log(`Уфанет сохранен локально: ${SECRETS_FILE}`);
+  await printUfanetStatus({ check: true });
+}
+
+async function saveUfanetConnectorSecrets({ contract, password }) {
+  const secrets = await loadSecrets();
+  secrets.ufanet = {
+    ...(secrets.ufanet || {}),
+    contract,
+    password,
+    updatedAt: new Date().toISOString(),
+  };
+  await saveSecrets(secrets);
+}
+
+async function enableUfanetConnector() {
+  const config = await loadConfig();
+  await saveConfig({
+    domophones: {
+      ...(config.domophones || {}),
+      activeProvider: "ufanet",
+      providers: {
+        ...(config.domophones?.providers || {}),
+        ufanet: { ...(config.domophones?.providers?.ufanet || {}), enabled: true, updatedAt: new Date().toISOString() },
+        domru: { ...(config.domophones?.providers?.domru || {}), enabled: false, status: "backlog" },
+        rostelecom: { ...(config.domophones?.providers?.rostelecom || {}), enabled: false, status: "backlog" },
+      },
+    },
+    toolsets: { ...(config.toolsets || {}), enabled: [...new Set([...(config.toolsets?.enabled || []), "ufanet"])] },
+    skills: { ...(config.skills || {}), enabled: [...new Set([...(config.skills?.enabled || []), "ufanet-intercom"])] },
+  });
+}
+
+async function deleteUfanetConnector() {
+  const secrets = await loadSecrets();
+  delete secrets.ufanet;
+  await saveSecrets(secrets);
+  const config = await loadConfig();
+  const enabledToolsets = (config.toolsets?.enabled || []).filter((item) => item !== "ufanet");
+  const enabledSkills = (config.skills?.enabled || []).filter((item) => item !== "ufanet-intercom");
+  await saveConfig({
+    domophones: {
+      ...(config.domophones || {}),
+      activeProvider: config.domophones?.activeProvider === "ufanet" ? "" : config.domophones?.activeProvider || "",
+      providers: {
+        ...(config.domophones?.providers || {}),
+        ufanet: { ...(config.domophones?.providers?.ufanet || {}), enabled: false },
+      },
+    },
+    toolsets: { ...(config.toolsets || {}), enabled: enabledToolsets },
+    skills: { ...(config.skills || {}), enabled: enabledSkills },
+  });
+  console.log("Подключение Уфанет удалено локально.");
+}
+
+async function printUfanetStatus(options = {}) {
+  const status = await getUfanetStatus();
+  printKeyValue({
+    configured: status.configured ? "yes" : "no",
+    enabled: status.enabled ? "yes" : "no",
+    contract: status.contract || "-",
+    source: status.source || "-",
+  });
+  if (options.check) {
+    if (!status.configured) {
+      console.log("Уфанет: не настроен. Запустите: iola ufanet setup");
+      return;
+    }
+    try {
+      const rows = await ufanetGetIntercoms();
+      console.log(`Уфанет: ok, домофонов: ${rows.length}`);
+    } catch (error) {
+      console.log(`Уфанет: ошибка проверки: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+async function getUfanetStatus() {
+  const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
+  const contract = process.env.UFANET_CONTRACT || secrets.ufanet?.contract || "";
+  const password = process.env.UFANET_PASSWORD || secrets.ufanet?.password || "";
+  return {
+    configured: Boolean(contract && password),
+    enabled: Boolean(config.domophones?.providers?.ufanet?.enabled || (config.toolsets?.enabled || []).includes("ufanet")),
+    contract: contract ? maskSecret(contract, 2) : "",
+    source: contract && process.env.UFANET_CONTRACT ? "env" : contract ? "local" : "",
+  };
+}
+
+async function executeUfanetTool(tool, args = {}) {
+  if (tool === "ufanet_status") return getUfanetStatus();
+  if (tool === "ufanet_intercoms") return ufanetGetIntercoms();
+  if (tool === "ufanet_open_intercom") return ufanetOpenIntercom(args.id || args.intercomId || args.intercom_id, args);
+  if (tool === "ufanet_call_history") return ufanetGetCallHistory({ page: args.page || 1, pageSize: args.pageSize || args.page_size || args.limit || 10 });
+  if (tool === "ufanet_call_links") return ufanetGetCallLinks(args.uuid || args.id);
+  if (tool === "ufanet_cameras") return ufanetGetCameras();
+  throw new Error(`Ufanet tool неизвестен: ${tool}`);
+}
+
+async function ufanetCredentials() {
+  const secrets = await loadSecrets();
+  const contract = process.env.UFANET_CONTRACT || secrets.ufanet?.contract || "";
+  const password = process.env.UFANET_PASSWORD || secrets.ufanet?.password || "";
+  if (!contract || !password) throw new Error("Уфанет не подключен. Запустите: iola ufanet setup");
+  return { contract, password, token: secrets.ufanet?.token || "", tokenUpdatedAt: secrets.ufanet?.tokenUpdatedAt || "" };
+}
+
+async function ufanetEnsureToken(options = {}) {
+  const credentials = await ufanetCredentials();
+  if (credentials.token && !options.force) return credentials.token;
+  const response = await fetch("https://dom.ufanet.ru/api/v1/auth/auth_by_contract/", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ contract: credentials.contract, password: credentials.password }),
+    signal: AbortSignal.timeout(30000),
+  });
+  const payload = await parseJsonResponse(response, "Уфанет авторизация");
+  const token = payload?.token?.refresh || payload?.token?.access || payload?.refresh || payload?.access || "";
+  if (!token) throw new Error("Уфанет не вернул JWT token.");
+  if (!process.env.UFANET_CONTRACT && !process.env.UFANET_PASSWORD) {
+    const secrets = await loadSecrets();
+    secrets.ufanet = { ...(secrets.ufanet || {}), token, tokenUpdatedAt: new Date().toISOString() };
+    await saveSecrets(secrets);
+  }
+  return token;
+}
+
+async function ufanetRequest(method, apiPath, options = {}) {
+  let token = await ufanetEnsureToken();
+  let response = await fetch(new URL(apiPath, "https://dom.ufanet.ru/"), {
+    method,
+    headers: { accept: "application/json", "content-type": "application/json", Authorization: `JWT ${token}` },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: AbortSignal.timeout(Number(options.timeout || 30000)),
+  });
+  if (response.status === 401) {
+    token = await ufanetEnsureToken({ force: true });
+    response = await fetch(new URL(apiPath, "https://dom.ufanet.ru/"), {
+      method,
+      headers: { accept: "application/json", "content-type": "application/json", Authorization: `JWT ${token}` },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(Number(options.timeout || 30000)),
+    });
+  }
+  return parseJsonResponse(response, `Уфанет ${apiPath}`);
+}
+
+async function parseJsonResponse(response, label) {
+  const text = await response.text().catch(() => "");
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = text;
+    }
+  }
+  if (!response.ok) {
+    const message = typeof payload === "string" ? payload.slice(0, 300) : JSON.stringify(payload).slice(0, 300);
+    throw new Error(`${label}: ${response.status} ${response.statusText}${message ? ` ${message}` : ""}`);
+  }
+  return payload;
+}
+
+async function ufanetGetIntercoms() {
+  const payload = await ufanetRequest("GET", "api/v0/skud/shared/");
+  return normalizeItems(payload).map((item) => ({
+    id: item.id,
+    name: item.custom_name || item.string_view || `Домофон ${item.id}`,
+    address: item.string_view || "",
+    role: item.role?.name || "",
+    camera: item.camera || item.cctv_number || "",
+    blocked: item.is_blocked ? "yes" : "no",
+    disableButton: Boolean(item.disable_button),
+    inactivityReason: item.inactivity_reason || "",
+    raw: item,
+  }));
+}
+
+async function ufanetOpenIntercom(intercomId, options = {}) {
+  if (!options.confirm) throw new Error("Для открытия домофона нужен аргумент confirm=true.");
+  if (!intercomId) throw new Error("ID домофона обязателен.");
+  const payload = await ufanetRequest("GET", `api/v0/skud/shared/${encodeURIComponent(intercomId)}/open/`, { timeout: 30000 });
+  return { provider: "ufanet", status: payload?.result ? "opened" : "not-opened", id: Number(intercomId), result: Boolean(payload?.result) };
+}
+
+async function ufanetGetCallHistory(options = {}) {
+  const page = Math.max(1, Number(options.page || 1));
+  const pageSize = Math.max(1, Math.min(100, Number(options.pageSize || 10)));
+  const url = `api/v1/skuds/call-history/?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`;
+  const payload = await ufanetRequest("GET", url, { timeout: 30000 });
+  return {
+    count: payload?.count || 0,
+    next: payload?.next || "",
+    previous: payload?.previous || "",
+    results: normalizeItems(payload?.results || []).map((item) => ({
+      uuid: item.uuid,
+      calledAt: item.called_at || item.calledAt || "",
+      address: item.address || "",
+      porch: item.porch || "",
+      flat: item.flat || "",
+      cameraNumber: item.camera_number || "",
+      timezone: item.timezone || "",
+    })),
+  };
+}
+
+async function ufanetGetCallLinks(uuid) {
+  if (!uuid) throw new Error("UUID звонка обязателен.");
+  const payload = await ufanetRequest("POST", "api/v1/cctv/history/", { body: { uuid: String(uuid) }, timeout: 30000 });
+  return { provider: "ufanet", uuid: String(uuid), url: payload?.url || "", preview: payload?.preview || "" };
+}
+
+async function ufanetGetCameras() {
+  const payload = await ufanetRequest("GET", "api/v1/cctv", { timeout: 30000 });
+  return normalizeItems(payload).map((item) => ({
+    number: item.number || "",
+    title: item.title || "",
+    address: item.address || "",
+    latitude: item.latitude,
+    longitude: item.longitude,
+    type: item.type || "",
+    rtspUrl: item.servers?.domain && item.number && item.token_l ? `rtsp://${item.servers.domain}/${item.number}?token=${item.token_l}` : "",
+  }));
 }
 
 function printYandexServices(options = {}) {
@@ -14545,7 +14916,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
     "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_mail_meeting_pack {uid,start,end,send,confirm}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}, yandex_contact_full_pack {contact,start,end,send,confirm}, yandex_cloud_status {}, yandex_go_deeplink {from,to,tariff}, yandex_daily_digest {save,email}, yandex_calendar_reminders_tick {}, yandex_disk_maintenance_tick {}.",
-    "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event.",
+    "Ufanet tools: ufanet_status {}, ufanet_intercoms {}, ufanet_open_intercom {id,confirm}, ufanet_call_history {page,limit}, ufanet_call_links {uuid}, ufanet_cameras {}.",
+    "Опасные Yandex/Ufanet tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event, ufanet_open_intercom.",
     "User skill tools: user_skill_create {name,description,instructions,tools,template,enable,confirm}, user_skill_update {name,instructions,tools,confirm}, user_skill_templates {}, user_skill_validate {name}, user_skill_preview {name,template,instructions}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай или меняй skill только по явной просьбе пользователя и с confirm=true.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
@@ -14602,6 +14974,16 @@ function parseJsonObject(text) {
   return JSON.parse(match[0]);
 }
 
+function extractUfanetIntercomId(text) {
+  return String(text || "").match(/(?:домофон|id|#|№)\s*(\d{1,10})/iu)?.[1]
+    || String(text || "").match(/\b(\d{2,10})\b/u)?.[1]
+    || "";
+}
+
+function extractUuid(text) {
+  return String(text || "").match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu)?.[0] || "";
+}
+
 function inferToolPlan(question, options = {}) {
   const normalized = question.toLocaleLowerCase("ru-RU");
   if (isCurrentDateTimeQuestion(normalized)) {
@@ -14634,6 +15016,26 @@ function inferToolPlan(question, options = {}) {
   }
   if (/(яндекс|yandex)/iu.test(normalized) && /(аккаунт|профил|логин|почт[аы]|email|e-mail|кто подключен)/iu.test(normalized)) {
     return { steps: [{ tool: "yandex_identity_me", args: {} }] };
+  }
+  if (/(уфанет|домофон|домофонн|подъезд|звонк|камера|rtsp)/iu.test(normalized)) {
+    if (/(дом\.?ру|dom\.?ru)/iu.test(normalized)) return { directAnswer: "Мой домофон Дом.ру пока в разработке. Сейчас реализован Уфанет: /ufanet." };
+    if (/(ростелеком|rostelecom)/iu.test(normalized)) return { directAnswer: "Мой домофон Ростелеком пока в разработке. Сейчас реализован Уфанет: /ufanet." };
+    if (/(открой|открыть|пусти|впусти|двер)/iu.test(normalized)) {
+      const id = extractUfanetIntercomId(question);
+      if (!id) return { directAnswer: "Для открытия домофона нужен ID. Посмотрите доступные домофоны командой /ufanet intercoms, затем: /ufanet open ID." };
+      return { steps: [{ tool: "ufanet_open_intercom", args: { id, confirm: true } }] };
+    }
+    if (/(истори|звонк|кто\s+звонил|последн)/iu.test(normalized) && !/(ссылк|запис|видео)/iu.test(normalized)) {
+      return { steps: [{ tool: "ufanet_call_history", args: { limit: 10 } }] };
+    }
+    if (/(ссылк|запис|видео|preview|превью)/iu.test(normalized)) {
+      const uuid = extractUuid(question);
+      if (!uuid) return { directAnswer: "Для ссылки на запись нужен UUID звонка. Сначала посмотрите историю: /ufanet history." };
+      return { steps: [{ tool: "ufanet_call_links", args: { uuid } }] };
+    }
+    if (/(камер|rtsp|видео)/iu.test(normalized)) return { steps: [{ tool: "ufanet_cameras", args: {} }] };
+    if (/(статус|подключ|аккаунт|договор)/iu.test(normalized)) return { steps: [{ tool: "ufanet_status", args: {} }] };
+    return { steps: [{ tool: "ufanet_intercoms", args: {} }] };
   }
   if (/(яндекс|диск|облак)/iu.test(normalized)) {
     const diskPath = extractCloudPath(question) || CLOUD_DEFAULT_REMOTE_DIR;
@@ -15057,7 +15459,7 @@ function formatToolExecutionError(error, plan) {
 }
 
 function availableToolNames(options = {}) {
-  const names = new Set([...LOCAL_TOOLS, ...YANDEX_TOOLS, ...USER_SKILL_TOOLS]);
+  const names = new Set([...LOCAL_TOOLS, ...YANDEX_TOOLS, ...UFANET_TOOLS, ...USER_SKILL_TOOLS]);
   if (options.files) {
     for (const tool of FILE_TOOLS) names.add(tool);
   }
@@ -15124,6 +15526,11 @@ async function executeToolPlan(plan, options = {}) {
       } else if (YANDEX_TOOLS.includes(step.tool)) {
         await assertPermission("externalApi");
         const result = await executeYandexTool(step.tool, step.args || {});
+        current = Array.isArray(result) ? result : [result];
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (UFANET_TOOLS.includes(step.tool)) {
+        await assertPermission("externalApi");
+        const result = await executeUfanetTool(step.tool, step.args || {});
         current = Array.isArray(result) ? result : [result];
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (USER_SKILL_TOOLS.includes(step.tool)) {
@@ -15281,6 +15688,12 @@ function formatToolResult(result, options) {
       return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
     }
     if (row.date && row.time) return `Сегодня ${row.date}, ${row.time}.`;
+    if (row.provider === "ufanet" && (row.status === "opened" || row.status === "not-opened")) return `Уфанет: домофон #${row.id} ${row.status === "opened" ? "открыт" : "не открылся"}.`;
+    if (row.provider === "ufanet" && row.uuid && (row.url || row.preview)) return `Уфанет: запись звонка ${row.uuid}\nСсылка: ${row.url || "-"}\nПревью: ${row.preview || "-"}`;
+    if (row.rtspUrl) return `Камера Уфанет ${row.title || row.number}: ${row.address || "-"}\nRTSP: ${row.rtspUrl}`;
+    if (row.calledAt && row.uuid) return `Звонок Уфанет: ${row.calledAt}, ${row.address || "-"}, подъезд ${row.porch || "-"}, UUID ${row.uuid}`;
+    if (row.id && (row.address || row.role || row.blocked !== undefined)) return `Домофон Уфанет #${row.id}: ${row.name || row.address || "-"}${row.blocked === "yes" ? " (заблокирован)" : ""}`;
+    if (row.configured !== undefined && row.enabled !== undefined && row.contract !== undefined) return `Уфанет: ${row.configured ? "настроен" : "не настроен"}, ${row.enabled ? "включен" : "выключен"}${row.contract ? `, договор ${row.contract}` : ""}.`;
     if (row.status === "calendar-event-created" || row.status === "telemost-event-created" || row.status === "telemost-calendar-fallback-created") {
       return `${row.status === "calendar-event-created" ? "Событие" : "Телемост"} создан: ${row.title || row.uid}${row.start ? `, ${row.start}` : ""}${row.telemost?.joinUrl ? `\nСсылка: ${row.telemost.joinUrl}` : row.status === "telemost-calendar-fallback-created" ? "\nПрямая ссылка Телемоста через API недоступна, создано событие календаря." : ""}`;
     }
@@ -16669,6 +17082,9 @@ async function onboard(args = []) {
   if (components.includes("policy")) await handlePolicy(["use", "analyst"]);
   if (components.includes("archive")) await ensureArchiveTool({ install: true });
   if (components.includes("city-data")) await checkHealth([]);
+  if (components.includes("ufanet")) await setupUfanetConnector();
+  if (components.includes("domru")) await handleDomRu();
+  if (components.includes("rostelecom")) await handleRostelecom();
   if (components.includes("iola")) {
     await setupIolaLocal(["--yes"]);
   }
@@ -16757,14 +17173,17 @@ async function chooseOnboardComponents(status = null) {
       5: "browser",
       6: "city-data",
       7: "codex-mcp",
-      8: "iola",
-      9: "ollama",
-      10: "gigachat",
-      11: "yandex",
-      12: "yandex-cloud",
-      13: "openai",
-      14: "openrouter",
-      15: "codex",
+      8: "ufanet",
+      9: "domru",
+      10: "rostelecom",
+      11: "iola",
+      12: "ollama",
+      13: "gigachat",
+      14: "yandex",
+      15: "yandex-cloud",
+      16: "openai",
+      17: "openrouter",
+      18: "codex",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -16802,6 +17221,9 @@ async function getOnboardComponentStatus() {
     codex: Boolean(codexVersion !== "не найден" && readiness.codex),
     "codex-mcp": false,
     "city-data": cityDataHealth === "доступен",
+    ufanet: Boolean((process.env.UFANET_CONTRACT && process.env.UFANET_PASSWORD) || (secrets.ufanet?.contract && secrets.ufanet?.password)),
+    domru: false,
+    rostelecom: false,
     archive: Boolean(archive),
     index: false,
     browser: browser.installed === "yes",
@@ -16826,40 +17248,43 @@ function onboardComponentGroups(status) {
       rows: [
         ["6", "city-data", "Открытые данные Йошкар-Олы", "API/MCP gateway доступен"],
         ["7", "codex-mcp", "Подключить городские данные к Codex", "MCP для Codex"],
+        ["8", "ufanet", "Мой домофон Уфанет", "договор и пароль хранятся локально"],
+        ["9", "domru", "Мой домофон Дом.ру", "в разработке"],
+        ["10", "rostelecom", "Мой домофон Ростелеком", "в разработке"],
       ],
     },
     {
       title: "Локальный AI",
       rows: [
-        ["8", "iola", "IOLA локальная модель", "локальная модель найдена"],
-        ["9", "ollama", "Ollama", "опциональный локальный runtime"],
+        ["11", "iola", "IOLA локальная модель", "локальная модель найдена"],
+        ["12", "ollama", "Ollama", "опциональный локальный runtime"],
       ],
     },
     {
       title: "Российские AI и сервисы",
       rows: [
-        ["10", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
-        ["11", "yandex", "Yandex Connector", "Диск, Почта, Календарь, Контакты"],
-        ["12", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
+        ["13", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
+        ["14", "yandex", "Yandex Connector", "Диск, Почта, Календарь, Контакты"],
+        ["15", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
       ],
     },
     {
       title: "Зарубежные AI",
       rows: [
-        ["13", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
-        ["14", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+        ["16", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
+        ["17", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
       ],
     },
     {
       title: "Codex",
       rows: [
-        ["15", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
+        ["18", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
       ],
     },
   ];
   return groups.map((group) => ({
     ...group,
-    rows: group.rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" })),
+    rows: group.rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: key === "domru" || key === "rostelecom" ? "в разработке" : status[key] ? "готово" : "не настроено" })),
   }));
 }
 
@@ -16872,12 +17297,12 @@ function defaultOnboardSelection(status) {
   if (!status.workspace) defaults.push("1");
   if (!status.policy) defaults.push("2");
   if (!status.archive) defaults.push("3");
-  if (!status.iola) defaults.push("8");
+  if (!status.iola) defaults.push("11");
   return defaults.length ? defaults : ["1", "2"];
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "city-data", 7: "codex-mcp", 8: "iola", 9: "ollama", 10: "gigachat", 11: "yandex", 12: "yandex-cloud", 13: "openai", 14: "openrouter", 15: "codex" };
+  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "city-data", 7: "codex-mcp", 8: "ufanet", 9: "domru", 10: "rostelecom", 11: "iola", 12: "ollama", 13: "gigachat", 14: "yandex", 15: "yandex-cloud", 16: "openai", 17: "openrouter", 18: "codex" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -16891,7 +17316,7 @@ function parseOptions(args) {
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app" || arg === "--tariff" || arg === "--class" || arg === "--level" || arg === "--ref" || arg === "--lang") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app" || arg === "--tariff" || arg === "--class" || arg === "--level" || arg === "--ref" || arg === "--lang" || arg === "--id" || arg === "--uuid" || arg === "--intercom" || arg === "--page-size") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {
@@ -19093,6 +19518,14 @@ function mergeConfig(base, override) {
         ...(override.cloud?.providers || {}),
       },
     },
+    domophones: {
+      ...base.domophones,
+      ...(override.domophones || {}),
+      providers: {
+        ...(base.domophones?.providers || {}),
+        ...(override.domophones?.providers || {}),
+      },
+    },
     yandex: {
       ...base.yandex,
       ...(override.yandex || {}),
@@ -19186,6 +19619,12 @@ function sanitizeConfig(config) {
     next.skills = next.skills || {};
     next.skills.enabled = [...new Set([...(next.skills.enabled || []), "yandex-services"])];
   }
+  if (next.domophones?.providers?.ufanet?.enabled) {
+    next.toolsets = next.toolsets || {};
+    next.toolsets.enabled = [...new Set([...(next.toolsets.enabled || []), "ufanet"])];
+    next.skills = next.skills || {};
+    next.skills.enabled = [...new Set([...(next.skills.enabled || []), "ufanet-intercom"])];
+  }
   const localProfile = next.ai?.profiles?.local;
   if (localProfile?.provider === "iola") {
     if (!localProfile.runtime || localProfile.model === "iola-router-1b") {
@@ -19233,6 +19672,9 @@ function validateConfig(config) {
   if (config.cloud?.activeProvider && !["yandex-disk", "mailru-cloud"].includes(config.cloud.activeProvider)) {
     errors.push(`cloud.activeProvider неизвестен: ${config.cloud.activeProvider}`);
   }
+  if (config.domophones?.activeProvider && !["ufanet", "domru", "rostelecom"].includes(config.domophones.activeProvider)) {
+    errors.push(`domophones.activeProvider неизвестен: ${config.domophones.activeProvider}`);
+  }
   for (const service of config.yandex?.enabledServices || []) {
     if (!YANDEX_CONNECTOR_SERVICES[service]) errors.push(`yandex.enabledServices содержит неизвестный сервис: ${service}`);
   }
@@ -19253,6 +19695,7 @@ function configSchema() {
       toolsets: { available: Object.keys(TOOLSETS) },
       files: { modes: ["locked", "read-only", "workspace-write", "full-access"], approvals: ["never", "on-write", "on-danger", "always"] },
       cloud: { providers: ["yandex-disk", "mailru-cloud"], root: CLOUD_DEFAULT_REMOTE_DIR },
+      domophones: { providers: ["ufanet", "domru", "rostelecom"] },
       yandex: { services: Object.keys(YANDEX_CONNECTOR_SERVICES), statuses: ["ready", "research", "separate", "backlog"] },
       skills: { enabled: "array of skill names" },
       daemon: { host: "127.0.0.1", port: DAEMON_PORT },
