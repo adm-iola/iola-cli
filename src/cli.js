@@ -11945,7 +11945,7 @@ async function setupYakuninRouterPayment({ topup = false } = {}) {
     },
   });
 
-  console.log(`Yakunin-Router готов. Лимит: ${nextSecrets.yakuninRouter.limitUsd || units} у.е.`);
+  console.log(`Yakunin-Router готов. Текущий лимит: ${nextSecrets.yakuninRouter.limitUsd || units} у.е.`);
   return true;
 }
 
