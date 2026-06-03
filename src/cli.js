@@ -98,25 +98,25 @@ const YANDEX_CONNECTOR_SERVICES = {
     hint: "встречи через календарное событие, если поддерживается",
   },
   cloud: {
-    title: "Yandex Cloud",
+    title: "Yandex Cloud Connector",
     category: "cloud-platform",
     scope: "",
-    status: "separate",
-    hint: "YandexGPT, Geocoder, SpeechKit, Vision, IAM и folder ID",
+    status: "ready",
+    hint: "геокодинг и YandexGPT через ключи Yandex Cloud",
   },
   maps: {
-    title: "Яндекс Карты",
+    title: "Яндекс Геокодер",
     category: "maps",
     scope: "",
-    status: "separate",
-    hint: "геокодер, маршруты и ссылки на карты через отдельный API key",
+    status: "ready",
+    hint: "адреса, координаты, маршруты и ссылки на карты",
   },
   taxi: {
     title: "Яндекс Go / Такси",
     category: "mobility",
     scope: "",
-    status: "backlog",
-    hint: "только подготовка маршрута/deep link, без заказа и оплаты",
+    status: "ready",
+    hint: "deeplink и маршрут; заказ через API ожидает clid/apikey",
   },
   market: {
     title: "Яндекс Маркет",
@@ -248,6 +248,8 @@ const YANDEX_TOOLS = [
   "yandex_daily_digest",
   "yandex_calendar_reminders_tick",
   "yandex_disk_maintenance_tick",
+  "yandex_cloud_status",
+  "yandex_go_deeplink",
 ];
 const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...USER_SKILL_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
@@ -3433,6 +3435,16 @@ async function handleYandex(args) {
     return;
   }
 
+  if (action === "cloud" || action === "cloud-connector" || action === "yc") {
+    await handleYandexCloudConnector([target, ...rest].filter(Boolean));
+    return;
+  }
+
+  if (action === "go" || action === "taxi" || action === "такси") {
+    await handleYandexGo([target, ...rest].filter(Boolean));
+    return;
+  }
+
   if (action === "mail-watch" || action === "mailwatch" || action === "watch-mail") {
     await handleYandexMailWatch([target, ...rest].filter(Boolean));
     return;
@@ -3493,6 +3505,11 @@ async function handleYandex(args) {
   iola yandex menu
   iola yandex status|doctor
   iola yandex services
+  iola yandex cloud setup|status|doctor|delete
+  iola yandex cloud enable geocoder yandexgpt
+  iola yandex cloud disable yandexgpt
+  iola yandex go link --from "Адрес" --to "Адрес" [--tariff econom]
+  iola yandex go open --from "Адрес" --to "Адрес" [--tariff econom]
   iola yandex mail-watch on|off|status|tick [--minutes 5]
   iola yandex daily-digest on|off|status|tick [--time 09:00] [--email]
   iola yandex calendar-reminders on|off|status|tick [--minutes 15]
@@ -3525,6 +3542,332 @@ function printYandexServices(options = {}) {
     ["scope", "Scope"],
     ["hint", "Суть"],
   ]);
+}
+
+async function handleYandexCloudConnector(args = []) {
+  const [action = "status", ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "setup" || action === "connect" || action === "onboard") {
+    await setupYandexCloudConnector(options);
+    return;
+  }
+
+  if (action === "status" || action === "doctor" || action === "check") {
+    await printYandexCloudConnectorStatus({ check: action !== "status" || options.check });
+    return;
+  }
+
+  if (action === "enable" || action === "disable") {
+    const services = options._.length ? options._ : rest.filter((item) => item && !String(item).startsWith("--"));
+    await updateYandexCloudEnabledServices(services, action === "enable");
+    return;
+  }
+
+  if (action === "delete" || action === "disconnect" || action === "remove") {
+    const ok = !process.stdin.isTTY || await askYesNo("Удалить локальные ключи и настройки Yandex Cloud Connector? [y/N] ", false);
+    if (!ok) {
+      console.log("Удаление отменено.");
+      return;
+    }
+    await deleteYandexCloudConnector();
+    return;
+  }
+
+  if (action === "open") {
+    await openUrl("https://console.yandex.cloud/");
+    return;
+  }
+
+  throw new Error("Команды: iola yandex cloud setup | status | doctor | enable geocoder yandexgpt | disable yandexgpt | delete");
+}
+
+async function setupYandexCloudConnector(options = {}) {
+  console.log("Yandex Cloud Connector: геокодинг и YandexGPT.");
+  console.log("Геокодер будет включен по умолчанию. YandexGPT можно выбрать в /model после сохранения ключей.");
+  if (process.stdin.isTTY) {
+    const openConsole = await askYesNo("Открыть Yandex Cloud Console для получения ключей? [Y/n] ", true);
+    if (openConsole) await openUrl("https://console.yandex.cloud/");
+  }
+
+  const secrets = await loadSecrets();
+  const currentGeocoder = secrets.yandexGeocoder?.apiKey || secrets.yandexCloud?.geocoderApiKey || "";
+  const currentGptKey = secrets.yandexgpt?.apiKey || secrets.yandexCloud?.yandexgptApiKey || "";
+  const currentFolderId = secrets.yandexgpt?.folderId || secrets.yandexCloud?.folderId || "";
+
+  if (!process.stdin.isTTY) {
+    await saveYandexCloudEnabledServices(["geocoder"]);
+    console.log("Интерактивный ввод ключей недоступен. Запустите: iola yandex cloud setup");
+    return;
+  }
+
+  const geocoderKey = (await askText(`YANDEX_GEOCODER_API_KEY${currentGeocoder ? " [уже сохранен, Enter - оставить]" : ""}: `)).trim() || currentGeocoder;
+  if (!geocoderKey) throw new Error("Для Cloud Connector нужен хотя бы Geocoder API key.");
+
+  const setupGpt = await askYesNo(`Настроить YandexGPT сейчас${currentGptKey && currentFolderId ? " (уже сохранен)" : ""}? [y/N] `, Boolean(currentGptKey && currentFolderId));
+  let yandexgptApiKey = currentGptKey;
+  let folderId = currentFolderId;
+  if (setupGpt) {
+    yandexgptApiKey = (await askText(`YANDEXGPT_API_KEY${currentGptKey ? " [Enter - оставить]" : ""}: `)).trim() || currentGptKey;
+    folderId = (await askText(`YANDEXGPT_FOLDER_ID${currentFolderId ? " [Enter - оставить]" : ""}: `)).trim() || currentFolderId;
+    if (!yandexgptApiKey || !folderId) throw new Error("Для YandexGPT нужны API key и folder ID.");
+  }
+
+  await saveYandexCloudConnectorSecrets({ geocoderApiKey: geocoderKey, yandexgptApiKey, folderId });
+  await saveYandexCloudEnabledServices(setupGpt ? ["geocoder", "yandexgpt"] : ["geocoder"]);
+  console.log(`Yandex Cloud Connector сохранен локально: ${SECRETS_FILE}`);
+  await printYandexCloudConnectorStatus({ check: true });
+}
+
+async function saveYandexCloudConnectorSecrets({ geocoderApiKey, yandexgptApiKey, folderId }) {
+  const secrets = await loadSecrets();
+  secrets.yandexCloud = {
+    ...(secrets.yandexCloud || {}),
+    geocoderApiKey: geocoderApiKey || secrets.yandexCloud?.geocoderApiKey || "",
+    yandexgptApiKey: yandexgptApiKey || secrets.yandexCloud?.yandexgptApiKey || "",
+    folderId: folderId || secrets.yandexCloud?.folderId || "",
+    updatedAt: new Date().toISOString(),
+  };
+  if (geocoderApiKey) secrets.yandexGeocoder = { ...(secrets.yandexGeocoder || {}), apiKey: geocoderApiKey };
+  if (yandexgptApiKey || folderId) {
+    secrets.yandexgpt = {
+      ...(secrets.yandexgpt || {}),
+      apiKey: yandexgptApiKey || secrets.yandexgpt?.apiKey || "",
+      folderId: folderId || secrets.yandexgpt?.folderId || "",
+    };
+  }
+  await saveSecrets(secrets);
+}
+
+async function saveYandexCloudEnabledServices(services) {
+  const config = await loadConfig();
+  const normalized = normalizeYandexCloudServiceList(services);
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      cloudConnector: {
+        ...(config.yandex?.cloudConnector || {}),
+        enabledServices: normalized,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  });
+}
+
+async function updateYandexCloudEnabledServices(rawServices, enabled) {
+  const config = await loadConfig();
+  const current = new Set(config.yandex?.cloudConnector?.enabledServices || ["geocoder"]);
+  for (const service of normalizeYandexCloudServiceList(rawServices)) {
+    if (enabled) current.add(service);
+    else current.delete(service);
+  }
+  if (current.size > 0 && !current.has("geocoder")) current.add("geocoder");
+  await saveYandexCloudEnabledServices([...current]);
+  console.log(`Yandex Cloud services: ${[...current].join(", ") || "-"}`);
+}
+
+function normalizeYandexCloudServiceList(services = []) {
+  const aliases = {
+    geo: "geocoder",
+    geocoder: "geocoder",
+    maps: "geocoder",
+    map: "geocoder",
+    "yandex-geocoder": "geocoder",
+    gpt: "yandexgpt",
+    yandexgpt: "yandexgpt",
+    "yandex-gpt": "yandexgpt",
+    model: "yandexgpt",
+    models: "yandexgpt",
+  };
+  return [...new Set([].concat(services || []).map((item) => aliases[String(item || "").toLocaleLowerCase("ru-RU")] || "").filter(Boolean))];
+}
+
+async function printYandexCloudConnectorStatus(options = {}) {
+  const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
+  const enabled = new Set(config.yandex?.cloudConnector?.enabledServices || []);
+  const geocoderKey = process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY || secrets.yandexCloud?.geocoderApiKey || secrets.yandexGeocoder?.apiKey || "";
+  const gptKey = process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY || secrets.yandexCloud?.yandexgptApiKey || secrets.yandexgpt?.apiKey || "";
+  const folderId = process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexCloud?.folderId || secrets.yandexgpt?.folderId || "";
+  const rows = [
+    { service: "geocoder", enabled: enabled.has("geocoder") ? "yes" : "no", configured: geocoderKey ? "yes" : "no", source: geocoderKey ? "local/env" : "-", hint: "адреса и координаты" },
+    { service: "yandexgpt", enabled: enabled.has("yandexgpt") ? "yes" : "no", configured: gptKey && folderId ? "yes" : "no", source: gptKey && folderId ? "local/env" : "-", hint: "модели YandexGPT" },
+  ];
+  printTable(rows, [
+    ["service", "Сервис"],
+    ["enabled", "Вкл"],
+    ["configured", "Настроен"],
+    ["source", "Ключ"],
+    ["hint", "Суть"],
+  ]);
+  if (options.check) {
+    await checkYandexGeocoderKey({ print: true });
+    if (gptKey && folderId) console.log("YandexGPT: ключ и folder ID найдены.");
+    else console.log("YandexGPT: не настроен.");
+  }
+}
+
+async function deleteYandexCloudConnector() {
+  const secrets = await loadSecrets();
+  delete secrets.yandexCloud;
+  delete secrets.yandexGeocoder;
+  delete secrets.yandexgpt;
+  await saveSecrets(secrets);
+  const config = await loadConfig();
+  await saveConfig({
+    yandex: {
+      ...(config.yandex || {}),
+      cloudConnector: { enabledServices: [], updatedAt: new Date().toISOString() },
+    },
+  });
+  console.log("Yandex Cloud Connector удален локально.");
+}
+
+async function handleYandexGo(args = []) {
+  const [action = "link", ...rest] = args;
+  const options = parseOptions(rest);
+  if (action === "link" || action === "deeplink" || action === "url") {
+    await ensureYandexGoGeocoderReady();
+    const result = await buildYandexGoDeeplinkFromOptions(options);
+    printYandexGoDeeplinkResult(result);
+    return;
+  }
+  if (action === "open" || action === "prepare" || action === "route") {
+    await ensureYandexGoGeocoderReady();
+    const result = await buildYandexGoDeeplinkFromOptions(options);
+    printYandexGoDeeplinkResult(result);
+    await openUrl(result.url);
+    return;
+  }
+  if (action === "status") {
+    printKeyValue({
+      deeplink: "ready",
+      priceApi: "ожидает clid/apikey от Яндекса",
+      orderApi: "не подключен",
+    });
+    return;
+  }
+  throw new Error('Команды: iola yandex go link --from "Адрес" --to "Адрес" [--tariff econom] | open --from "Адрес" --to "Адрес"');
+}
+
+async function ensureYandexGoGeocoderReady() {
+  if (await getYandexGeocoderKey()) return true;
+  throw new Error([
+    "Для Yandex Go deeplink нужен ключ Yandex Geocoder API: адреса нужно превратить в координаты.",
+    "Откройте мастер настройки и запустите Yandex Cloud Connector (геокодинг и YandexGPT):",
+    "  iola master",
+    "или напрямую:",
+    "  iola yandex cloud setup",
+    "После подключения повторите команду такси.",
+  ].join("\n"));
+}
+
+async function buildYandexGoDeeplinkFromOptions(options = {}) {
+  const from = options.from || options._?.[0] || "";
+  const to = options.to || options._?.[1] || "";
+  if (!from || !to) throw new Error('Укажите маршрут: iola yandex go link --from "Медведево, Школьная 15" --to "Медведево, Советская 20"');
+  const fromPoint = await resolveYandexGoPoint(from);
+  const toPoint = await resolveYandexGoPoint(to);
+  const tariff = normalizeYandexGoTariff(options.tariff || options.class || options.level || "econom");
+  return {
+    from,
+    to,
+    fromPoint,
+    toPoint,
+    tariff,
+    url: buildYandexGoDeeplink({
+      fromPoint,
+      toPoint,
+      tariff,
+      ref: options.ref || "iola-cli",
+      lang: options.lang || "ru",
+    }),
+  };
+}
+
+async function resolveYandexGoPoint(query) {
+  const parsed = parseLonLat(query);
+  if (parsed) return { lon: parsed.lon, lat: parsed.lat, label: `${parsed.lat}, ${parsed.lon}`, address: "" };
+  const point = await callYandexGeocoder(query);
+  const coords = parseCoordinates(point?.coordinates);
+  if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lon)) throw new Error(`Не смог получить координаты: ${query}`);
+  return { lon: coords.lon, lat: coords.lat, label: point.name || query, address: point.address || "" };
+}
+
+function parseLonLat(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/u);
+  if (!match) return null;
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+  if (Math.abs(first) <= 90 && Math.abs(second) > 90) return { lat: first, lon: second };
+  return { lon: first, lat: second };
+}
+
+function normalizeYandexGoTariff(value) {
+  const text = String(value || "").toLocaleLowerCase("ru-RU").replace(/\s+/g, "");
+  const aliases = {
+    economy: "econom",
+    econom: "econom",
+    эконом: "econom",
+    comfort: "business",
+    комфорт: "business",
+    business: "business",
+    comfortplus: "comfortplus",
+    "комфорт+": "comfortplus",
+    komfortplus: "comfortplus",
+    minivan: "minivan",
+    минивен: "minivan",
+    vip: "vip",
+    бизнес: "vip",
+    детский: "econom",
+    child: "econom",
+    children: "econom",
+  };
+  return aliases[text] || "econom";
+}
+
+function buildYandexGoDeeplink({ fromPoint, toPoint, tariff = "econom", ref = "iola-cli", lang = "ru" }) {
+  const url = new URL("https://3.redirect.appmetrica.yandex.com/route");
+  url.searchParams.set("start-lat", String(fromPoint.lat));
+  url.searchParams.set("start-lon", String(fromPoint.lon));
+  url.searchParams.set("end-lat", String(toPoint.lat));
+  url.searchParams.set("end-lon", String(toPoint.lon));
+  url.searchParams.set("tariffClass", tariff);
+  url.searchParams.set("level", tariff);
+  url.searchParams.set("ref", ref);
+  url.searchParams.set("lang", lang);
+  url.searchParams.set("appmetrica_tracking_id", "1178268795219780156");
+  return url.toString();
+}
+
+function printYandexGoDeeplinkResult(result) {
+  console.log(formatYandexGoDeeplinkResult(result));
+}
+
+function formatYandexGoDeeplinkResult(result) {
+  return [
+    `Откуда: ${result.fromPoint.address || result.from}`,
+    `Куда: ${result.toPoint.address || result.to}`,
+    `Тариф: ${result.tariff}`,
+    `Ссылка Яндекс Go: ${result.url}`,
+    "Детское кресло и повышенный спрос deeplink не кодирует напрямую; это выбирается/проверяется в интерфейсе Яндекс Go или через taxi_info после получения clid/apikey.",
+  ].join("\n");
+}
+
+function extractYandexGoRouteFromText(text) {
+  const source = String(text || "").trim();
+  const tariffMatch = source.match(/(эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*|econom|business|comfortplus|minivan|vip)/iu);
+  const cleaned = source
+    .replace(/^(?:построй|создай|дай|открой|сделай|подготовь|вызови|закажи)\s+/iu, "")
+    .replace(/\b(?:яндекс\s*go|яндекс\s*го|такси|маршрут|ссылк[ау]?|диплинк|deeplink)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = cleaned.match(/(?:от|из|с)\s+(.+?)\s+(?:до|в|на)\s+(.+)$/iu);
+  if (!match) return { from: "", to: "", tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
+  const from = match[1].replace(/[,.;]\s*$/u, "").trim();
+  const to = match[2].replace(/[,.;]\s*(?:тариф|эконом|комфорт\+?|комфорт плюс|бизнес|минивен|детск\w*).*$/iu, "").trim();
+  return { from, to, tariff: tariffMatch ? normalizeYandexGoTariff(tariffMatch[1]) : "econom" };
 }
 
 async function handleYandexMailWatch(args = []) {
@@ -3777,9 +4120,12 @@ async function chooseYandexServicesMenu() {
   }
   const config = await loadConfig();
   const serviceIds = getYandexConnectorMenuServiceIds();
-  const deleteNumber = serviceIds.length + 1;
+  const cloudNumber = serviceIds.length + 1;
+  const goNumber = serviceIds.length + 2;
+  const deleteNumber = serviceIds.length + 3;
   const enabled = new Set(config.yandex?.enabledServices?.length ? config.yandex.enabledServices : ["identity", "disk"]);
   const authState = await getYandexServiceAuthState();
+  const cloudStatus = await getYandexCloudConnectorSummary();
   console.log("Функции Яндекса.");
   console.log("Выберите номера функций через запятую:");
   serviceIds.forEach((id, index) => {
@@ -3789,6 +4135,8 @@ async function chooseYandexServicesMenu() {
     const authLabel = auth?.hasToken ? "подключено" : (auth?.authorized ? "нужен вход" : "нет прав");
     console.log(`${index + 1}. [${marker}] ${service.title} - ${service.hint} (${service.status}, ${authLabel})`);
   });
+  console.log(`${cloudNumber}. Yandex Cloud Connector - геокодинг и YandexGPT (${cloudStatus})`);
+  console.log(`${goNumber}. Yandex Go / Такси - deeplink и маршрут (готово, заказ через API ожидает clid/apikey)`);
   console.log(`${deleteNumber}. Удалить подключение-коннектор`);
   console.log("0. Отмена");
   const defaults = serviceIds.map((id, index) => enabled.has(id) ? String(index + 1) : "").filter(Boolean);
@@ -3808,6 +4156,17 @@ async function chooseYandexServicesMenu() {
     await deleteYandexConnectorToken();
     return;
   }
+  if (selectedNumbers.includes(String(cloudNumber))) {
+    if (selectedNumbers.length > 1) throw new Error("Yandex Cloud Connector выбирается отдельно, без других пунктов.");
+    await chooseYandexCloudConnectorMenu();
+    return;
+  }
+  if (selectedNumbers.includes(String(goNumber))) {
+    if (selectedNumbers.length > 1) throw new Error("Yandex Go выбирается отдельно, без других пунктов.");
+    await handleYandexGo(["status"]);
+    console.log('Для маршрута: iola yandex go open --from "Адрес" --to "Адрес" --tariff econom');
+    return;
+  }
   const selected = selectedNumbers.map((item) => {
     const index = Number(item) - 1;
     if (!Number.isInteger(index) || index < 0 || index >= serviceIds.length) {
@@ -3825,8 +4184,49 @@ async function chooseYandexServicesMenu() {
 
 function getYandexConnectorMenuServiceIds() {
   return Object.entries(YANDEX_CONNECTOR_SERVICES)
-    .filter(([, service]) => service.status === "ready" || service.status === "research")
+    .filter(([, service]) => (service.status === "ready" || service.status === "research") && service.scope)
     .map(([id]) => id);
+}
+
+async function chooseYandexCloudConnectorMenu() {
+  const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
+  const enabled = new Set(config.yandex?.cloudConnector?.enabledServices || ["geocoder"]);
+  const geocoderConfigured = Boolean(process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY || secrets.yandexCloud?.geocoderApiKey || secrets.yandexGeocoder?.apiKey);
+  const gptConfigured = Boolean((process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY || secrets.yandexCloud?.yandexgptApiKey || secrets.yandexgpt?.apiKey)
+    && (process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexCloud?.folderId || secrets.yandexgpt?.folderId));
+  console.log("Yandex Cloud Connector.");
+  console.log("1. Настроить/обновить ключи");
+  console.log(`2. [${enabled.has("geocoder") ? "✓" : " "}] Геокодер (${geocoderConfigured ? "ключ есть" : "ключ не задан"})`);
+  console.log(`3. [${enabled.has("yandexgpt") ? "✓" : " "}] YandexGPT (${gptConfigured ? "ключ и folder ID есть" : "не настроено"})`);
+  console.log("4. Проверить подключение");
+  console.log("5. Удалить Cloud Connector");
+  console.log("0. Назад");
+  const answer = (await askText("Номер: ")).trim();
+  if (answer === "0" || !answer) return;
+  if (answer === "1") return setupYandexCloudConnector({});
+  if (answer === "2") {
+    if (enabled.has("geocoder")) await updateYandexCloudEnabledServices(["geocoder"], false);
+    else await updateYandexCloudEnabledServices(["geocoder"], true);
+    return;
+  }
+  if (answer === "3") {
+    if (enabled.has("yandexgpt")) await updateYandexCloudEnabledServices(["yandexgpt"], false);
+    else await updateYandexCloudEnabledServices(["yandexgpt"], true);
+    return;
+  }
+  if (answer === "4") return printYandexCloudConnectorStatus({ check: true });
+  if (answer === "5") return handleYandexCloudConnector(["delete"]);
+}
+
+async function getYandexCloudConnectorSummary() {
+  const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
+  const enabled = config.yandex?.cloudConnector?.enabledServices || [];
+  const geocoder = Boolean(process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY || secrets.yandexCloud?.geocoderApiKey || secrets.yandexGeocoder?.apiKey);
+  const gpt = Boolean((process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY || secrets.yandexCloud?.yandexgptApiKey || secrets.yandexgpt?.apiKey)
+    && (process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexCloud?.folderId || secrets.yandexgpt?.folderId));
+  if (geocoder && gpt) return `готово: ${enabled.join(", ") || "geocoder"}`;
+  if (geocoder) return "частично: geocoder";
+  return "не настроено";
 }
 
 async function updateYandexEnabledServices(rawServices, enabled) {
@@ -4382,6 +4782,19 @@ async function executeYandexTool(tool, args = {}) {
   if (tool === "yandex_daily_digest") return yandexDailyDigestTick({ ...args, force: true });
   if (tool === "yandex_calendar_reminders_tick") return yandexCalendarRemindersTick({ ...args, force: true });
   if (tool === "yandex_disk_maintenance_tick") return yandexDiskMaintenanceTick({ ...args, force: true });
+  if (tool === "yandex_cloud_status") {
+    const [secrets, config] = await Promise.all([loadSecrets(), loadConfig()]);
+    return {
+      geocoder: Boolean(process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY || secrets.yandexCloud?.geocoderApiKey || secrets.yandexGeocoder?.apiKey),
+      yandexgpt: Boolean((process.env.YANDEXGPT_API_KEY || process.env.YANDEX_CLOUD_API_KEY || secrets.yandexCloud?.yandexgptApiKey || secrets.yandexgpt?.apiKey)
+        && (process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID || secrets.yandexCloud?.folderId || secrets.yandexgpt?.folderId)),
+      enabled: config.yandex?.cloudConnector?.enabledServices || [],
+    };
+  }
+  if (tool === "yandex_go_deeplink") {
+    await ensureYandexGoGeocoderReady();
+    return buildYandexGoDeeplinkFromOptions({ from: args.from, to: args.to, tariff: args.tariff || args.class || args.level, ref: args.ref, lang: args.lang });
+  }
   throw new Error(`Yandex tool неизвестен: ${tool}`);
 }
 
@@ -9532,6 +9945,17 @@ async function chooseOpenRouterModel() {
 async function ensureApiKeyForModelSelection(provider) {
   if (!["openai", "openrouter", "yandexgpt", "gigachat"].includes(provider)) return true;
   if (await getApiKey(provider) && (provider !== "yandexgpt" || await getYandexFolderId())) return true;
+  if (provider === "yandexgpt") {
+    console.log("YandexGPT требует Yandex Cloud Connector: API key и folder ID.");
+    if (!process.stdin.isTTY) return false;
+    const ok = await askYesNo("Включить Yandex Cloud Connector сейчас? [y/N] ", false);
+    if (!ok) {
+      console.log("Возврат в меню выбора модели.");
+      return false;
+    }
+    await setupYandexCloudConnector({});
+    return Boolean(await getApiKey("yandexgpt") && await getYandexFolderId());
+  }
   const label = {
     openai: "OpenAI",
     openrouter: "OpenRouter",
@@ -10368,7 +10792,7 @@ async function getYandexGeocoderKey() {
     return process.env.YANDEX_GEOCODER_API_KEY || process.env.YANDEX_MAPS_API_KEY;
   }
   const secrets = await loadSecrets();
-  return secrets.yandexGeocoder?.apiKey || "";
+  return secrets.yandexCloud?.geocoderApiKey || secrets.yandexGeocoder?.apiKey || "";
 }
 
 function openDatabase() {
@@ -12027,6 +12451,17 @@ async function buildYandexDirectAnswer(question, history = []) {
       ].join("\n");
     }
 
+    if (/(яндекс\s*go|яндекс\s*го|такси|deeplink|диплинк|ссылк.*маршрут)/iu.test(normalized)
+      && /(маршрут|ссылк|откуда|куда|поездк|такси|от\s+.+\s+до\s+)/iu.test(normalized)) {
+      const route = extractYandexGoRouteFromText(question);
+      if (!route.from || !route.to) {
+        return 'Для ссылки Яндекс Go нужны два адреса. Пример: "такси от Медведево, Школьная 15 до Медведево, Советская 20".';
+      }
+      await ensureYandexGoGeocoderReady();
+      const result = await buildYandexGoDeeplinkFromOptions({ from: route.from, to: route.to, tariff: route.tariff });
+      return formatYandexGoDeeplinkResult(result);
+    }
+
     if (/(дайджест|сводк)/iu.test(normalized) && /(яндекс|почт|календар|контакт|диск)/iu.test(normalized)) {
       if (/(включ|запусти|начни|поставь|создай)/iu.test(normalized) && /(кажд|ежеднев|авто|регуляр)/iu.test(normalized)) {
         const time = question.match(/(\d{1,2}:\d{2})/u)?.[1] || "09:00";
@@ -12424,7 +12859,9 @@ async function buildYandexDirectAnswer(question, history = []) {
       return ["Яндекс Контакты:", ...rows.map((row, index) => `${index + 1}. ${formatYandexContact(row)}`)].join("\n");
     }
   } catch (error) {
-    return `Не смог выполнить запрос к сервисам Яндекса: ${error instanceof Error ? error.message : String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
+    if (/^(?:Для Yandex Go deeplink|Для Cloud Connector нужен|Для YandexGPT нужны)/u.test(message)) return message;
+    return `Не смог выполнить запрос к сервисам Яндекса: ${message}`;
   }
   return "";
 }
@@ -12663,7 +13100,7 @@ async function buildUserSkillDirectAnswer(question) {
 }
 
 function isYandexServiceQuestion(normalized) {
-  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост|документ|docs|360|спам|чернов|отправлен|исходящ|корзин)/iu.test(String(normalized || ""));
+  return /(яндекс|яндес|язндекс|язндекс|яндкс|yandex|почт|письм|календар|контакт|телемост|документ|docs|360|спам|чернов|отправлен|исходящ|корзин|такси|яндекс\s*go|яндекс\s*го|геокод|cloud|клауд)/iu.test(String(normalized || ""));
 }
 
 function isYandexIdentityQuestion(normalized) {
@@ -13883,7 +14320,7 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     `Доступные tools: ${availableToolNames(options).join(", ")}.`,
     "Схема: {\"steps\":[{\"tool\":\"search_data\",\"args\":{\"dataset\":\"schools|kindergartens|all\",\"query\":\"text\",\"limit\":10}}]}",
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
-    "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_mail_meeting_pack {uid,start,end,send,confirm}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}, yandex_contact_full_pack {contact,start,end,send,confirm}, yandex_daily_digest {save,email}, yandex_calendar_reminders_tick {}, yandex_disk_maintenance_tick {}.",
+    "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_mail_meeting_pack {uid,start,end,send,confirm}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}, yandex_contact_full_pack {contact,start,end,send,confirm}, yandex_cloud_status {}, yandex_go_deeplink {from,to,tariff}, yandex_daily_digest {save,email}, yandex_calendar_reminders_tick {}, yandex_disk_maintenance_tick {}.",
     "Опасные Yandex tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event.",
     "User skill tools: user_skill_create {name,description,instructions,tools,template,enable,confirm}, user_skill_update {name,instructions,tools,confirm}, user_skill_templates {}, user_skill_validate {name}, user_skill_preview {name,template,instructions}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай или меняй skill только по явной просьбе пользователя и с confirm=true.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
@@ -14627,6 +15064,8 @@ function formatToolResult(result, options) {
     if (row.status === "calendar-event-deleted") return `Событие удалено: ${row.title || row.uid}`;
     if (row.status === "mail-meeting-pack-created") return `Пакет по письму #${row.uid} создан.\nПисьмо: ${row.saved}\nСсылка: ${row.publicUrl}\nQR-код: ${row.qrPublicUrl}\nСобытие: ${row.event || "-"}`;
     if (row.status === "contact-full-pack-created") return `Пакет контакта создан: ${row.contact}\nПапка: ${row.folder}\nДокумент: ${row.doc}\nСсылка: ${row.publicUrl}\nQR-код: ${row.qrPublicUrl}\nСобытие: ${row.event || "-"}`;
+    if (row.url && row.fromPoint && row.toPoint) return formatYandexGoDeeplinkResult(row);
+    if (row.geocoder !== undefined && row.yandexgpt !== undefined && row.enabled) return `Yandex Cloud Connector:\nГеокодер: ${row.geocoder ? "настроен" : "нет"}\nYandexGPT: ${row.yandexgpt ? "настроен" : "нет"}\nВключено: ${row.enabled.join(", ") || "-"}`;
     if (row.enabled && row.text && (row.unread !== undefined || row.events !== undefined)) return row.text;
     if (row.status === "ambiguous" && row.events) return [`Нашел несколько событий. Уточните:`, ...row.events.map((event, index) => `${index + 1}. ${event.title || event.uid} — ${event.startIso || event.start || "-"}`)].join("\n");
     if (row.status === "not-found" && row.kind === "calendar-event") return `Событие не найдено: ${row.query}`;
@@ -15757,6 +16196,7 @@ async function getApiKey(provider) {
   }
 
   const secrets = await loadSecrets();
+  if (provider === "yandexgpt") return secrets.yandexCloud?.yandexgptApiKey || secrets.yandexgpt?.apiKey || "";
   return secrets[provider]?.apiKey || "";
 }
 
@@ -15765,7 +16205,7 @@ async function getYandexFolderId() {
     return process.env.YANDEXGPT_FOLDER_ID || process.env.YANDEX_CLOUD_FOLDER_ID;
   }
   const secrets = await loadSecrets();
-  return secrets.yandexgpt?.folderId || "";
+  return secrets.yandexCloud?.folderId || secrets.yandexgpt?.folderId || "";
 }
 
 async function listLayers(args) {
@@ -16025,23 +16465,14 @@ async function onboard(args = []) {
       await chooseAndSaveApiModel("openrouter");
     }
   }
-  if (components.includes("yandexgpt")) {
-    await aiSetup(["yandexgpt"]);
-    if (process.stdin.isTTY) {
-      await setAiKey("yandexgpt");
-      await chooseAndSaveApiModel("yandexgpt");
-    }
+  if (components.includes("yandex-cloud")) {
+    await setupYandexCloudConnector({});
   }
   if (components.includes("gigachat")) {
     await aiSetup(["gigachat"]);
     if (process.stdin.isTTY) {
       await setAiKey("gigachat");
       await chooseAndSaveApiModel("gigachat");
-    }
-  }
-  if (components.includes("yandex-geocoder")) {
-    if (process.stdin.isTTY) {
-      await setYandexGeocoderKey();
     }
   }
   if (components.includes("cloud")) {
@@ -16093,7 +16524,7 @@ async function chooseOnboardComponents(status = null) {
       1: "workspace",
       2: "policy",
       3: "iola",
-      4: "yandexgpt",
+      4: "yandex-cloud",
       5: "gigachat",
       6: "openai",
       7: "openrouter",
@@ -16103,8 +16534,8 @@ async function chooseOnboardComponents(status = null) {
       11: "index",
       12: "browser",
       13: "ollama",
-      14: "yandex-geocoder",
-      15: "cloud",
+      14: "cloud",
+      15: "yandex",
       16: "yandex",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
@@ -16136,7 +16567,7 @@ async function getOnboardComponentStatus() {
     policy: policyReady,
     iola: Boolean(readiness.iola),
     ollama: Boolean(ollamaVersion && readiness.ollama),
-    yandexgpt: Boolean(readiness.yandexgpt),
+    "yandex-cloud": Boolean(yandexGeocoderKey || readiness.yandexgpt),
     gigachat: Boolean(readiness.gigachat),
     openai: Boolean(readiness.openai),
     openrouter: Boolean(readiness.openrouter),
@@ -16145,7 +16576,6 @@ async function getOnboardComponentStatus() {
     archive: Boolean(archive),
     index: false,
     browser: browser.installed === "yes",
-    "yandex-geocoder": Boolean(yandexGeocoderKey),
     cloud: Object.keys(cloudSecrets).length > 0,
     yandex: isYandexConnectorFullyConnected(secrets),
   };
@@ -16156,7 +16586,7 @@ function onboardComponentRows(status) {
     ["1", "workspace", "workspace и контекст", "рабочая папка, IOLA.md и .iola/context.md"],
     ["2", "policy", "policy analyst", "разрешения и профиль аналитика"],
     ["3", "iola", "IOLA локальная модель", "локальная модель найдена"],
-    ["4", "yandexgpt", "YandexGPT API", "ключ и folder ID сохранены или есть в env"],
+    ["4", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
     ["5", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
     ["6", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
     ["7", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
@@ -16166,9 +16596,8 @@ function onboardComponentRows(status) {
     ["11", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
     ["12", "browser", "Browser runtime", "Playwright/Chromium установлен"],
     ["13", "ollama", "Ollama", "опциональный локальный runtime"],
-    ["14", "yandex-geocoder", "Yandex Geocoder API", "ключ геокодера сохранен или есть в env"],
-    ["15", "cloud", "Облачный диск", "Яндекс Диск или Облако Mail.ru"],
-    ["16", "yandex", "Yandex Connector", "единый вход и категории сервисов Яндекса"],
+    ["14", "cloud", "Облачный диск", "Яндекс Диск или Облако Mail.ru"],
+    ["15", "yandex", "Yandex Connector", "единый вход и категории сервисов Яндекса"],
   ];
   return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
 }
@@ -16183,7 +16612,7 @@ function defaultOnboardSelection(status) {
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandexgpt", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "yandex-geocoder", 15: "cloud", 16: "yandex" };
+  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "yandex-cloud", 5: "gigachat", 6: "openai", 7: "openrouter", 8: "codex", 9: "codex-mcp", 10: "archive", 11: "index", 12: "browser", 13: "ollama", 14: "cloud", 15: "yandex", 16: "yandex" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
@@ -16197,7 +16626,7 @@ function parseOptions(args) {
     } else if (arg === "--check" || arg === "--upgrade-node") {
       result.check = true;
       result[arg.slice(2)] = true;
-    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app") {
+    } else if (arg === "--limit" || arg === "--offset" || arg === "--search" || arg === "--replace" || arg === "--text" || arg === "--path" || arg === "--depth" || arg === "--max-bytes" || arg === "--query" || arg === "--where" || arg === "--columns" || arg === "--inn" || arg === "--model" || arg === "--provider" || arg === "--profile" || arg === "--name" || arg === "--source" || arg === "--command" || arg === "--prompt" || arg === "--description" || arg === "--instructions" || arg === "--allowed-tools" || arg === "--tool" || arg === "--uses" || arg === "--template" || arg === "--minutes" || arg === "--days" || arg === "--time" || arg === "--horizon" || arg === "--base-url" || arg === "--repo" || arg === "--model-dir" || arg === "--sandbox" || arg === "--approval" || arg === "--cwd" || arg === "--codex-profile" || arg === "--format" || arg === "--output" || arg === "--schema" || arg === "--session" || arg === "--temperature" || arg === "--config" || arg === "--dataset" || arg === "--save" || arg === "--reasoning" || arg === "--agent" || arg === "--scope" || arg === "--selector" || arg === "--url" || arg === "--timeout" || arg === "--wait" || arg === "--viewport" || arg === "--press" || arg === "--script" || arg === "--auth-url" || arg === "--token-url" || arg === "--userinfo-url" || arg === "--client-id" || arg === "--client-secret" || arg === "--redirect-url" || arg === "--redirect-host" || arg === "--redirect-port" || arg === "--redirect-path" || arg === "--debug-file" || arg === "--from" || arg === "--to" || arg === "--radius" || arg === "--address" || arg === "--token" || arg === "--app" || arg === "--tariff" || arg === "--class" || arg === "--level" || arg === "--ref" || arg === "--lang") {
       result[arg.slice(2)] = args[index + 1];
       index += 1;
     } else {

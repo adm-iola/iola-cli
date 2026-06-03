@@ -29,7 +29,15 @@ iola ask "найди школы на Петрова"
 
 ### YandexGPT
 
-Для CLI нужны две вещи: API key и ID каталога Yandex Cloud.
+Рекомендуемый путь - через `Yandex Cloud Connector`:
+
+```bash
+iola yandex cloud setup
+```
+
+В интерактивном агенте можно выбрать YandexGPT через `/model`. Если Cloud Connector еще не подключен, CLI предложит открыть настройку.
+
+Для CLI нужны две вещи: API key и ID каталога Yandex Cloud. Тот же мастер Cloud Connector может дополнительно сохранить ключ геокодера, чтобы geo-skills и Яндекс Go deeplink работали сразу.
 
 Пошаговая настройка:
 
@@ -73,6 +81,7 @@ CLI попросит ввести:
 После сохранения ключа выберите профиль и модель:
 
 ```bash
+iola yandex cloud enable yandexgpt
 iola ai setup yandexgpt --model yandexgpt-lite/latest
 ```
 
@@ -91,6 +100,8 @@ iola ai setup yandexgpt --model yandexgpt-lite/latest
 - `yandexgpt/rc` - release candidate.
 
 CLI также понимает env-переменные `YANDEXGPT_API_KEY` или `YANDEX_CLOUD_API_KEY`, а для каталога - `YANDEXGPT_FOLDER_ID` или `YANDEX_CLOUD_FOLDER_ID`.
+
+Подробно про единый путь геокодера и YandexGPT: [Yandex Cloud Connector](Yandex-Cloud-Connector).
 
 ### GigaChat
 

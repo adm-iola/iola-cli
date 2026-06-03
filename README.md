@@ -144,12 +144,12 @@ CLI использует модель `iola-router:qwen3-1.7b-v4-q8` из GGUF-�
 
 Российские AI:
 
-- Yandex AI Studio / YandexGPT: документация `https://yandex.cloud/ru/docs/foundation-models/`, аутентификация `https://yandex.cloud/ru/docs/ai-studio/api-ref/authentication`, тарифы `https://yandex.cloud/ru/docs/foundation-models/pricing`;
+- Yandex AI Studio / YandexGPT: рекомендуется подключать через `Yandex Cloud Connector` в мастере настройки или командой `iola yandex cloud setup`; документация `https://yandex.cloud/ru/docs/foundation-models/`, аутентификация `https://yandex.cloud/ru/docs/ai-studio/api-ref/authentication`, тарифы `https://yandex.cloud/ru/docs/foundation-models/pricing`;
 - GigaChat: документация `https://developers.sber.ru/docs/ru/gigachat/overview`, получение токена `https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-token`, тарифы `https://developers.sber.ru/docs/ru/gigachat/tariffs`.
 
 ```bash
-iola ai key set yandexgpt
-iola ai setup yandexgpt --model yandexgpt-lite/latest
+iola yandex cloud setup
+/model
 
 iola ai key set gigachat
 iola ai setup gigachat --model GigaChat-2
@@ -160,6 +160,7 @@ iola ai setup gigachat --model GigaChat-2
 Геокодер для пользовательских geo-skills:
 
 ```bash
+iola yandex cloud setup
 iola geo key set yandex
 iola geo key doctor
 iola geo geocode "Йошкар-Ола, улица Петрова, 15"
@@ -171,7 +172,7 @@ iola geo route-context "школа 7"
 iola geo services "Йошкар-Ола, улица Петрова, 15"
 ```
 
-Инструкция по получению ключа: [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key).
+Рекомендуемый путь подключения геокодера и YandexGPT: [Yandex Cloud Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Cloud-Connector). Отдельная инструкция по ручному ключу геокодера: [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key).
 Список сценариев: [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей).
 
 Облачные диски для личных документов:
@@ -198,11 +199,11 @@ iola yandex menu
 iola yandex status
 ```
 
-Yandex Connector использует две встроенные OAuth-группы: `IOLA CLI A` для Yandex ID, Диска, Почты и документов через Диск; `IOLA CLI B` для Календаря, Контактов и Телемоста через календарь. Такси, Маркет и Доставка записаны в backlog только как сценарии подготовки ссылки/маршрута/списка без заказа и оплаты.
+Yandex Connector использует две встроенные OAuth-группы: `IOLA CLI A` для Yandex ID, Диска, Почты и документов через Диск; `IOLA CLI B` для Календаря, Контактов и Телемоста через календарь. Yandex Cloud Connector подключается отдельно для геокодера и YandexGPT. Яндекс Go сейчас умеет готовить deeplink маршрута через геокодер; заказ, цена и машина через API ждут clid/apikey от Яндекса.
 
 В `/yandex` функции выбираются номерами через запятую, как в мастере настройки. Там же есть пункт `Удалить подключение-коннектор`, который чистит локальные токены и настройки Yandex Connector. Мастер считает коннектор готовым только после токенов обеих групп.
 
-Yandex tools уже доступны: профиль Yandex ID, расширенная работа с Яндекс Диском (место, список, поиск, карточка, чтение текста, папки, загрузка, скачивание, ссылки, QR-коды к публичным ссылкам, отправка ссылки и QR по почте, перемещение, копирование, переименование, корзина), статус/список/поиск/чтение/отправка Яндекс Почты, полноценная работа с Календарем через CalDAV (календари, список, поиск, создание, перенос, редактирование, напоминания, повторы, удаление), Яндекс Документы/360 через Диск (создание текстовых документов, поиск, чтение, ссылки/QR, переименование, удаление), расширенные Яндекс Контакты (поиск, создание, обновление, удаление, импорт/экспорт, дубликаты, backup на Диск, дни рождения в календарь, регулярная contacts-maintenance проверка) и комбинированные сценарии: пакет по письму (сохранить письмо на Диск, ссылка/QR, событие календаря), полный пакет по контакту (папка, документ, ссылка/QR, встреча), письмо контакту, ссылка+QR контакту, папка контакта на Диске, встреча/Телемост с контактом. Телемост пытается использовать прямой API, а если он недоступен текущему аккаунту, честно создает календарное событие без выдуманной ссылки. Отправка письма, удаление/перемещение файлов, публикация ссылок, изменение контактов, документов и событий требуют явного подтверждения.
+Yandex tools уже доступны: профиль Yandex ID, расширенная работа с Яндекс Диском (место, список, поиск, карточка, чтение текста, папки, загрузка, скачивание, ссылки, QR-коды к публичным ссылкам, отправка ссылки и QR по почте, перемещение, копирование, переименование, корзина), статус/список/поиск/чтение/отправка Яндекс Почты, полноценная работа с Календарем через CalDAV (календари, список, поиск, создание, перенос, редактирование, напоминания, повторы, удаление), Яндекс Документы/360 через Диск (создание текстовых документов, поиск, чтение, ссылки/QR, переименование, удаление), расширенные Яндекс Контакты (поиск, создание, обновление, удаление, импорт/экспорт, дубликаты, backup на Диск, дни рождения в календарь, регулярная contacts-maintenance проверка), Yandex Cloud Connector для геокодера/YandexGPT и Яндекс Go deeplink маршрута. Комбинированные сценарии: пакет по письму (сохранить письмо на Диск, ссылка/QR, событие календаря), полный пакет по контакту (папка, документ, ссылка/QR, встреча), письмо контакту, ссылка+QR контакту, папка контакта на Диске, встреча/Телемост с контактом. Телемост пытается использовать прямой API, а если он недоступен текущему аккаунту, честно создает календарное событие без выдуманной ссылки. Отправка письма, удаление/перемещение файлов, публикация ссылок, изменение контактов, документов и событий требуют явного подтверждения.
 
 Инструкция: [Yandex Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Connector).
 
@@ -233,6 +234,7 @@ iola version --check
 - [Мастер настройки](https://github.com/adm-iola/iola-cli/wiki/Мастер-настройки)
 - [AI-профили](https://github.com/adm-iola/iola-cli/wiki/AI-профили)
 - [Yandex Geocoder API key](https://github.com/adm-iola/iola-cli/wiki/Yandex-Geocoder-API-key)
+- [Yandex Cloud Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Cloud-Connector)
 - [Yandex Connector](https://github.com/adm-iola/iola-cli/wiki/Yandex-Connector)
 - [Облачные диски](https://github.com/adm-iola/iola-cli/wiki/Облачные-диски)
 - [Скиллы для жителей](https://github.com/adm-iola/iola-cli/wiki/Скиллы-для-жителей)
@@ -256,6 +258,7 @@ iola version --check
 - локальная SQLite-БД, история, сессии и FTS-поиск;
 - AI-профили для IOLA local, Ollama, YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
 - Yandex Connector: единая точка подключения пользовательских сервисов Яндекса с локальным хранением OAuth-токенов;
+- Yandex Cloud Connector: геокодер, YandexGPT и deeplink маршрута Яндекс Go;
 - локальный tool-agent для модели IOLA с tools открытых данных, файлов, браузера и сервисов Яндекса;
 - ленивые skills, toolsets, permissions, memory, hooks и готовые agents;
 - личные облачные диски: Яндекс Диск и Облако Mail.ru для сохранения отчетов, backup и документов;

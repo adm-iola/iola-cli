@@ -13,6 +13,7 @@
 - работа с YandexGPT, GigaChat, OpenAI, OpenRouter и Codex CLI;
 - geo-сценарии для жителей через Yandex Geocoder API;
 - Yandex Connector для пользовательских сервисов Яндекса;
+- Yandex Cloud Connector для геокодера, YandexGPT и deeplink Яндекс Go;
 - личные облачные диски: Яндекс Диск и Облако Mail.ru;
 - подключение публичного MCP-сервера.
 
@@ -32,6 +33,7 @@ iola ask "найди школу 29"
 - [Мастер настройки](Мастер-настройки)
 - [AI-профили](AI-профили)
 - [Yandex Geocoder API key](Yandex-Geocoder-API-key)
+- [Yandex Cloud Connector](Yandex-Cloud-Connector)
 - [Yandex Connector](Yandex-Connector)
 - [Облачные диски](Облачные-диски)
 - [Скиллы для жителей](Скиллы-для-жителей)
