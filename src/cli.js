@@ -3788,6 +3788,10 @@ async function buildYandexGoDeeplinkFromOptions(options = {}) {
   const from = options.from || options._?.[0] || "";
   const to = options.to || options._?.[1] || "";
   if (!from || !to) throw new Error('Укажите маршрут: iola yandex go link --from "Медведево, Школьная 15" --to "Медведево, Советская 20"');
+  const ambiguous = [from, to].find((point) => isAmbiguousPersonalYandexGoPoint(point));
+  if (ambiguous) {
+    throw new Error(`Не знаю адрес "${ambiguous}". Укажите полный адрес отправления или сохраните его в настройках позже. Пример: "такси от Йошкар-Ола, улица ..., дом ... до Администрации Йошкар-Олы".`);
+  }
   const fromPoint = await resolveYandexGoPoint(from);
   const toPoint = await resolveYandexGoPoint(to);
   const tariff = normalizeYandexGoTariff(options.tariff || options.class || options.level || "econom");
@@ -3810,10 +3814,46 @@ async function buildYandexGoDeeplinkFromOptions(options = {}) {
 async function resolveYandexGoPoint(query) {
   const parsed = parseLonLat(query);
   if (parsed) return { lon: parsed.lon, lat: parsed.lat, label: `${parsed.lat}, ${parsed.lon}`, address: "" };
-  const point = await callYandexGeocoder(query);
+  const normalizedQuery = normalizeYandexGoGeocoderQuery(query);
+  const point = await callYandexGeocoder(normalizedQuery);
   const coords = parseCoordinates(point?.coordinates);
   if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lon)) throw new Error(`Не смог получить координаты: ${query}`);
-  return { lon: coords.lon, lat: coords.lat, label: point.name || query, address: point.address || "" };
+  if (!isExpectedYandexGoGeocoderResult(normalizedQuery, point)) {
+    throw new Error(`Геокодер вернул неподходящий адрес для "${query}": ${point?.address || point?.name || "-"}. Уточните адрес полностью, например с городом и улицей.`);
+  }
+  return { lon: coords.lon, lat: coords.lat, label: point.name || query, address: point.address || normalizedQuery };
+}
+
+function isAmbiguousPersonalYandexGoPoint(query) {
+  const text = String(query || "").trim().toLocaleLowerCase("ru-RU");
+  return /^(?:дом|дома|мой дом|у меня|у меня дома|от меня|здесь|тут|текущее место|моя геопозиция|мое местоположение)$/iu.test(text);
+}
+
+function normalizeYandexGoGeocoderQuery(query) {
+  const text = String(query || "").trim();
+  const lower = text.toLocaleLowerCase("ru-RU");
+  if (/администрац/iu.test(lower) && /(йошкар|иошкар|йошк|yoshkar|yoshkar-ola)/iu.test(lower)) {
+    return "Россия, Республика Марий Эл, Йошкар-Ола, Ленинский проспект, 27";
+  }
+  if (/^(?:администрац(?:ия|ии)?|мэрия)$/iu.test(lower)) {
+    return "Россия, Республика Марий Эл, Йошкар-Ола, Ленинский проспект, 27";
+  }
+  if (!/(йошкар|медведево|сем[её]новк|республика\s+марий\s+эл|марий\s+эл)/iu.test(lower)
+    && /(администрац|мэрия|школ|сад|лицей|гимназ|ул\.|улица|проспект|пр-т|бульвар|переулок|дом|д\.|\d)/iu.test(lower)) {
+    return `Россия, Республика Марий Эл, Йошкар-Ола, ${text}`;
+  }
+  return text;
+}
+
+function isExpectedYandexGoGeocoderResult(query, point) {
+  const expected = String(query || "").toLocaleLowerCase("ru-RU");
+  const actual = `${point?.address || ""} ${point?.name || ""}`.toLocaleLowerCase("ru-RU");
+  if (/(йошкар|ленинский проспект,\s*27|ленинский проспект,\s*дом\s*27)/iu.test(expected)) {
+    return /йошкар-ола|йошкар ола|ленинский проспект,\s*27|ленинский проспект,\s*дом\s*27/iu.test(actual);
+  }
+  if (/медведево/iu.test(expected)) return /медведево/iu.test(actual);
+  if (/сем[её]новк/iu.test(expected)) return /сем[её]новк/iu.test(actual);
+  return true;
 }
 
 function parseLonLat(value) {
@@ -4909,7 +4949,7 @@ async function yandexMailList(options = {}) {
     const search = await imapCommand(session, `UID SEARCH ${criterion}`);
     const uids = parseImapSearchUids(search).slice(-Number(options.limit || 10));
     if (!uids.length) return [];
-    const fetch = await imapCommand(session, `UID FETCH ${uids.join(",")} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] BODY.PEEK[TEXT]<0.800>)`, { timeout: 45000 });
+    const fetch = await imapCommand(session, `UID FETCH ${uids.join(",")} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)] BODY.PEEK[TEXT]<0.3000>)`, { timeout: 45000 });
     return parseImapFetchSummaries(fetch).sort((left, right) => Number(right.uid || 0) - Number(left.uid || 0));
   } finally {
     await imapClose(session);
@@ -5638,7 +5678,7 @@ function parseImapFetchSummaries(text, options = {}) {
     const subject = headers.subject || "";
     const from = headers.from || "";
     const date = headers.date || "";
-    const body = options.full ? stripMailBody(chunk) : stripMailBody(chunk).slice(0, 800);
+    const body = options.full ? stripMailBody(chunk) : stripMailBody(chunk).slice(0, 3000);
     rows.push({
       uid,
       date,
@@ -5769,10 +5809,53 @@ function decodeEmbeddedBase64MailBody(value) {
   for (const match of matches) {
     const clean = match.replace(/\s+/g, "");
     if (!/^[A-Z0-9+/]+={0,2}$/iu.test(clean) || clean.length < 160) continue;
-    const candidate = Buffer.from(clean, "base64").toString("utf8");
+    const candidate = decodeBase64Utf8Candidate(clean);
     if (/(<!doctype|<html|<body|[А-Яа-яЁё]{3,})/u.test(candidate)) return candidate;
   }
   return text;
+}
+
+function decodeBase64Utf8Candidate(value) {
+  const clean = String(value || "").replace(/\s+/g, "");
+  const padded = clean + "=".repeat((4 - (clean.length % 4)) % 4);
+  return Buffer.from(padded, "base64").toString("utf8");
+}
+
+function looksLikeEncodedMailText(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  const compact = text.replace(/\s+/g, "");
+  if (compact.length < 80) return false;
+  if (/^[A-Z0-9+/]+={0,2}$/iu.test(compact)) return true;
+  const encodedChars = (text.match(/[A-Z0-9+/=]/giu) || []).length;
+  return encodedChars / Math.max(text.length, 1) > 0.82 && !/[А-Яа-яЁё]{3,}/u.test(text);
+}
+
+function cleanupDecodedMailText(value) {
+  return String(value || "")
+    .replace(/<style\b[\s\S]*?<\/style>/giu, " ")
+    .replace(/<script\b[\s\S]*?<\/script>/giu, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/https?:\/\/\S+/giu, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]+/gu, " ")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeMailSnippetForDisplay(value, maxLength = 600) {
+  let text = String(value || "").trim();
+  if (!text) return "";
+  if (looksLikeEncodedMailText(text)) {
+    const compact = text.replace(/\s+/g, "");
+    const decoded = cleanupDecodedMailText(decodeBase64Utf8Candidate(compact));
+    if (/[А-Яа-яЁё]{3,}/u.test(decoded) || /[A-ZА-Яа-яЁё]{3,}\s+[A-ZА-Яа-яЁё]{3,}/u.test(decoded)) {
+      text = decoded;
+    }
+  }
+  text = cleanupDecodedMailText(decodeEmbeddedBase64MailBody(text));
+  if (looksLikeEncodedMailText(text)) return "";
+  return text.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 async function yandexDavRequest(url, token, options = {}) {
@@ -12678,6 +12761,26 @@ async function buildYandexDirectAnswer(question, history = []) {
           latest[0] ? `Самое свежее: ${formatYandexMailSummary(latest[0])}` : "",
         ].filter(Boolean).join("\n");
       }
+      const recentHours = extractRecentMailHours(question);
+      if (recentHours) {
+        const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
+        const rows = await yandexMailList({ mailbox, limit: 50, unread: /непрочитан/iu.test(normalized) });
+        const since = Date.now() - recentHours * 60 * 60 * 1000;
+        const recentRows = rows.filter((row) => {
+          const time = Date.parse(row.date || "");
+          return Number.isFinite(time) && time >= since;
+        });
+        if (!recentRows.length) return `За последние ${recentHours} ${formatRussianHours(recentHours)} писем не найдено.`;
+        const detailedRows = [];
+        for (const row of recentRows.slice(0, 10)) {
+          const detailed = await yandexMailRead(row.uid, { mailbox, markSeen: false }).catch(() => null);
+          detailedRows.push(detailed && detailed.status !== "not-found" ? { ...row, ...detailed } : row);
+        }
+        return [
+          `За последние ${recentHours} ${formatRussianHours(recentHours)} нашел ${recentRows.length} ${formatRussianLetters(recentRows.length)}:`,
+          ...detailedRows.map((row, index) => formatYandexMailDigestItem(row, index + 1)),
+        ].join("\n");
+      }
       if (isYandexMailReadRequest(normalized)) {
         const uid = resolveYandexMailUidFromQuestion(question, previousAssistantText)
           || await getLatestYandexMailUid({ unread: /непрочитан/iu.test(normalized) });
@@ -12686,6 +12789,7 @@ async function buildYandexDirectAnswer(question, history = []) {
         if (!row || row.status === "not-found") return `Письмо #${uid} не найдено.`;
         return formatYandexMailRead(row);
       }
+
       const mailbox = await resolveYandexMailbox(extractYandexMailboxName(question) || "INBOX");
       const rows = /(найди|поиск)/iu.test(normalized)
         ? await yandexMailSearch(cleanupYandexQuery(question), { mailbox, limit: 10 })
@@ -12892,7 +12996,7 @@ async function buildYandexDirectAnswer(question, history = []) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/^(?:Для Yandex Go deeplink|Для Cloud Connector нужен|Для YandexGPT нужны)/u.test(message)) return message;
+    if (/^(?:Для Yandex Go deeplink|Для Cloud Connector нужен|Для YandexGPT нужны|Не знаю адрес|Геокодер вернул неподходящий адрес)/u.test(message)) return message;
     return `Не смог выполнить запрос к сервисам Яндекса: ${message}`;
   }
   return "";
@@ -13327,8 +13431,19 @@ function formatYandexMailSummary(row) {
   return `#${row.uid} ${row.subject || "(без темы)"}${row.from ? `, от ${row.from}` : ""}${row.date ? `, ${row.date}` : ""}`;
 }
 
+function formatYandexMailDigestItem(row, index) {
+  const snippet = normalizeMailSnippetForDisplay(row.snippet, 350);
+  return [
+    `${index}. Письмо #${row.uid}`,
+    `   От: ${row.from || "-"}`,
+    `   Тема: ${row.subject || "(без темы)"}`,
+    row.date ? `   Дата: ${row.date}` : "",
+    snippet ? `   О чем: ${snippet}` : "   О чем: текст письма не распознан, доступна только тема.",
+  ].filter(Boolean).join("\n");
+}
+
 function formatYandexMailRead(row) {
-  const body = String(row.snippet || "").trim();
+  const body = normalizeMailSnippetForDisplay(row.snippet, 2000);
   return [
     `Письмо #${row.uid}`,
     `От: ${row.from || "-"}`,
@@ -13337,6 +13452,35 @@ function formatYandexMailRead(row) {
     "",
     body ? `Текст: ${body.slice(0, 2000)}` : "Текст письма пустой или не распознан.",
   ].filter((line) => line !== "").join("\n");
+}
+
+function extractRecentMailHours(question) {
+  const text = String(question || "").toLocaleLowerCase("ru-RU");
+  if (!/(последн|прошедш|за\s+\d+|за\s+два|за\s+три|за\s+час)/iu.test(text)) return 0;
+  if (!/(час|минут|сут|день|дня|дней)/iu.test(text)) return 0;
+  const numeric = Number(text.match(/(\d+)\s*(?:час|часа|часов)/iu)?.[1] || 0);
+  if (numeric > 0) return numeric;
+  const words = { один: 1, одну: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5, шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10 };
+  const word = text.match(/(?:^|\s)(один|одну|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять)\s*(?:час|часа|часов)(?:\s|$|[,.!?;:])/iu)?.[1];
+  if (word && words[word]) return words[word];
+  const minutes = Number(text.match(/(\d+)\s*(?:мин|минут)/iu)?.[1] || 0);
+  if (minutes > 0) return Math.max(1, Math.ceil(minutes / 60));
+  if (/сутк|день|дня|дней/u.test(text)) return 24;
+  return /час/u.test(text) ? 1 : 0;
+}
+
+function formatRussianHours(value) {
+  const n = Math.abs(Number(value || 0));
+  if (n % 10 === 1 && n % 100 !== 11) return "час";
+  if ([2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100)) return "часа";
+  return "часов";
+}
+
+function formatRussianLetters(value) {
+  const n = Math.abs(Number(value || 0));
+  if (n % 10 === 1 && n % 100 !== 11) return "письмо";
+  if ([2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100)) return "письма";
+  return "писем";
 }
 
 function slugForFile(value) {
