@@ -16734,8 +16734,12 @@ async function chooseOnboardComponents(status = null) {
   console.log("");
   console.log("Выберите компоненты через запятую:");
   console.log("0. выход в CLI [без настройки] - пропустить мастер");
-  for (const item of onboardComponentRows(componentStatus)) {
-    console.log(`${item.number}. ${item.title} [${item.status}] - ${item.hint}`);
+  for (const group of onboardComponentGroups(componentStatus)) {
+    console.log("");
+    console.log(group.title);
+    for (const item of group.rows) {
+      console.log(`${item.number}. ${item.title} [${item.status}] - ${item.hint}`);
+    }
   }
   console.log("");
   const rl = readline.createInterface({ input, output });
@@ -16747,19 +16751,18 @@ async function chooseOnboardComponents(status = null) {
     const map = {
       1: "workspace",
       2: "policy",
-      3: "iola",
-      4: "gigachat",
-      5: "openai",
-      6: "openrouter",
-      7: "codex",
-      8: "codex-mcp",
-      9: "archive",
-      10: "index",
-      11: "browser",
-      12: "ollama",
-      13: "yandex",
-      14: "yandex-cloud",
-      15: "yandex-cloud",
+      3: "archive",
+      4: "index",
+      5: "browser",
+      6: "iola",
+      7: "ollama",
+      8: "gigachat",
+      9: "yandex",
+      10: "yandex-cloud",
+      11: "openai",
+      12: "openrouter",
+      13: "codex",
+      14: "codex-mcp",
     };
     return [...selected].map((item) => map[item] || item).filter(Boolean);
   } finally {
@@ -16802,37 +16805,69 @@ async function getOnboardComponentStatus() {
   };
 }
 
-function onboardComponentRows(status) {
-  const rows = [
-    ["1", "workspace", "workspace и контекст", "рабочая папка, IOLA.md и .iola/context.md"],
-    ["2", "policy", "policy analyst", "разрешения и профиль аналитика"],
-    ["3", "iola", "IOLA локальная модель", "локальная модель найдена"],
-    ["4", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
-    ["5", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
-    ["6", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
-    ["7", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
-    ["8", "codex-mcp", "MCP для Codex", "можно переустановить/обновить"],
-    ["9", "archive", "7-Zip / архивы", "архиватор найден"],
-    ["10", "index", "Индекс локальных документов", "настраивается под выбранную папку"],
-    ["11", "browser", "Browser runtime", "Playwright/Chromium установлен"],
-    ["12", "ollama", "Ollama", "опциональный локальный runtime"],
-    ["13", "yandex", "Yandex Connector", "единый вход и категории сервисов Яндекса"],
-    ["14", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
+function onboardComponentGroups(status) {
+  const groups = [
+    {
+      title: "Базовая настройка",
+      rows: [
+        ["1", "workspace", "Рабочая папка и контекст", "IOLA.md и .iola/context.md"],
+        ["2", "policy", "Разрешения и безопасный режим", "профиль аналитика"],
+        ["3", "archive", "7-Zip / архивы", "архиватор найден"],
+        ["4", "index", "Индекс локальных документов", "выбранная папка"],
+        ["5", "browser", "Браузерный модуль", "Playwright/Chromium"],
+      ],
+    },
+    {
+      title: "Локальный AI",
+      rows: [
+        ["6", "iola", "IOLA локальная модель", "локальная модель найдена"],
+        ["7", "ollama", "Ollama", "опциональный локальный runtime"],
+      ],
+    },
+    {
+      title: "Российские AI и сервисы",
+      rows: [
+        ["8", "gigachat", "GigaChat API", "authorization key сохранен или есть в env"],
+        ["9", "yandex", "Yandex Connector", "Диск, Почта, Календарь, Контакты"],
+        ["10", "yandex-cloud", "Yandex Cloud Connector", "геокодинг и YandexGPT"],
+      ],
+    },
+    {
+      title: "Зарубежные AI",
+      rows: [
+        ["11", "openai", "OpenAI API", "API-ключ сохранен или есть в env"],
+        ["12", "openrouter", "OpenRouter API", "API-ключ сохранен или есть в env"],
+      ],
+    },
+    {
+      title: "Codex",
+      rows: [
+        ["13", "codex", "Codex CLI", "CLI установлен и авторизация найдена"],
+        ["14", "codex-mcp", "Подключение IOLA к Codex", "MCP для Codex"],
+      ],
+    },
   ];
-  return rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" }));
+  return groups.map((group) => ({
+    ...group,
+    rows: group.rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: status[key] ? "готово" : "не настроено" })),
+  }));
+}
+
+function onboardComponentRows(status) {
+  return onboardComponentGroups(status).flatMap((group) => group.rows);
 }
 
 function defaultOnboardSelection(status) {
   const defaults = [];
   if (!status.workspace) defaults.push("1");
   if (!status.policy) defaults.push("2");
-  if (!status.iola) defaults.push("3");
-  if (!status.archive) defaults.push("9");
+  if (!status.archive) defaults.push("3");
+  if (!status.iola) defaults.push("6");
   return defaults.length ? defaults : ["1", "2"];
 }
 
 function defaultOnboardComponents(status) {
-  const map = { 1: "workspace", 2: "policy", 3: "iola", 4: "gigachat", 5: "openai", 6: "openrouter", 7: "codex", 8: "codex-mcp", 9: "archive", 10: "index", 11: "browser", 12: "ollama", 13: "yandex", 14: "yandex-cloud", 15: "yandex-cloud" };
+  const map = { 1: "workspace", 2: "policy", 3: "archive", 4: "index", 5: "browser", 6: "iola", 7: "ollama", 8: "gigachat", 9: "yandex", 10: "yandex-cloud", 11: "openai", 12: "openrouter", 13: "codex", 14: "codex-mcp" };
   return defaultOnboardSelection(status).map((item) => map[item]).filter(Boolean);
 }
 
