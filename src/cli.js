@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { appendFile, copyFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { emitKeypressEvents } from "node:readline";
 import readline from "node:readline/promises";
 import { Readable } from "node:stream";
@@ -153,6 +153,7 @@ const LEGACY_LOCAL_TOOLS = ["search_local", "export_data", "run_report", "save_v
 const FILE_TOOLS = ["files_tree", "files_read", "files_search", "files_write", "files_patch"];
 const USER_SKILL_TOOLS = ["user_skill_create", "user_skill_update", "user_skill_enable", "user_skill_disable", "user_skill_delete", "user_skill_list", "user_skill_templates", "user_skill_validate", "user_skill_preview"];
 const UFANET_TOOLS = ["ufanet_status", "ufanet_intercoms", "ufanet_open_intercom", "ufanet_call_history", "ufanet_call_links", "ufanet_cameras", "ufanet_camera_open", "ufanet_camera_snapshot"];
+const DOMRU_TOOLS = ["domru_status", "domru_places", "domru_intercoms", "domru_open_intercom", "domru_call_history", "domru_temporal_codes"];
 const YANDEX_TOOLS = [
   "yandex_identity_me",
   "yandex_disk_info",
@@ -252,7 +253,7 @@ const YANDEX_TOOLS = [
   "yandex_cloud_status",
   "yandex_go_deeplink",
 ];
-const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...UFANET_TOOLS, ...USER_SKILL_TOOLS];
+const ALL_LOCAL_TOOLS = [...LOCAL_TOOLS, ...FILE_TOOLS, ...YANDEX_TOOLS, ...UFANET_TOOLS, ...DOMRU_TOOLS, ...USER_SKILL_TOOLS];
 const ALL_TOOL_ALIASES = [...ALL_LOCAL_TOOLS, ...LEGACY_LOCAL_TOOLS];
 const HOOK_EVENTS = ["SessionStart", "BeforeTool", "AfterTool", "PreToolUse", "PostToolUse", "OnError", "AfterSync", "BeforeExport", "SessionEnd"];
 const DAEMON_PORT = Number(process.env.IOLA_DAEMON_PORT || 18790);
@@ -289,6 +290,13 @@ const TOOLSETS = {
     permissions: {
       externalApi: true,
       localTools: Object.fromEntries(UFANET_TOOLS.map((tool) => [tool, true])),
+    },
+  },
+  domru: {
+    description: "Мой домофон Дом.ру: адреса, домофоны, история событий, временные коды и открытие двери после подтверждения.",
+    permissions: {
+      externalApi: true,
+      localTools: Object.fromEntries(DOMRU_TOOLS.map((tool) => [tool, true])),
     },
   },
   "local-files-read": {
@@ -450,6 +458,12 @@ const DEFAULT_AI_CONFIG = {
       ufanet_call_history: true,
       ufanet_call_links: true,
       ufanet_cameras: true,
+      domru_status: true,
+      domru_places: true,
+      domru_intercoms: true,
+      domru_open_intercom: false,
+      domru_call_history: true,
+      domru_temporal_codes: true,
       yandex_calendar_status: true,
       yandex_calendar_create_event: false,
       yandex_calendar_list: true,
@@ -493,7 +507,7 @@ const DEFAULT_AI_CONFIG = {
     activeProvider: "",
     providers: {
       ufanet: { enabled: false, notifications: { enabled: false, intervalSeconds: 10, lastSeen: "" } },
-      domru: { enabled: false, status: "backlog" },
+      domru: { enabled: false, status: "ready" },
       rostelecom: { enabled: false, status: "backlog" },
     },
   },
@@ -601,7 +615,7 @@ const SLASH_COMMANDS = [
   { command: "/yandex", description: "выбор сервисов Yandex Connector" },
   { command: "/ufanet", description: "Мой домофон Уфанет" },
   { command: "/ufanet watch", description: "уведомления о новых вызовах домофона" },
-  { command: "/dom_ru", description: "Мой домофон Дом.ру (в разработке)" },
+  { command: "/dom_ru", description: "Мой домофон Дом.ру" },
   { command: "/rostelecom", description: "Мой домофон Ростелеком (в разработке)" },
   { command: "/archive doctor", description: "архиватор" },
   { command: "/changes list", description: "подготовленные изменения" },
@@ -874,7 +888,7 @@ Usage:
   iola cloud setup|status|ls|find|upload|download|share|save|backup
   iola yandex setup|menu|status|services|enable|disable|oauth-url|token
   iola ufanet setup|status|intercoms|open|history|links|cameras|watch|notifications|delete
-  iola dom_ru                  Мой домофон Дом.ру (в разработке)
+  iola dom_ru setup|status|places|intercoms|open|history|codes|delete
   iola rostelecom              Мой домофон Ростелеком (в разработке)
   iola archive doctor|list|test|extract|create|index
   iola changes list|show|apply|discard
@@ -1285,6 +1299,9 @@ async function handleAgentLine(line, state) {
     if (/^\d{1,2}$/u.test(line.trim()) && (state.pendingAction?.type === "ufanet_menu" || state.lastCommand?.command === "ufanet")) {
       state.pendingAction = state.pendingAction?.type === "ufanet_menu" ? state.pendingAction : buildUfanetMenuPendingAction();
     }
+    if (/^\d{1,2}$/u.test(line.trim()) && (state.pendingAction?.type === "domru_menu" || ["dom_ru", "domru"].includes(state.lastCommand?.command))) {
+      state.pendingAction = state.pendingAction?.type === "domru_menu" ? state.pendingAction : buildDomruMenuPendingAction();
+    }
     const pendingAnswer = await handlePendingAgentAction(line, state);
     const answer = pendingAnswer || await aiAsk(state.rawMode ? [line, "--quiet"] : [line], { history: state.history, state });
     state.history.push({ role: "user", content: line });
@@ -1314,6 +1331,10 @@ async function handleAgentLine(line, state) {
   if (command === "help") {
     if (state.pendingAction?.type === "ufanet_menu") {
       await printUfanetMenu({ agentState: state, pending: true });
+      return false;
+    }
+    if (state.pendingAction?.type === "domru_menu") {
+      await printDomruMenu({ agentState: state, pending: true });
       return false;
     }
     printAgentHelp();
@@ -1617,7 +1638,7 @@ async function handleAgentLine(line, state) {
   }
 
   if (command === "dom_ru" || command === "domru") {
-    await handleDomRu(args);
+    await handleDomRu(args, state);
     return false;
   }
 
@@ -1941,6 +1962,31 @@ async function handlePendingAgentAction(line, state) {
     state.pendingAction = null;
     const result = await ufanetOpenIntercom(choice.id, { confirm: true });
     return formatUfanetOpenResult(result, choice);
+  }
+  if (action.type === "domru_select_open") {
+    const number = Number(text.match(/\d+/u)?.[0] || 0);
+    if (!number || number < 1 || number > action.choices.length) {
+      return formatDomruChoicePrompt(action.choices);
+    }
+    const choice = action.choices[number - 1];
+    state.pendingAction = null;
+    const result = await domruOpenIntercom(choice.placeId, choice.id, { confirm: true });
+    return formatDomruOpenResult(result, choice);
+  }
+  if (action.type === "domru_menu") {
+    const number = Number(text.match(/^\s*(\d{1,2})\s*$/u)?.[1] || 0);
+    if (number === 0) {
+      state.pendingAction = null;
+      return "Выход из меню Дом.ру.";
+    }
+    if (!number || number < 0 || number > action.items.length) {
+      state.pendingAction = buildDomruMenuPendingAction();
+      return await formatDomruMenu({ compact: true });
+    }
+    const item = action.items[number - 1];
+    state.pendingAction = null;
+    const answer = await executeDomruMenuItem(item, state);
+    return answer || "";
   }
   if (action.type === "ufanet_confirm_open") {
     if (!/^(да|д|yes|y|ok|ок|открой|да\s+открой|открывай|пусти)/iu.test(normalized)) {
@@ -3723,14 +3769,577 @@ async function handleYandex(args) {
   iola yandex backlog`);
 }
 
-async function handleDomRu() {
-  console.log("Мой домофон Дом.ру: в разработке.");
-  console.log("Пока доступна заготовка пункта в городских сервисах. API/авторизация будут добавлены после исследования провайдера.");
+async function handleDomRu(args = [], agentState = null) {
+  const [action = process.stdin.isTTY ? "menu" : "status", target, ...rest] = args;
+  const options = parseOptions(rest);
+
+  if (action === "menu" || action === "choose" || action === "help") {
+    await printDomruMenu({ agentState, pending: action !== "help" });
+    return;
+  }
+
+  if (/^\d{1,2}$/u.test(String(action))) {
+    const number = Number(action);
+    const items = getDomruMenuItems();
+    if (number === 0) {
+      console.log("Выход из меню Дом.ру.");
+      return;
+    }
+    const item = items[number - 1];
+    if (!item) {
+      console.log(await formatDomruMenu({ compact: true }));
+      return;
+    }
+    const answer = await executeDomruMenuItem(item, agentState);
+    if (answer) console.log(answer);
+    return;
+  }
+
+  if (action === "setup" || action === "connect" || action === "onboard") {
+    await setupDomruConnector();
+    return;
+  }
+
+  if (action === "status" || action === "doctor" || action === "check") {
+    await printDomruStatus({ check: action !== "status" || options.check });
+    return;
+  }
+
+  if (action === "places" || action === "addresses") {
+    const rows = await domruGetPlaces();
+    printTable(rows, [["id", "ID"], ["address", "Адрес"], ["provider", "Провайдер"], ["blocked", "Блок"]]);
+    return;
+  }
+
+  if (action === "intercoms" || action === "devices" || action === "list" || action === "ls") {
+    const rows = await domruGetAllIntercoms({ placeId: target || options.place || options.placeId });
+    printTable(rows, [["index", "#"], ["id", "ID"], ["placeId", "Place"], ["name", "Название"], ["address", "Адрес"], ["allowOpen", "Откр"], ["allowVideo", "Видео"]]);
+    return;
+  }
+
+  if (action === "open") {
+    const deviceId = target || options.id || options.device || options.deviceId;
+    if (!deviceId) {
+      const result = await domruOpenSmart({ state: agentState });
+      console.log(formatDomruSmartOpenResult(result));
+      return;
+    }
+    const placeId = options.place || options.placeId;
+    const ok = options.yes || options.confirm || await confirm(`Открыть домофон Дом.ру #${deviceId}? [y/N] `);
+    if (!ok) {
+      console.log("Открытие отменено.");
+      return;
+    }
+    const result = await domruOpenIntercom(placeId, deviceId, { confirm: true });
+    console.log(formatDomruOpenResult(result, result.choice || {}));
+    return;
+  }
+
+  if (action === "history" || action === "events" || action === "calls") {
+    const historyOptions = parseOptions([target, ...rest].filter(Boolean));
+    const page = target && !String(target).startsWith("--") ? target : historyOptions.page || 0;
+    const rows = await domruGetEvents({ placeId: historyOptions.place || historyOptions.placeId, page, limit: historyOptions.limit || 10, sort: historyOptions.sort || "DESC" });
+    printTable(rows, [["index", "#"], ["time", "Когда"], ["address", "Адрес"], ["message", "Событие"]]);
+    return;
+  }
+
+  if (action === "codes" || action === "code" || action === "temporary-codes") {
+    const rows = await domruGetTemporalCodes({ deviceId: target || options.id || options.device || options.deviceId });
+    printTable(rows, [["index", "#"], ["code", "Код"], ["deviceId", "Домофон"], ["updatedAt", "Обновлен"], ["type", "Тип"]]);
+    return;
+  }
+
+  if (action === "delete" || action === "disconnect" || action === "remove") {
+    const ok = !process.stdin.isTTY || await askYesNo("Удалить локальные данные подключения Дом.ру? [y/N] ", false);
+    if (!ok) {
+      console.log("Удаление отменено.");
+      return;
+    }
+    await deleteDomruConnector();
+    return;
+  }
+
+  throw new Error(`Команды dom_ru:
+  iola dom_ru setup
+  iola dom_ru status|doctor
+  iola dom_ru places
+  iola dom_ru intercoms
+  iola dom_ru open [ID] [--place PLACE_ID]
+  iola dom_ru history [--limit 10]
+  iola dom_ru codes [ID]
+  iola dom_ru delete`);
 }
 
 async function handleRostelecom() {
   console.log("Мой домофон Ростелеком: в разработке.");
   console.log("Пока доступна заготовка пункта в городских сервисах. API/авторизация будут добавлены после исследования провайдера.");
+}
+
+async function printDomruMenu(options = {}) {
+  if (options.agentState && options.pending) {
+    options.agentState.pendingAction = buildDomruMenuPendingAction();
+  }
+  console.log(await formatDomruMenu());
+}
+
+async function formatDomruMenu(options = {}) {
+  const status = await getDomruStatus();
+  const lines = [
+    "Мой домофон Дом.ру",
+    `Дом.ру: ${status.configured ? "готово" : "не настроено"}.`,
+    "",
+    "Выберите действие:",
+    ...getDomruMenuItems().map((item) => `${item.number}. ${item.title}`),
+    "0. Назад",
+    "",
+    "Введите цифру или команду вида `/dom_ru 3`. Пока открыт этот раздел, `/help` показывает справку по Дом.ру.",
+  ];
+  return options.compact ? lines.slice(3).join("\n") : lines.join("\n");
+}
+
+function getDomruMenuItems() {
+  return [
+    { number: 1, key: "open", title: "Открыть домофон" },
+    { number: 2, key: "places", title: "Показать мои адреса" },
+    { number: 3, key: "intercoms", title: "Показать домофоны" },
+    { number: 4, key: "history", title: "История событий" },
+    { number: 5, key: "codes", title: "Временные коды" },
+    { number: 6, key: "status", title: "Статус подключения" },
+    { number: 7, key: "delete", title: "Удалить подключение Дом.ру" },
+  ];
+}
+
+function buildDomruMenuPendingAction() {
+  return { type: "domru_menu", items: getDomruMenuItems(), createdAt: new Date().toISOString() };
+}
+
+async function executeDomruMenuItem(item, agentState = null) {
+  if (!item) return "";
+  if (item.key === "open") {
+    const result = await domruOpenSmart({ state: agentState });
+    return formatDomruSmartOpenResult(result);
+  }
+  if (item.key === "places") {
+    const rows = await domruGetPlaces();
+    if (!rows.length) return "Адреса Дом.ру не найдены.";
+    return ["Адреса Дом.ру:", ...rows.map((row, index) => `${index + 1}. ${row.address || `Адрес #${row.id}`}${row.blocked === "yes" ? " (заблокирован)" : ""}`)].join("\n");
+  }
+  if (item.key === "intercoms") {
+    const rows = await domruGetAllIntercoms();
+    if (!rows.length) return "Домофоны Дом.ру не найдены.";
+    return formatDomruIntercomList(rows);
+  }
+  if (item.key === "history") {
+    const rows = await domruGetEvents({ limit: 10 });
+    if (!rows.length) return "История Дом.ру пуста.";
+    return ["История Дом.ру:", ...rows.map((row) => `${row.index}. ${row.time} — ${row.address || "-"}: ${row.message || "-"}`)].join("\n");
+  }
+  if (item.key === "codes") {
+    const rows = await domruGetTemporalCodes();
+    if (!rows.length) return "Временные коды Дом.ру не найдены.";
+    return ["Временные коды Дом.ру:", ...rows.map((row) => `${row.index}. ${row.code} — домофон ${row.deviceId}${row.updatedAt ? `, обновлен ${row.updatedAt}` : ""}`)].join("\n");
+  }
+  if (item.key === "status") {
+    const status = await getDomruStatus();
+    return `Дом.ру: ${status.configured ? "настроен" : "не настроен"}, ${status.enabled ? "включен" : "выключен"}, источник ${status.source || "-"}.`;
+  }
+  if (item.key === "delete") {
+    return "Удаление подключения выполняется явной командой: `/dom_ru delete`.";
+  }
+  return "";
+}
+
+async function setupDomruConnector() {
+  console.log("Мой домофон Дом.ру.");
+  console.log("Нужны логин и пароль от приложения/личного кабинета Дом.ру. Они сохраняются только локально в ~/.iola/secrets.json.");
+  if (!process.stdin.isTTY) {
+    console.log("Интерактивный ввод недоступен. Используйте env DOMRU_LOGIN и DOMRU_PASSWORD или запустите iola dom_ru setup в терминале.");
+    return;
+  }
+  const secrets = await loadSecrets();
+  const currentLogin = secrets.domru?.login || "";
+  const login = (await askText(`Логин Дом.ру${currentLogin ? " [Enter - оставить]" : ""}: `)).trim() || currentLogin;
+  const password = (await askText(`Пароль Дом.ру${secrets.domru?.password ? " [Enter - оставить]" : ""}: `)).trim() || secrets.domru?.password || "";
+  if (!login || !password) throw new Error("Для Дом.ру нужны логин и пароль.");
+  await saveDomruConnectorSecrets({ login, password });
+  await enableDomruConnector();
+  console.log(`Дом.ру сохранен локально: ${SECRETS_FILE}`);
+  await printDomruStatus({ check: true });
+}
+
+async function saveDomruConnectorSecrets({ login, password }) {
+  const secrets = await loadSecrets();
+  secrets.domru = {
+    ...(secrets.domru || {}),
+    login,
+    password,
+    updatedAt: new Date().toISOString(),
+  };
+  await saveSecrets(secrets);
+}
+
+async function enableDomruConnector() {
+  const config = await loadConfig();
+  await saveConfig({
+    domophones: {
+      ...(config.domophones || {}),
+      activeProvider: "domru",
+      providers: {
+        ...(config.domophones?.providers || {}),
+        ufanet: { ...(config.domophones?.providers?.ufanet || {}) },
+        domru: { ...(config.domophones?.providers?.domru || {}), enabled: true, status: "ready", updatedAt: new Date().toISOString() },
+        rostelecom: { ...(config.domophones?.providers?.rostelecom || {}), enabled: false, status: "backlog" },
+      },
+    },
+    toolsets: { ...(config.toolsets || {}), enabled: [...new Set([...(config.toolsets?.enabled || []), "domru"])] },
+    skills: { ...(config.skills || {}), enabled: [...new Set([...(config.skills?.enabled || []), "domru-intercom"])] },
+  });
+}
+
+async function deleteDomruConnector() {
+  const secrets = await loadSecrets();
+  delete secrets.domru;
+  await saveSecrets(secrets);
+  const config = await loadConfig();
+  const enabledToolsets = (config.toolsets?.enabled || []).filter((item) => item !== "domru");
+  const enabledSkills = (config.skills?.enabled || []).filter((item) => item !== "domru-intercom");
+  await saveConfig({
+    domophones: {
+      ...(config.domophones || {}),
+      activeProvider: config.domophones?.activeProvider === "domru" ? "" : config.domophones?.activeProvider || "",
+      providers: {
+        ...(config.domophones?.providers || {}),
+        domru: { ...(config.domophones?.providers?.domru || {}), enabled: false },
+      },
+    },
+    toolsets: { ...(config.toolsets || {}), enabled: enabledToolsets },
+    skills: { ...(config.skills || {}), enabled: enabledSkills },
+  });
+  console.log("Подключение Дом.ру удалено локально.");
+}
+
+async function printDomruStatus(options = {}) {
+  const status = await getDomruStatus();
+  printKeyValue({
+    configured: status.configured ? "yes" : "no",
+    enabled: status.enabled ? "yes" : "no",
+    login: status.login || "-",
+    source: status.source || "-",
+    refresh: status.refresh ? "yes" : "no",
+  });
+  if (options.check) {
+    if (!status.configured) {
+      console.log("Дом.ру: не настроен. Запустите: iola dom_ru setup");
+      return;
+    }
+    try {
+      const rows = await domruGetPlaces();
+      console.log(`Дом.ру: ok, адресов: ${rows.length}`);
+    } catch (error) {
+      console.log(`Дом.ру: ошибка проверки: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+async function getDomruStatus() {
+  const [config, secrets] = await Promise.all([loadConfig(), loadSecrets()]);
+  const login = process.env.DOMRU_LOGIN || secrets.domru?.login || "";
+  const password = process.env.DOMRU_PASSWORD || secrets.domru?.password || "";
+  const refreshToken = process.env.DOMRU_REFRESH_TOKEN || secrets.domru?.refreshToken || "";
+  const operatorId = process.env.DOMRU_OPERATOR_ID || secrets.domru?.operatorId || "";
+  return {
+    configured: Boolean((login && password) || (refreshToken && operatorId)),
+    enabled: Boolean(config.domophones?.providers?.domru?.enabled || (config.toolsets?.enabled || []).includes("domru")),
+    login: login ? maskSecret(login, 2) : "",
+    source: login && process.env.DOMRU_LOGIN ? "env" : login || refreshToken ? "local" : "",
+    refresh: Boolean(refreshToken && operatorId),
+  };
+}
+
+async function executeDomruTool(tool, args = {}) {
+  if (tool === "domru_status") return getDomruStatus();
+  if (tool === "domru_places") return domruGetPlaces();
+  if (tool === "domru_intercoms") return domruGetAllIntercoms({ placeId: args.placeId || args.place || args.id });
+  if (tool === "domru_open_intercom") return args.id || args.deviceId || args.device_id
+    ? domruOpenIntercom(args.placeId || args.place, args.id || args.deviceId || args.device_id, args)
+    : domruOpenSmart({ ...args, state: args.state });
+  if (tool === "domru_call_history") return domruGetEvents({ placeId: args.placeId || args.place, page: args.page || 0, limit: args.limit || 10, sort: args.sort || "DESC" });
+  if (tool === "domru_temporal_codes") return domruGetTemporalCodes({ deviceId: args.id || args.deviceId || args.device_id });
+  throw new Error(`Dom.ru tool неизвестен: ${tool}`);
+}
+
+async function domruCredentials() {
+  const secrets = await loadSecrets();
+  const login = process.env.DOMRU_LOGIN || secrets.domru?.login || "";
+  const password = process.env.DOMRU_PASSWORD || secrets.domru?.password || "";
+  const refreshToken = process.env.DOMRU_REFRESH_TOKEN || secrets.domru?.refreshToken || "";
+  const operatorId = process.env.DOMRU_OPERATOR_ID || secrets.domru?.operatorId || "";
+  if (!((login && password) || (refreshToken && operatorId))) throw new Error("Дом.ру не подключен. Запустите: iola dom_ru setup");
+  return {
+    login,
+    password,
+    refreshToken,
+    operatorId,
+    accessToken: secrets.domru?.accessToken || "",
+  };
+}
+
+function domruBaseHeaders(extra = {}) {
+  return {
+    "content-type": "application/json; charset=UTF-8",
+    accept: "application/json",
+    "user-agent": "Xiaomi MIX2S | Android 10 | erth | 8.26.0 (82600010) | | null | d5c78d0a-9cbe-4bea-b66a-b8296d947b62 | null",
+    ...extra,
+  };
+}
+
+function domruAuthTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`;
+}
+
+function domruHash1(password) {
+  return createHash("sha1").update(Buffer.from(String(password), "latin1")).digest("base64");
+}
+
+function domruHash2(login, password, date = new Date()) {
+  const text = `DigitalHomeNTKpassword${login}${password}${domruAuthTimestamp(date)}789sdgHJs678wertv34712376`;
+  return createHash("md5").update(text, "utf8").digest("hex");
+}
+
+async function domruEnsureToken(options = {}) {
+  const credentials = await domruCredentials();
+  if (credentials.accessToken && !options.force) return credentials.accessToken;
+  let payload;
+  if (credentials.refreshToken && credentials.operatorId && !options.passwordOnly) {
+    const response = await fetch("https://myhome.proptech.ru/auth/v2/session/refresh", {
+      method: "GET",
+      headers: domruBaseHeaders({ Bearer: credentials.refreshToken, Operator: String(credentials.operatorId) }),
+      signal: AbortSignal.timeout(30000),
+    });
+    payload = await parseJsonResponse(response, "Дом.ру refresh");
+  } else {
+    const timestamp = new Date();
+    const response = await fetch(`https://myhome.proptech.ru/auth/v2/auth/${encodeURIComponent(credentials.login)}/password`, {
+      method: "POST",
+      headers: domruBaseHeaders(),
+      body: JSON.stringify({
+        login: String(credentials.login),
+        timestamp: timestamp.toISOString(),
+        hash1: domruHash1(credentials.password),
+        hash2: domruHash2(credentials.login, credentials.password, timestamp),
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    payload = await parseJsonResponse(response, "Дом.ру авторизация");
+  }
+  const accessToken = payload?.accessToken || payload?.access_token || "";
+  const refreshToken = payload?.refreshToken || payload?.refresh_token || credentials.refreshToken || "";
+  const operatorId = payload?.operatorId || payload?.operator_id || credentials.operatorId || "";
+  if (!accessToken) throw new Error("Дом.ру не вернул access token.");
+  if (!process.env.DOMRU_LOGIN && !process.env.DOMRU_REFRESH_TOKEN) {
+    const secrets = await loadSecrets();
+    secrets.domru = {
+      ...(secrets.domru || {}),
+      accessToken,
+      refreshToken,
+      operatorId,
+      tokenUpdatedAt: new Date().toISOString(),
+    };
+    await saveSecrets(secrets);
+  }
+  return accessToken;
+}
+
+async function domruRequest(method, apiPath, options = {}) {
+  let token = await domruEnsureToken();
+  const request = async (accessToken) => fetch(new URL(apiPath, "https://myhome.proptech.ru/"), {
+    method,
+    headers: domruBaseHeaders({ Authorization: `Bearer ${accessToken}` }),
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: AbortSignal.timeout(Number(options.timeout || 30000)),
+  });
+  let response = await request(token);
+  if (response.status === 401) {
+    token = await domruEnsureToken({ force: true });
+    response = await request(token);
+  }
+  return parseJsonResponse(response, `Дом.ру ${apiPath}`);
+}
+
+async function domruGetPlaces() {
+  const payload = await domruRequest("GET", "rest/v3/subscriber-places");
+  return normalizeItems(payload?.data || payload).map((item) => {
+    const place = item.place || item;
+    const address = place.address || {};
+    return {
+      id: place.id || item.placeId || item.id,
+      address: address.visibleAddress || address.visible_address || [address.city, address.locality, address.street, address.house].filter(Boolean).join(", "),
+      provider: item.provider || "",
+      blocked: item.blocked ? "yes" : "no",
+      raw: item,
+    };
+  }).filter((item) => item.id);
+}
+
+async function domruGetDevices(placeId) {
+  if (!placeId) throw new Error("Для списка домофонов Дом.ру нужен place_id.");
+  const payload = await domruRequest("GET", `rest/v1/places/${encodeURIComponent(placeId)}/accesscontrols`);
+  return normalizeItems(payload?.data || payload).map((item) => ({
+    id: item.id,
+    placeId: Number(placeId),
+    name: item.name || `Домофон ${item.id}`,
+    type: item.type || "",
+    allowOpen: item.allowOpen ?? item.allow_open ?? false,
+    openMethod: item.openMethod || item.open_method || "",
+    allowVideo: item.allowVideo ?? item.allow_video ?? false,
+    previewAvailable: item.previewAvailable ?? item.preview_available ?? false,
+    externalCameraId: item.externalCameraId || item.external_camera_id || "",
+    raw: item,
+  })).filter((item) => item.id);
+}
+
+async function domruGetAllIntercoms(options = {}) {
+  const places = await domruGetPlaces();
+  const selectedPlaces = options.placeId ? places.filter((place) => String(place.id) === String(options.placeId)) : places;
+  const rows = [];
+  for (const place of selectedPlaces) {
+    const devices = await domruGetDevices(place.id);
+    for (const device of devices) {
+      rows.push({
+        index: rows.length + 1,
+        ...device,
+        address: place.address,
+        placeBlocked: place.blocked,
+      });
+    }
+  }
+  return rows;
+}
+
+async function domruOpenIntercom(placeId, deviceId, options = {}) {
+  if (!options.confirm) throw new Error("Для открытия домофона нужен аргумент confirm=true.");
+  let chosenPlaceId = placeId;
+  let chosenDeviceId = deviceId;
+  let choice = null;
+  if (!chosenPlaceId || !chosenDeviceId) {
+    const rows = await domruGetAllIntercoms();
+    choice = rows.find((row) => String(row.id) === String(chosenDeviceId)) || rows.find((row) => String(row.index) === String(chosenDeviceId));
+    if (!choice) throw new Error("Домофон Дом.ру не найден. Сначала посмотрите: iola dom_ru intercoms");
+    chosenPlaceId = choice.placeId;
+    chosenDeviceId = choice.id;
+  }
+  const payload = await domruRequest("POST", `rest/v1/places/${encodeURIComponent(chosenPlaceId)}/accesscontrols/${encodeURIComponent(chosenDeviceId)}/actions`, {
+    body: { name: "accessControlOpen" },
+    timeout: 30000,
+  });
+  const data = payload?.data || payload || {};
+  return {
+    provider: "domru",
+    status: data.status ? "opened" : "not-opened",
+    id: Number(chosenDeviceId),
+    placeId: Number(chosenPlaceId),
+    result: Boolean(data.status),
+    errorCode: data.errorCode || data.error_code || "",
+    errorMessage: data.errorMessage || data.error_message || "",
+    choice,
+  };
+}
+
+async function domruOpenSmart(options = {}) {
+  const deviceId = options.id || options.deviceId || options.device_id;
+  if (deviceId) {
+    const result = await domruOpenIntercom(options.placeId || options.place, deviceId, { confirm: true });
+    return { type: "opened", result, choice: result.choice || { id: deviceId, placeId: options.placeId || options.place } };
+  }
+  const intercoms = await domruGetAllIntercoms();
+  const openable = intercoms.filter((item) => item.allowOpen !== false);
+  const choices = (openable.length ? openable : intercoms).map((item) => ({ id: item.id, placeId: item.placeId, name: item.name, address: item.address, index: item.index }));
+  if (choices.length === 0) return { type: "empty", provider: "domru" };
+  if (choices.length === 1) {
+    const result = await domruOpenIntercom(choices[0].placeId, choices[0].id, { confirm: true });
+    return { type: "opened", result, choice: choices[0] };
+  }
+  if (options.state) {
+    options.state.pendingAction = { type: "domru_select_open", choices, createdAt: new Date().toISOString() };
+  }
+  return { type: "select", choices };
+}
+
+function formatDomruSmartOpenResult(value) {
+  if (value.type === "empty") return "Дом.ру подключен, но доступных домофонов не найдено.";
+  if (value.type === "select") return formatDomruChoicePrompt(value.choices);
+  if (value.type === "opened") return formatDomruOpenResult(value.result, value.choice);
+  return "Не удалось выполнить действие с домофоном Дом.ру.";
+}
+
+function formatDomruChoicePrompt(choices = []) {
+  return [
+    "Найдено несколько домофонов Дом.ру. Какой открыть? Ответьте цифрой:",
+    ...choices.map((item, index) => `${index + 1}. ${item.address || item.name || `Домофон #${item.id}`} — ID ${item.id}`),
+  ].join("\n");
+}
+
+function formatDomruOpenResult(result, choice = {}) {
+  const label = choice.address || choice.name || `ID ${result.id}`;
+  return result.result
+    ? `Домофон Дом.ру открыт: ${label}.`
+    : `Дом.ру не подтвердил открытие домофона: ${label}${result.errorMessage ? `. ${result.errorMessage}` : ""}`;
+}
+
+function formatDomruIntercomList(rows = []) {
+  return ["Домофоны Дом.ру:", ...rows.map((row) => `${row.index}. ${row.address || "-"} — ${row.name || `ID ${row.id}`}, ID ${row.id}${row.allowOpen === false ? " (открытие недоступно)" : ""}${row.allowVideo ? " (видео есть)" : ""}`)].join("\n");
+}
+
+async function domruGetEvents(options = {}) {
+  const places = await domruGetPlaces();
+  const placeIds = options.placeId ? [Number(options.placeId)] : places.map((place) => Number(place.id)).filter(Boolean);
+  if (!placeIds.length) return [];
+  const page = Math.max(0, Number(options.page || 0));
+  const sort = String(options.sort || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC";
+  const params = new URLSearchParams({ page: String(page), sort: `occurredAt,${sort}` });
+  const payload = await domruRequest("POST", `rest/v1/events/search?${params}`, { body: { placeIds }, timeout: 30000 });
+  const rawRows = normalizeItems(payload?.content || payload?.data || payload).slice(0, Number(options.limit || 10));
+  return rawRows.map((item, index) => {
+    const place = places.find((row) => String(row.id) === String(item.placeId || item.place_id));
+    return {
+      index: index + 1,
+      id: item.id || "",
+      placeId: item.placeId || item.place_id || "",
+      time: formatDomruEventDate(item.timestamp || item.occurredAt || item.occurred_at || ""),
+      address: place?.address || "",
+      message: item.message || item.eventTypeName || item.event_type_name || "",
+      type: item.eventTypeName || item.event_type_name || "",
+    };
+  });
+}
+
+function formatDomruEventDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(date);
+  }
+  return String(value);
+}
+
+async function domruGetTemporalCodes(options = {}) {
+  let deviceIds = [];
+  if (options.deviceId) {
+    deviceIds = [options.deviceId];
+  } else {
+    deviceIds = (await domruGetAllIntercoms()).map((item) => item.id).filter(Boolean);
+  }
+  if (!deviceIds.length) return [];
+  const params = new URLSearchParams({ accessControlIds: deviceIds.join(",") });
+  const payload = await domruRequest("GET", `rest/v1/temporal-codes?${params}`, { timeout: 30000 });
+  return normalizeItems(payload?.data || payload).map((item, index) => ({
+    index: index + 1,
+    code: item.code || "",
+    updatedAt: formatDomruEventDate(item.updateDate || item.update_date || ""),
+    deviceId: item.accessControlId || item.access_control_id || "",
+    type: item.type || "",
+  }));
 }
 
 async function handleUfanet(args = [], agentState = null) {
@@ -3880,10 +4489,11 @@ async function printUfanetMenu(options = {}) {
 
 async function formatUfanetMenu(options = {}) {
   const status = await getUfanetStatus();
+  const domruStatus = await getDomruStatus();
   const lines = [
     "Мой домофон",
     `Уфанет: ${status.configured ? "готово" : "не настроено"}; уведомления: ${status.notifications}.`,
-    "Дом.ру: в разработке. Ростелеком: в разработке.",
+    `Дом.ру: ${domruStatus.configured ? "готово" : "не настроено"}. Ростелеком: в разработке.`,
     "",
     "Выберите действие:",
     ...getUfanetMenuItems().map((item) => `${item.number}. ${item.title}`),
@@ -3992,7 +4602,7 @@ async function enableUfanetConnector() {
       providers: {
         ...(config.domophones?.providers || {}),
         ufanet: { ...(config.domophones?.providers?.ufanet || {}), enabled: true, updatedAt: new Date().toISOString() },
-        domru: { ...(config.domophones?.providers?.domru || {}), enabled: false, status: "backlog" },
+        domru: { ...(config.domophones?.providers?.domru || {}), enabled: false, status: "ready" },
         rostelecom: { ...(config.domophones?.providers?.rostelecom || {}), enabled: false, status: "backlog" },
       },
     },
@@ -13423,6 +14033,20 @@ async function aiAsk(args, context = {}) {
     if (!options.quiet) console.log(ufanetAnswer);
     return ufanetAnswer;
   }
+  const domruAnswer = await buildDomruDirectAnswer(question, context);
+  if (domruAnswer) {
+    if (!options["no-history"] && isFeatureEnabled("sqlite-history")) {
+      recordAskHistory({ question, answer: domruAnswer, providerConfig, dataContext, error: "", sessionId });
+      appendSessionExchange(sessionId, question, domruAnswer, dataContext, "");
+    }
+    emitEvent(options, "answer", { length: domruAnswer.length, sessionId, direct: true, domru: true });
+    if (options.output) {
+      await assertPermission("writeFiles");
+      await writeFile(options.output, domruAnswer, "utf8");
+    }
+    if (!options.quiet) console.log(domruAnswer);
+    return domruAnswer;
+  }
   if (/(контакт|адресн)/iu.test(question) && !isExplicitYandexDiskPathDelete(question)) {
     const yandexContactAnswer = await buildYandexDirectAnswer(question, context.history || history);
     if (yandexContactAnswer) {
@@ -15023,7 +15647,7 @@ function cleanupCloudSaveText(question) {
 async function buildUfanetDirectAnswer(question, context = {}) {
   const normalized = String(question || "").toLocaleLowerCase("ru-RU");
   if (!/(домофон|уфанет|ufanet|дверь|подъезд)/iu.test(normalized)) return "";
-  if (/(дом\.?ру|dom\.?ru)/iu.test(normalized)) return "Мой домофон Дом.ру пока в разработке. Сейчас реализован Уфанет: /ufanet.";
+  if (/(дом\.?ру|dom\.?ru|домру)/iu.test(normalized)) return "";
   if (/(ростелеком|rostelecom)/iu.test(normalized)) return "Мой домофон Ростелеком пока в разработке. Сейчас реализован Уфанет: /ufanet.";
   if (/(уведом|оповещ|сообщ).{0,40}(включ|получ|on|вкл)/iu.test(normalized) || /(включ|получ).{0,40}(уведом|оповещ|сообщ).{0,40}(домофон)/iu.test(normalized)) {
     await setUfanetNotifications(true, { intervalSeconds: extractSecondsFromText(question) || 10 });
@@ -15064,6 +15688,34 @@ async function buildUfanetDirectAnswer(question, context = {}) {
   return ["Доступные домофоны Уфанет:", ...intercoms.map((item, index) => `${index + 1}. ${item.address || item.name || `Домофон #${item.id}`} — ID ${item.id}`)].join("\n");
 }
 
+async function buildDomruDirectAnswer(question, context = {}) {
+  const normalized = String(question || "").toLocaleLowerCase("ru-RU");
+  if (!/(дом\.?ру|dom\.?ru|домру)/iu.test(normalized) || !/(домофон|дверь|подъезд|код|событи|истори)/iu.test(normalized)) return "";
+  if (/(ростелеком|rostelecom)/iu.test(normalized)) return "Мой домофон Ростелеком пока в разработке. Сейчас реализованы Уфанет и Дом.ру.";
+  if (/(статус|подключ|аккаунт|логин)/iu.test(normalized)) {
+    const status = await getDomruStatus();
+    return `Дом.ру: ${status.configured ? "настроен" : "не настроен"}, ${status.enabled ? "включен" : "выключен"}.`;
+  }
+  if (/(открой|открыть|открывай|пусти|впусти|двер)/iu.test(normalized)) {
+    const id = extractDomruDeviceId(question);
+    const result = await domruOpenSmart({ id, state: context.state });
+    return formatDomruSmartOpenResult(result);
+  }
+  if (/(код|временн)/iu.test(normalized)) {
+    const rows = await domruGetTemporalCodes({ deviceId: extractDomruDeviceId(question) });
+    if (!rows.length) return "Временные коды Дом.ру не найдены.";
+    return ["Временные коды Дом.ру:", ...rows.map((row) => `${row.index}. ${row.code} — домофон ${row.deviceId}${row.updatedAt ? `, обновлен ${row.updatedAt}` : ""}`)].join("\n");
+  }
+  if (/(истори|событи|звонк|кто звонил|последн)/iu.test(normalized)) {
+    const rows = await domruGetEvents({ limit: 10 });
+    if (!rows.length) return "История Дом.ру пуста.";
+    return ["История Дом.ру:", ...rows.map((row) => `${row.index}. ${row.time} — ${row.address || "-"}: ${row.message || "-"}`)].join("\n");
+  }
+  const rows = await domruGetAllIntercoms();
+  if (!rows.length) return "Домофоны Дом.ру не найдены.";
+  return formatDomruIntercomList(rows);
+}
+
 function extractSecondsFromText(text) {
   const match = String(text || "").match(/(\d{1,3})\s*(?:сек|seconds|s)\b/iu);
   return match ? Number(match[1]) : 0;
@@ -15072,6 +15724,12 @@ function extractSecondsFromText(text) {
 function extractUfanetCameraSelector(text) {
   return String(text || "").match(/(?:камер[ауые]?|номер|№|#)\s*(\d{1,4})/iu)?.[1]
     || String(text || "").match(/\b(\d{1,4})\b/u)?.[1]
+    || "";
+}
+
+function extractDomruDeviceId(text) {
+  return String(text || "").match(/(?:домофон|id|#|№)\s*(\d{1,10})/iu)?.[1]
+    || String(text || "").match(/\b(\d{2,10})\b/u)?.[1]
     || "";
 }
 
@@ -15588,7 +16246,8 @@ async function buildLocalToolPlan(question, providerConfig, options) {
     "Минимальные tools: search_data {dataset,query,limit}, get_card {query}, export_report {name,format,output}, file_read {path}, browser_open {url}.",
     "Yandex tools: yandex_identity_me {}, yandex_disk_info {}, yandex_disk_ls {path}, yandex_disk_mkdir {path}, yandex_disk_find {query,path}, yandex_disk_stat {path}, yandex_disk_exists {path}, yandex_disk_read_text {path}, yandex_disk_save_text {path,text}, yandex_disk_upload {localPath,remotePath}, yandex_disk_download {remotePath,outputPath}, yandex_disk_move {from,to,confirm}, yandex_disk_copy {from,to,confirm}, yandex_disk_rename {path,name,confirm}, yandex_disk_share {path,confirm}, yandex_disk_share_qr {path,confirm}, yandex_disk_share_email {path,to,contact,subject,text,confirm}, yandex_disk_package_share_email {sourcePath,targetFolder,to,contact,mode,confirm}, yandex_disk_unshare {path}, yandex_disk_delete {path,confirm}, yandex_disk_trash_list {}, yandex_disk_restore {path,confirm}, yandex_disk_empty_trash {confirm}, yandex_mail_folders {}, yandex_mail_list {mailbox,limit,unread}, yandex_mail_search {mailbox,query}, yandex_mail_read {mailbox,uid}, yandex_mail_mark {mailbox,uid,seen}, yandex_mail_send {to,subject,text,confirm}, yandex_mail_reply {uid,text,confirm}, yandex_mail_forward {uid,to,confirm}, yandex_mail_save_to_disk {uid,path}, yandex_mail_city_context {uid}, yandex_mail_map_addresses {uid}, yandex_mail_create_task {uid,title}, yandex_mail_meeting_pack {uid,start,end,send,confirm}, yandex_calendar_calendars {}, yandex_calendar_list {start,end}, yandex_calendar_search {query,start,end}, yandex_calendar_get {query}, yandex_calendar_create_event {title,start,end,location,attendees,reminders,confirm}, yandex_calendar_update {query,title,start,end,location,description,reminders,confirm}, yandex_calendar_move {query,start,end,confirm}, yandex_calendar_delete {query,confirm}, yandex_docs_list {path}, yandex_docs_find {query}, yandex_docs_create_text {title,text,format,confirm}, yandex_docs_read {path|query}, yandex_docs_share {path|query,confirm}, yandex_docs_rename {path|query,name,confirm}, yandex_docs_delete {path|query,confirm}, yandex_contacts_list {limit}, yandex_contacts_search {query}, yandex_contacts_get {query}, yandex_contacts_create {name,email,phone,address,note,confirm}, yandex_contacts_update {query,email,phone,address,note,birthday,org,title,confirm}, yandex_contacts_delete {query,confirm}, yandex_contacts_export_csv {}, yandex_contacts_find_incomplete {}, yandex_contacts_find_duplicates {}, yandex_contacts_backup_to_disk {format,confirm}, yandex_contact_send_mail {contact,subject,text,confirm}, yandex_contact_send_disk_link_qr {contact,path,confirm}, yandex_contact_create_disk_folder {contact,confirm}, yandex_contact_create_calendar_event {contact,start,end,title,confirm}, yandex_contact_create_telemost_event {contact,start,end,title,confirm}, yandex_contact_full_pack {contact,start,end,send,confirm}, yandex_cloud_status {}, yandex_go_deeplink {from,to,tariff}, yandex_daily_digest {save,email}, yandex_calendar_reminders_tick {}, yandex_disk_maintenance_tick {}.",
     "Ufanet tools: ufanet_status {}, ufanet_intercoms {}, ufanet_open_intercom {id,confirm}, ufanet_call_history {page,limit}, ufanet_call_links {uuid}, ufanet_cameras {}, ufanet_camera_open {number}, ufanet_camera_snapshot {number}.",
-    "Опасные Yandex/Ufanet tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event, ufanet_open_intercom, ufanet_camera_open, ufanet_camera_snapshot.",
+    "Dom.ru tools: domru_status {}, domru_places {}, domru_intercoms {placeId}, domru_open_intercom {id,placeId,confirm}, domru_call_history {placeId,page,limit,sort}, domru_temporal_codes {id}.",
+    "Опасные Yandex/domophone tools используй только при явной просьбе пользователя и с confirm=true: yandex_disk_share, yandex_disk_share_qr, yandex_disk_share_email, yandex_disk_package_share_email, yandex_disk_delete, yandex_disk_move, yandex_disk_copy, yandex_disk_rename, yandex_disk_restore, yandex_disk_empty_trash, yandex_mail_send, yandex_mail_reply, yandex_mail_forward, yandex_mail_delete, yandex_mail_create_calendar_event, yandex_mail_sender_to_contact, yandex_mail_meeting_pack, yandex_contacts_create, yandex_contacts_update, yandex_contacts_delete, yandex_contacts_add_email, yandex_contacts_add_phone, yandex_contacts_add_address, yandex_contacts_backup_to_disk, yandex_contact_send_mail, yandex_contact_send_disk_link_qr, yandex_contact_create_disk_folder, yandex_contact_create_calendar_event, yandex_contact_create_telemost_event, yandex_contact_full_pack, yandex_calendar_create_event, yandex_calendar_update, yandex_calendar_move, yandex_calendar_delete, yandex_calendar_add_reminder, yandex_docs_create_text, yandex_docs_share, yandex_docs_rename, yandex_docs_delete, yandex_telemost_create_event, ufanet_open_intercom, ufanet_camera_open, ufanet_camera_snapshot, domru_open_intercom.",
     "User skill tools: user_skill_create {name,description,instructions,tools,template,enable,confirm}, user_skill_update {name,instructions,tools,confirm}, user_skill_templates {}, user_skill_validate {name}, user_skill_preview {name,template,instructions}, user_skill_enable {name}, user_skill_disable {name}, user_skill_delete {name,confirm}, user_skill_list {}. Создавай или меняй skill только по явной просьбе пользователя и с confirm=true.",
     "MCP tools доступны как mcp:SERVER:TOOL, например mcp:iola-local:search.",
     "Для выгрузки CSV добавь export_report с format=csv и output, если пользователь назвал файл.",
@@ -15688,8 +16347,19 @@ function inferToolPlan(question, options = {}) {
   if (/(яндекс|yandex)/iu.test(normalized) && /(аккаунт|профил|логин|почт[аы]|email|e-mail|кто подключен)/iu.test(normalized)) {
     return { steps: [{ tool: "yandex_identity_me", args: {} }] };
   }
+  if (/(дом\.?ру|dom\.?ru|домру)/iu.test(normalized) && /(домофон|подъезд|двер|код|событи|истори)/iu.test(normalized)) {
+    if (/(открой|открыть|пусти|впусти|двер)/iu.test(normalized)) {
+      const id = extractDomruDeviceId(question);
+      return { steps: [{ tool: "domru_open_intercom", args: { ...(id ? { id } : {}), confirm: true } }] };
+    }
+    if (/(код|временн)/iu.test(normalized)) return { steps: [{ tool: "domru_temporal_codes", args: { id: extractDomruDeviceId(question) } }] };
+    if (/(истори|событи|звонк|кто\s+звонил|последн)/iu.test(normalized)) return { steps: [{ tool: "domru_call_history", args: { limit: 10 } }] };
+    if (/(адрес|мест|квартир|place)/iu.test(normalized)) return { steps: [{ tool: "domru_places", args: {} }] };
+    if (/(статус|подключ|аккаунт|логин)/iu.test(normalized)) return { steps: [{ tool: "domru_status", args: {} }] };
+    return { steps: [{ tool: "domru_intercoms", args: {} }] };
+  }
   if (/(уфанет|домофон|домофонн|подъезд|звонк|камера|rtsp)/iu.test(normalized)) {
-    if (/(дом\.?ру|dom\.?ru)/iu.test(normalized)) return { directAnswer: "Мой домофон Дом.ру пока в разработке. Сейчас реализован Уфанет: /ufanet." };
+    if (/(дом\.?ру|dom\.?ru|домру)/iu.test(normalized)) return { steps: [{ tool: "domru_intercoms", args: {} }] };
     if (/(ростелеком|rostelecom)/iu.test(normalized)) return { directAnswer: "Мой домофон Ростелеком пока в разработке. Сейчас реализован Уфанет: /ufanet." };
     if (/(открой|открыть|пусти|впусти|двер)/iu.test(normalized)) {
       const id = extractUfanetIntercomId(question);
@@ -16135,7 +16805,7 @@ function formatToolExecutionError(error, plan) {
 }
 
 function availableToolNames(options = {}) {
-  const names = new Set([...LOCAL_TOOLS, ...YANDEX_TOOLS, ...UFANET_TOOLS, ...USER_SKILL_TOOLS]);
+  const names = new Set([...LOCAL_TOOLS, ...YANDEX_TOOLS, ...UFANET_TOOLS, ...DOMRU_TOOLS, ...USER_SKILL_TOOLS]);
   if (options.files) {
     for (const tool of FILE_TOOLS) names.add(tool);
   }
@@ -16207,6 +16877,11 @@ async function executeToolPlan(plan, options = {}) {
       } else if (UFANET_TOOLS.includes(step.tool)) {
         await assertPermission("externalApi");
         const result = await executeUfanetTool(step.tool, { ...(step.args || {}), state: options.state });
+        current = Array.isArray(result) ? result : [result];
+        outputs.push({ tool: step.tool, rows: current.length });
+      } else if (DOMRU_TOOLS.includes(step.tool)) {
+        await assertPermission("externalApi");
+        const result = await executeDomruTool(step.tool, { ...(step.args || {}), state: options.state });
         current = Array.isArray(result) ? result : [result];
         outputs.push({ tool: step.tool, rows: current.length });
       } else if (USER_SKILL_TOOLS.includes(step.tool)) {
@@ -16364,9 +17039,15 @@ function formatToolResult(result, options) {
       return `${name}: ${row.field} = ${row.value ?? "не указано"}`;
     }
     if (row.date && row.time) return `Сегодня ${row.date}, ${row.time}.`;
-    if (row.type === "select" && Array.isArray(row.choices)) return formatUfanetChoicePrompt(row.choices);
-    if (row.type === "empty") return "Уфанет подключен, но доступных домофонов не найдено.";
-    if (row.type === "opened" && row.result) return formatUfanetOpenResult(row.result, row.choice || {});
+    if (row.type === "select" && Array.isArray(row.choices)) return row.choices.some((choice) => choice.placeId) ? formatDomruChoicePrompt(row.choices) : formatUfanetChoicePrompt(row.choices);
+    if (row.type === "empty") return row.provider === "domru" ? "Дом.ру подключен, но доступных домофонов не найдено." : "Уфанет подключен, но доступных домофонов не найдено.";
+    if (row.type === "opened" && row.result) return row.result.provider === "domru" ? formatDomruOpenResult(row.result, row.choice || {}) : formatUfanetOpenResult(row.result, row.choice || {});
+    if (row.provider === "domru" && (row.status === "opened" || row.status === "not-opened")) return formatDomruOpenResult(row, row.choice || {});
+    if (row.provider === "domru-status" || (row.configured !== undefined && row.refresh !== undefined)) return `Дом.ру: ${row.configured ? "настроен" : "не настроен"}, ${row.enabled ? "включен" : "выключен"}.`;
+    if (row.code && row.deviceId) return `Код Дом.ру: ${row.code} для домофона ${row.deviceId}${row.updatedAt ? `, обновлен ${row.updatedAt}` : ""}`;
+    if (row.message && row.time && row.placeId !== undefined) return `Дом.ру: ${row.time}, ${row.address || "-"}: ${row.message}`;
+    if (row.placeId && row.name && row.allowOpen !== undefined) return `Домофон Дом.ру #${row.id}: ${row.address || row.name}${row.allowOpen === false ? " (открытие недоступно)" : ""}${row.allowVideo ? " (видео есть)" : ""}`;
+    if (row.provider && row.blocked !== undefined && row.address && row.id) return `Адрес Дом.ру #${row.id}: ${row.address}${row.blocked === "yes" ? " (заблокирован)" : ""}`;
     if (row.provider === "ufanet" && (row.status === "opened" || row.status === "not-opened")) return `Уфанет: домофон #${row.id} ${row.status === "opened" ? "открыт" : "не открылся"}.`;
     if (row.provider === "ufanet" && row.status === "camera-opened") return row.message || `Открываю камеру Уфанет: ${row.title || row.number || row.address || "-"}.`;
     if (row.provider === "ufanet" && row.status === "camera-snapshot-saved") return `Снимок с камеры сохранен: ${row.file}`;
@@ -17764,7 +18445,7 @@ async function onboard(args = []) {
   if (components.includes("archive")) await ensureArchiveTool({ install: true });
   if (components.includes("city-data")) await checkHealth([]);
   if (components.includes("ufanet")) await setupUfanetConnector();
-  if (components.includes("domru")) await handleDomRu();
+  if (components.includes("domru")) await setupDomruConnector();
   if (components.includes("rostelecom")) await handleRostelecom();
   if (components.includes("iola")) {
     await setupIolaLocal(["--yes"]);
@@ -17903,7 +18584,7 @@ async function getOnboardComponentStatus() {
     "codex-mcp": false,
     "city-data": cityDataHealth === "доступен",
     ufanet: Boolean((process.env.UFANET_CONTRACT && process.env.UFANET_PASSWORD) || (secrets.ufanet?.contract && secrets.ufanet?.password)),
-    domru: false,
+    domru: Boolean((process.env.DOMRU_LOGIN && process.env.DOMRU_PASSWORD) || (process.env.DOMRU_REFRESH_TOKEN && process.env.DOMRU_OPERATOR_ID) || (secrets.domru?.login && secrets.domru?.password) || (secrets.domru?.refreshToken && secrets.domru?.operatorId)),
     rostelecom: false,
     archive: Boolean(archive),
     index: false,
@@ -17930,7 +18611,7 @@ function onboardComponentGroups(status) {
         ["6", "city-data", "Открытые данные Йошкар-Олы", "API/MCP gateway доступен"],
         ["7", "codex-mcp", "Подключить городские данные к Codex", "MCP для Codex"],
         ["8", "ufanet", "Мой домофон Уфанет", "договор и пароль хранятся локально"],
-        ["9", "domru", "Мой домофон Дом.ру", "в разработке"],
+        ["9", "domru", "Мой домофон Дом.ру", "логин и пароль хранятся локально"],
         ["10", "rostelecom", "Мой домофон Ростелеком", "в разработке"],
       ],
     },
@@ -17965,7 +18646,7 @@ function onboardComponentGroups(status) {
   ];
   return groups.map((group) => ({
     ...group,
-    rows: group.rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: key === "domru" || key === "rostelecom" ? "в разработке" : status[key] ? "готово" : "не настроено" })),
+    rows: group.rows.map(([number, key, title, hint]) => ({ number, key, title, hint, status: key === "rostelecom" ? "в разработке" : status[key] ? "готово" : "не настроено" })),
   }));
 }
 
@@ -20305,6 +20986,12 @@ function sanitizeConfig(config) {
     next.toolsets.enabled = [...new Set([...(next.toolsets.enabled || []), "ufanet"])];
     next.skills = next.skills || {};
     next.skills.enabled = [...new Set([...(next.skills.enabled || []), "ufanet-intercom"])];
+  }
+  if (next.domophones?.providers?.domru?.enabled) {
+    next.toolsets = next.toolsets || {};
+    next.toolsets.enabled = [...new Set([...(next.toolsets.enabled || []), "domru"])];
+    next.skills = next.skills || {};
+    next.skills.enabled = [...new Set([...(next.skills.enabled || []), "domru-intercom"])];
   }
   const localProfile = next.ai?.profiles?.local;
   if (localProfile?.provider === "iola") {
