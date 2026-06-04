@@ -287,8 +287,8 @@ $ContextNewFolder = $FolderList.ContextMenu.Items[0]
 $ContextUseFolder = $FolderList.ContextMenu.Items[1]
 
 $script:CurrentFolder = Join-Path $env:LOCALAPPDATA "Programs"
+$script:ShortcutNameTouched = $false
 $InstallDirBox.Text = Join-Path $env:LOCALAPPDATA "Programs\IOLA CLI"
-$ShortcutNameBox.Text = "Iola CLI"
 $ProfileNameBox.Text = "default"
 $NewFolderNameBox.Text = "IOLA CLI"
 
@@ -303,6 +303,25 @@ function Sanitize-Name([string]$Value, [string]$Fallback, [switch]$Profile) {
   foreach ($char in $invalid) { $name = $name.Replace([string]$char, "-") }
   if ($Profile) { $name = $name.Replace(" ", "-") }
   return $name
+}
+
+function Get-ShortcutNameForFolder([string]$FolderPath) {
+  $path = Normalize-FolderPath $FolderPath
+  $name = Split-Path -Leaf $path
+  if (-not $name) {
+    $root = [IO.Path]::GetPathRoot($path)
+    $name = if ($root) { $root.TrimEnd("\").Replace(":", "") } else { "Local" }
+  }
+  $name = Sanitize-Name $name "IOLA"
+  if ($name -match "^(?i)iola cli$") { return "Iola CLI" }
+  if ($name -match "^(?i)iola$") { return "Iola CLI" }
+  return "Iola CLI - $name"
+}
+
+function Update-ShortcutNameFromFolder([switch]$Force) {
+  if ($Force -or -not $script:ShortcutNameTouched) {
+    $ShortcutNameBox.Text = Get-ShortcutNameForFolder $InstallDirBox.Text
+  }
 }
 
 function Normalize-FolderPath([string]$Path) {
@@ -334,6 +353,7 @@ function Refresh-Folders([string]$Path) {
   $script:CurrentFolder = $path
   $CurrentPathBox.Text = $path
   $InstallDirBox.Text = $path
+  Update-ShortcutNameFromFolder
   $driveRoot = [IO.Path]::GetPathRoot($path)
   $DriveBox.SelectedItem = $driveRoot
   $FolderList.Items.Clear()
@@ -374,6 +394,16 @@ function Use-CurrentFolder {
 
 Refresh-Drives
 Refresh-Folders $InstallDirBox.Text
+Update-ShortcutNameFromFolder -Force
+
+$ShortcutNameBox.Add_TextChanged({
+  if ($ShortcutNameBox.IsKeyboardFocusWithin) {
+    $script:ShortcutNameTouched = $true
+  }
+})
+$InstallDirBox.Add_LostFocus({
+  Update-ShortcutNameFromFolder
+})
 
 $BrowseButton.Add_Click({
   if ($FolderPickerPanel.Visibility -eq "Visible") {

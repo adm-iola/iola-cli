@@ -143,6 +143,8 @@ if (premiumInstallerSource) {
   assertIncludes(premiumInstallerSource, "DriveBox", "Premium Windows installer should provide an in-window drive selector");
   assertIncludes(premiumInstallerSource, "FolderList", "Premium Windows installer should provide an in-window folder selector");
   assertIncludes(premiumInstallerSource, "NewFolderButton", "Premium Windows installer should create folders without opening Explorer");
+  assertIncludes(premiumInstallerSource, "Get-ShortcutNameForFolder", "Premium Windows installer should derive shortcut names from the selected folder");
+  assertIncludes(premiumInstallerSource, "ShortcutNameTouched", "Premium Windows installer should preserve manually edited shortcut names");
   assertIncludes(premiumInstallerSource, "ProgressBar", "Premium Windows installer should show progress");
   assertIncludes(premiumInstallerSource, "Start-Job", "Premium Windows installer should keep the UI responsive while installing");
 }
