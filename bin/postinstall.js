@@ -16,14 +16,21 @@ const steps = [
   {
     title: "Подготовка локальной БД",
     args: [cliPath, "db", "init", "--silent"],
+    timeoutMs: 60_000,
   },
   {
     title: "Проверка браузерного runtime",
     args: [cliPath, "browser", "install"],
+    timeoutMs: 10 * 60_000,
+    optional: true,
+    retryHint: "Позже можно запустить: iola browser install",
   },
   {
     title: "Проверка локальной модели IOLA",
     args: [cliPath, "ai", "setup", "iola", "--yes", "--quiet", "--optional", "--preserve-active"],
+    timeoutMs: 15 * 60_000,
+    optional: true,
+    retryHint: "Позже можно запустить: iola ai setup iola --yes",
   },
   {
     title: "Установка иконки Yandex OAuth",
@@ -66,12 +73,17 @@ async function runStep(step, current, total) {
     ? await runLocalStep(step.local)
     : await run(node, ["--no-warnings", ...step.args], (chunk) => {
       lastOutput = chunk.trim() || lastOutput;
-    });
+    }, step.timeoutMs);
   clearInterval(timer);
 
   if (result.code !== 0) {
     if (canAnimate) process.stdout.write(`\r`);
     if (lastOutput) console.error(lastOutput);
+    if (step.optional) {
+      console.warn(`! ${prefix}: пропущено (${result.error || "ошибка установки"})`);
+      if (step.retryHint) console.warn(`  ${step.retryHint}`);
+      return;
+    }
     console.error(`× ${prefix}: ошибка установки`);
     process.exit(result.code || 1);
   }
@@ -98,20 +110,29 @@ function installOauthIcon() {
   copyFileSync(oauthIconSource, oauthIconTarget);
 }
 
-function run(command, args, onOutput) {
+function run(command, args, onOutput, timeoutMs = 0) {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       cwd: rootDir,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      child.kill();
+      onOutput(`timeout after ${formatDuration(timeoutMs)}`);
+      resolvePromise({ code: 124, error: "timeout" });
+    }, timeoutMs) : null;
 
     child.stdout.on("data", (chunk) => onOutput(String(chunk)));
     child.stderr.on("data", (chunk) => onOutput(String(chunk)));
-    child.on("close", (code) => resolvePromise({ code }));
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      resolvePromise({ code });
+    });
     child.on("error", (error) => {
+      if (timer) clearTimeout(timer);
       onOutput(error.message);
-      resolvePromise({ code: 1 });
+      resolvePromise({ code: 1, error: error.message });
     });
   });
 }

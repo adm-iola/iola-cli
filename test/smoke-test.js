@@ -102,6 +102,10 @@ assertIncludes(cliSource, "yandex_mail_create_task", "Yandex mail should create 
 assertIncludes(cliSource, "yandex_mail_forward", "Yandex mail should support forwarding messages");
 assertIncludes(cliSource, "yandexContactsCreate", "Yandex contacts should support creating contacts");
 assertIncludes(cliSource, "buildCasualDirectAnswer(question)", "Casual greetings should bypass external AI providers");
+assertIncludes(cliSource, "/claim", "Yakunin-Router payment status should use POST claim endpoint");
+assertIncludes(cliSource, "body: JSON.stringify({ claim_token: claimToken })", "Yakunin-Router claim token should be sent in JSON body");
+assertNotIncludes(cliSource, "?claim_token=", "Yakunin-Router claim token should not be sent in query string");
+assertIncludes(cliSource, "sanitizeCommandArgs", "debug command logs should sanitize sensitive arguments");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
   throw new Error("package files should include the Yandex OAuth icon");
@@ -109,6 +113,9 @@ if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
 assertIncludes(postinstallSource, "process.hrtime.bigint()", "postinstall should use a monotonic timer");
 assertIncludes(postinstallSource, "это не полное время npm install", "postinstall timing should not imply full npm install time");
 assertIncludes(postinstallSource, "Настройка CLI после скачивания заняла", "postinstall should print setup-only duration");
+assertIncludes(postinstallSource, "timeoutMs", "postinstall steps should have watchdog timeouts");
+assertIncludes(postinstallSource, "optional", "heavy postinstall steps should be optional");
+assertIncludes(postinstallSource, "Позже можно запустить", "postinstall should tell users how to retry skipped optional steps");
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

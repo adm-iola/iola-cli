@@ -10942,7 +10942,12 @@ async function aiSetup(args) {
       await saveApiProfile(provider, profileName, profile, { activate: true });
       console.log(`AI-профиль ${profileName} сохранен и выбран в ${CONFIG_FILE}`);
     }
-    console.log(`Ключ сохраните командой: iola ai key set ${provider}`);
+    if (provider === "yakunin-router") {
+      console.log("Получить или пополнить ключ можно через /model -> API -> Yakunin-Router.");
+      console.log(`Ручная вставка готового ключа: iola ai key set ${provider}`);
+    } else {
+      console.log(`Ключ сохраните командой: iola ai key set ${provider}`);
+    }
     const envHint = {
       openai: "OPENAI_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
@@ -12019,12 +12024,16 @@ async function printTerminalQr(text) {
 }
 
 async function waitYakuninRouterPayment(orderId, claimToken) {
-  const url = `${YAKUNIN_ROUTER_BASE_URL}/order/${encodeURIComponent(orderId)}?claim_token=${encodeURIComponent(claimToken)}`;
+  const url = `${YAKUNIN_ROUTER_BASE_URL}/order/${encodeURIComponent(orderId)}/claim`;
   const deadline = Date.now() + 15 * 60 * 1000;
   let attempt = 0;
   while (Date.now() < deadline) {
     attempt += 1;
-    const response = await fetch(url, { headers: { accept: "application/json" } });
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ claim_token: claimToken }),
+    });
     const text = await response.text();
     let payload = {};
     try {
@@ -12033,6 +12042,9 @@ async function waitYakuninRouterPayment(orderId, claimToken) {
       payload = { raw: text };
     }
     if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error("Сервер оплаты не поддерживает безопасную проверку платежа. Обновите backend Yakunin-Router.");
+      }
       throw new Error(`Yakunin-Router status failed: ${response.status} ${response.statusText}\n${text.slice(0, 2000)}`);
     }
     if (payload.status === "provisioned") return payload;
@@ -21656,8 +21668,9 @@ async function printAiConfigField(field) {
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     if (process.env.IOLA_DEBUG) {
-      console.error(`[debug] run: ${command} ${args.join(" ")}`);
-      debugLog(`run: ${command} ${args.join(" ")}`);
+      const safeArgs = sanitizeCommandArgs(args).join(" ");
+      console.error(`[debug] run: ${command} ${safeArgs}`);
+      debugLog(`run: ${command} ${safeArgs}`);
     }
     const child = execFile(command, args, {
       windowsHide: true,
@@ -21698,6 +21711,14 @@ function runCommand(command, args, options = {}) {
       child.stdin?.end(options.input);
     }
   });
+}
+
+function sanitizeCommandArgs(args = []) {
+  return args.map((arg) => String(arg || "")
+    .replace(/([?&](?:token|access_token|refresh_token|api_key|apikey|key|password|secret)=)[^&\s]+/giu, "$1[redacted]")
+    .replace(/\b(sk-or-v1-[A-Za-z0-9_-]+)/g, "[redacted-openrouter-key]")
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,})/g, "[redacted-api-key]")
+    .replace(/\b(npm_[A-Za-z0-9]{16,})/g, "[redacted-npm-token]"));
 }
 
 function getNpmCommand() {
