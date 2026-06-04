@@ -75,12 +75,34 @@ Set-Content -Path $ProfileEnvPath -Value @(
 ) -Encoding UTF8
 
 $cliEntry = Join-Path $RuntimeDir "node_modules\@iola_adm\iola-cli\bin\iola.js"
+if (-not (Test-Path -LiteralPath $cliEntry)) {
+  throw "CLI установлен неполно: не найден $cliEntry. Подробности: $LogPath"
+}
+
 $launcher = @"
 @echo off
-setlocal
+setlocal EnableExtensions
 set "IOLA_HOME=$ProfileDir"
-set "IOLA_INSTALL_DIR=$InstallDir"
-node "$cliEntry" %*
+set "IOLA_INSTALL_DIR=%~dp0"
+set "IOLA_CLI_ENTRY=%~dp0runtime\node_modules\@iola_adm\iola-cli\bin\iola.js"
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js не найден. Установите Node.js 22.5.0 или новее: https://nodejs.org/
+  echo.
+  pause
+  exit /b 1
+)
+if not exist "%IOLA_CLI_ENTRY%" (
+  echo IOLA CLI установлен неполно.
+  echo Не найден файл: %IOLA_CLI_ENTRY%
+  echo.
+  echo Запустите установщик еще раз или установите через:
+  echo npm install -g @iola_adm/iola-cli
+  echo.
+  pause
+  exit /b 1
+)
+node "%IOLA_CLI_ENTRY%" %*
 endlocal
 "@
 Set-Content -Path $LauncherPath -Value $launcher -Encoding ASCII

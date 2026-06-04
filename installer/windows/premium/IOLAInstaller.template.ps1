@@ -527,13 +527,34 @@ $InstallButton.Add_Click({
 
     Step 68 "Создаем launcher"
     $cliEntry = Join-Path $runtimeDir "node_modules\@iola_adm\iola-cli\bin\iola.js"
+    if (-not (Test-Path -LiteralPath $cliEntry)) {
+      throw "CLI установлен неполно: не найден $cliEntry"
+    }
     $launcher = Join-Path $InstallDir "IOLA.cmd"
     Set-Content -Path $launcher -Encoding ASCII -Value @"
 @echo off
-setlocal
+setlocal EnableExtensions
 set "IOLA_HOME=$ProfileDir"
-set "IOLA_INSTALL_DIR=$InstallDir"
-node "$cliEntry" %*
+set "IOLA_INSTALL_DIR=%~dp0"
+set "IOLA_CLI_ENTRY=%~dp0runtime\node_modules\@iola_adm\iola-cli\bin\iola.js"
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js ne nayden. Ustanovite Node.js 22.5.0 ili novee: https://nodejs.org/
+  echo.
+  pause
+  exit /b 1
+)
+if not exist "%IOLA_CLI_ENTRY%" (
+  echo IOLA CLI ustanovlen nepolno.
+  echo Ne nayden fayl: %IOLA_CLI_ENTRY%
+  echo.
+  echo Zapustite ustanovshchik eshche raz ili ustanovite cherez:
+  echo npm install -g @iola_adm/iola-cli
+  echo.
+  pause
+  exit /b 1
+)
+node "%IOLA_CLI_ENTRY%" %*
 endlocal
 "@
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "assets") | Out-Null
@@ -550,7 +571,7 @@ endlocal
 
     Step 94 "Финальная настройка"
     if ($LaunchMaster) {
-      Start-Process "$env:ComSpec" -ArgumentList "/k `"$launcher`" master"
+      Start-Process -FilePath "$env:ComSpec" -ArgumentList "/d /k `"`"$launcher`" master`"" -WorkingDirectory $InstallDir
     }
     Step 100 "Готово"
   }

@@ -47,7 +47,7 @@ Name: "{userdesktop}\{code:GetShortcutName}"; Filename: "{cmd}"; Parameters: "/k
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\install-iola.ps1"" -InstallDir ""{app}"" -ProfileDir ""{code:GetProfilePath}"" -PackageArchive ""{app}\payload\iola-cli.tgz"" -PackageVersion ""{#AppVersion}"""; StatusMsg: "Устанавливаем IOLA CLI и готовим локальный профиль..."; Flags: runhidden waituntilterminated
-Filename: "{cmd}"; Parameters: "/k ""{app}\IOLA.cmd"" master"; Description: "Запустить мастер настройки IOLA CLI"; Flags: postinstall unchecked nowait
+Filename: "{cmd}"; Parameters: "/d /k """"{app}\IOLA.cmd"" master"""; WorkingDir: "{app}"; Description: "Запустить мастер настройки IOLA CLI"; Flags: postinstall unchecked nowait
 
 [Code]
 var

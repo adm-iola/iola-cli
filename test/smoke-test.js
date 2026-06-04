@@ -11,6 +11,8 @@ const cliSource = await readFile(resolve(rootDir, "src", "cli.js"), "utf8");
 const postinstallSource = await readFile(resolve(rootDir, "bin", "postinstall.js"), "utf8");
 const installerPath = resolve(rootDir, "installer", "windows", "iola-cli.iss");
 const installerSource = existsSync(installerPath) ? await readFile(installerPath, "utf8") : "";
+const installerScriptPath = resolve(rootDir, "installer", "windows", "scripts", "install-iola.ps1");
+const installerScriptSource = existsSync(installerScriptPath) ? await readFile(installerScriptPath, "utf8") : "";
 const premiumInstallerPath = resolve(rootDir, "installer", "windows", "premium", "IOLAInstaller.template.ps1");
 const premiumInstallerSource = existsSync(premiumInstallerPath) ? await readFile(premiumInstallerPath, "utf8") : "";
 
@@ -120,8 +122,9 @@ assertIncludes(postinstallSource, "process.hrtime.bigint()", "postinstall should
 assertIncludes(postinstallSource, "это не полное время npm install", "postinstall timing should not imply full npm install time");
 assertIncludes(postinstallSource, "Настройка CLI после скачивания заняла", "postinstall should print setup-only duration");
 assertIncludes(postinstallSource, "timeoutMs", "postinstall steps should have watchdog timeouts");
-assertIncludes(postinstallSource, "optional", "heavy postinstall steps should be optional");
-assertIncludes(postinstallSource, "Позже можно запустить", "postinstall should tell users how to retry skipped optional steps");
+assertIncludes(postinstallSource, "Локальная модель и browser runtime не устанавливаются автоматически", "postinstall should not install heavy components by default");
+assertNotIncludes(postinstallSource, "ai\", \"setup\", \"iola", "postinstall should not install the local model automatically");
+assertNotIncludes(postinstallSource, "browser\", \"install", "postinstall should not install browser runtime automatically");
 assertIncludes(postinstallSource, "process.env.IOLA_HOME", "postinstall should respect profile-specific IOLA_HOME");
 if (installerSource) {
   assertIncludes(installerSource, "WizardStyle=modern", "Windows installer should use the modern Inno wizard style");
@@ -129,12 +132,18 @@ if (installerSource) {
   assertIncludes(installerSource, "IOLA.cmd", "Windows installer should create a launcher");
   assertIncludes(installerSource, "IconFilename: \"{app}\\assets\\iola.ico\"", "Windows shortcuts should use the IOLA icon");
   assertIncludes(installerSource, "payload\\iola-cli.tgz", "Windows installer should embed the packed CLI payload");
+  assertIncludes(installerSource, "WorkingDir: \"{app}\"", "Windows installer should launch the master from the install directory");
   if (!existsSync(resolve(rootDir, "installer", "windows", "assets", "iola.ico"))) {
     throw new Error("Windows installer icon should be generated");
   }
   if (!existsSync(resolve(rootDir, "installer", "windows", "assets", "wizard-large.bmp"))) {
     throw new Error("Windows installer wizard image should be generated");
   }
+}
+if (installerScriptSource) {
+  assertIncludes(installerScriptSource, "IOLA_CLI_ENTRY", "Windows launcher should resolve the CLI entry relative to itself");
+  assertIncludes(installerScriptSource, "CLI установлен неполно", "Windows installer should fail clearly if runtime files are missing");
+  assertIncludes(installerScriptSource, "where node", "Windows launcher should show a clear Node.js error");
 }
 if (premiumInstallerSource) {
   assertIncludes(premiumInstallerSource, "ImageBrush ImageSource", "Premium Windows installer should use the README image as a full-window background");
@@ -147,6 +156,9 @@ if (premiumInstallerSource) {
   assertIncludes(premiumInstallerSource, "ShortcutNameTouched", "Premium Windows installer should preserve manually edited shortcut names");
   assertIncludes(premiumInstallerSource, "ProgressBar", "Premium Windows installer should show progress");
   assertIncludes(premiumInstallerSource, "Start-Job", "Premium Windows installer should keep the UI responsive while installing");
+  assertIncludes(premiumInstallerSource, "IOLA_CLI_ENTRY", "Premium launcher should resolve the CLI entry relative to itself");
+  assertIncludes(premiumInstallerSource, "CLI ustanovlen nepolno", "Premium launcher should show a clear missing-runtime error");
+  assertIncludes(premiumInstallerSource, "-WorkingDirectory $InstallDir", "Premium installer should launch master from the install directory");
 }
 
 const commands = await runCli(["commands"]);

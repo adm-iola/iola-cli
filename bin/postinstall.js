@@ -20,20 +20,6 @@ const steps = [
     timeoutMs: 60_000,
   },
   {
-    title: "Проверка браузерного runtime",
-    args: [cliPath, "browser", "install"],
-    timeoutMs: 10 * 60_000,
-    optional: true,
-    retryHint: "Позже можно запустить: iola browser install",
-  },
-  {
-    title: "Проверка локальной модели IOLA",
-    args: [cliPath, "ai", "setup", "iola", "--yes", "--quiet", "--optional", "--preserve-active"],
-    timeoutMs: 15 * 60_000,
-    optional: true,
-    retryHint: "Позже можно запустить: iola ai setup iola --yes",
-  },
-  {
     title: "Установка иконки Yandex OAuth",
     local: installOauthIcon,
   },
@@ -45,6 +31,7 @@ const setupStarted = process.hrtime.bigint();
 console.log("");
 console.log("IOLA CLI: настройка после скачивания npm-пакета");
 console.log("Важно: это не полное время npm install. Скачивание, распаковку и служебные действия npm этот скрипт измерить не может.");
+console.log("Локальная модель и browser runtime не устанавливаются автоматически. Их можно включить позже в мастере настройки.");
 
 for (let index = 0; index < steps.length; index += 1) {
   const step = steps[index];
