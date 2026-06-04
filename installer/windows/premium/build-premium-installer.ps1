@@ -32,6 +32,7 @@ $template = $template.Replace("__APP_VERSION__", $version)
 $template = $template.Replace("__PAYLOAD_BASE64__", [Convert]::ToBase64String([IO.File]::ReadAllBytes($payloadPath)))
 $template = $template.Replace("__BACKGROUND_BASE64__", [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $RootDir "docs\assets\readme-header.png"))))
 $template = $template.Replace("__ICON_BASE64__", [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $RootDir "installer\windows\assets\iola.ico"))))
+$template = $template.Replace("__LOGO_BASE64__", [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $RootDir "installer\windows\assets\iola-256.png"))))
 Set-Content -Path $generatedPath -Value $template -Encoding UTF8
 
 if (-not (Get-Module -ListAvailable ps2exe)) {

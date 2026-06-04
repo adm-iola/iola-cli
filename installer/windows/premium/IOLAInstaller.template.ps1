@@ -4,6 +4,7 @@ $AppVersion = "__APP_VERSION__"
 $PayloadBase64 = "__PAYLOAD_BASE64__"
 $BackgroundBase64 = "__BACKGROUND_BASE64__"
 $IconBase64 = "__ICON_BASE64__"
+$LogoBase64 = "__LOGO_BASE64__"
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -15,9 +16,11 @@ New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 $PayloadPath = Join-Path $TempRoot "iola-cli.tgz"
 $BackgroundPath = Join-Path $TempRoot "readme-header.png"
 $IconPath = Join-Path $TempRoot "iola.ico"
+$LogoPath = Join-Path $TempRoot "iola-logo.png"
 [IO.File]::WriteAllBytes($PayloadPath, [Convert]::FromBase64String($PayloadBase64))
 [IO.File]::WriteAllBytes($BackgroundPath, [Convert]::FromBase64String($BackgroundBase64))
 [IO.File]::WriteAllBytes($IconPath, [Convert]::FromBase64String($IconBase64))
+[IO.File]::WriteAllBytes($LogoPath, [Convert]::FromBase64String($LogoBase64))
 
 $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -85,7 +88,7 @@ $xaml = @"
       </Grid.ColumnDefinitions>
 
       <StackPanel Grid.Column="0" VerticalAlignment="Stretch">
-        <Image Name="LogoImage" Source="__ICON_PATH__" Width="88" Height="88" HorizontalAlignment="Left" Margin="0,8,0,24"/>
+        <Image Name="LogoImage" Source="__LOGO_PATH__" Width="88" Height="88" HorizontalAlignment="Left" Margin="0,8,0,24"/>
         <TextBlock Text="IOLA CLI" Foreground="White" FontSize="46" FontWeight="Bold"/>
         <TextBlock Text="Городской AI-агент" Foreground="#D7E0EC" FontSize="20" Margin="0,8,0,0"/>
         <TextBlock Text="Современная установка для Windows: отдельные профили, свои ярлыки, локальные настройки и быстрый запуск мастера." 
@@ -148,11 +151,15 @@ $xaml = @"
 "@
 
 $xaml = $xaml.Replace("__BACKGROUND_PATH__", $BackgroundPath.Replace("\", "/"))
-$xaml = $xaml.Replace("__ICON_PATH__", $IconPath.Replace("\", "/"))
+$xaml = $xaml.Replace("__LOGO_PATH__", $LogoPath.Replace("\", "/"))
 $xaml = $xaml.Replace("IOLA CLI {0}", "IOLA CLI $AppVersion")
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $window = [Windows.Markup.XamlReader]::Load($reader)
-$window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconPath)
+try {
+  $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$LogoPath)
+} catch {
+  # The installer must still open if a Windows image codec rejects the icon.
+}
 
 $InstallDirBox = $window.FindName("InstallDirBox")
 $ShortcutNameBox = $window.FindName("ShortcutNameBox")
