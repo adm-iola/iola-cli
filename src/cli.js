@@ -21,7 +21,7 @@ const AI_RELAY_BASE_URL = process.env.IOLA_AI_RELAY_BASE_URL || `${API_BASE_URL}
 const YAKUNIN_ROUTER_BASE_URL = process.env.IOLA_YAKUNIN_ROUTER_BASE_URL || `${API_BASE_URL}/pay/yakunin-router`;
 const AI_NETWORK_MODE = process.env.IOLA_AI_NETWORK_MODE || "";
 const MIN_NODE_VERSION = "22.5.0";
-const CONFIG_DIR = path.join(os.homedir(), ".iola");
+const CONFIG_DIR = getIolaHomeDir();
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
@@ -48,6 +48,17 @@ const YANDEX_CONNECTOR_ORGANIZER_CLIENT_ID = process.env.IOLA_YANDEX_ORGANIZER_O
 const YANDEX_CONNECTOR_REDIRECT_HOST = "127.0.0.1";
 const YANDEX_CONNECTOR_REDIRECT_PORT = Number(process.env.IOLA_YANDEX_OAUTH_PORT || 18791);
 const YANDEX_CONNECTOR_REDIRECT_PATH = "/yandex/oauth/callback";
+
+function getIolaHomeDir() {
+  const raw = String(process.env.IOLA_HOME || "").trim();
+  if (!raw) return path.join(os.homedir(), ".iola");
+  if (raw === "~") return os.homedir();
+  if (raw.startsWith(`~${path.sep}`) || raw.startsWith("~/")) {
+    return path.resolve(path.join(os.homedir(), raw.slice(2)));
+  }
+  return path.resolve(raw);
+}
+
 const YANDEX_CONNECTOR_SERVICES = {
   identity: {
     title: "Yandex ID",

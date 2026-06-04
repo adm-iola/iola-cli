@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,8 @@ const binPath = resolve(rootDir, "bin", "iola.js");
 const packageJson = JSON.parse(await readFile(resolve(rootDir, "package.json"), "utf8"));
 const cliSource = await readFile(resolve(rootDir, "src", "cli.js"), "utf8");
 const postinstallSource = await readFile(resolve(rootDir, "bin", "postinstall.js"), "utf8");
+const installerPath = resolve(rootDir, "installer", "windows", "iola-cli.iss");
+const installerSource = existsSync(installerPath) ? await readFile(installerPath, "utf8") : "";
 
 function runCli(args) {
   return new Promise((resolvePromise, reject) => {
@@ -106,6 +109,7 @@ assertIncludes(cliSource, "/claim", "Yakunin-Router payment status should use PO
 assertIncludes(cliSource, "body: JSON.stringify({ claim_token: claimToken })", "Yakunin-Router claim token should be sent in JSON body");
 assertNotIncludes(cliSource, "?claim_token=", "Yakunin-Router claim token should not be sent in query string");
 assertIncludes(cliSource, "sanitizeCommandArgs", "debug command logs should sanitize sensitive arguments");
+assertIncludes(cliSource, "process.env.IOLA_HOME", "CLI should support profile-specific IOLA_HOME");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
   throw new Error("package files should include the Yandex OAuth icon");
@@ -116,6 +120,20 @@ assertIncludes(postinstallSource, "Настройка CLI после скачи�
 assertIncludes(postinstallSource, "timeoutMs", "postinstall steps should have watchdog timeouts");
 assertIncludes(postinstallSource, "optional", "heavy postinstall steps should be optional");
 assertIncludes(postinstallSource, "Позже можно запустить", "postinstall should tell users how to retry skipped optional steps");
+assertIncludes(postinstallSource, "process.env.IOLA_HOME", "postinstall should respect profile-specific IOLA_HOME");
+if (installerSource) {
+  assertIncludes(installerSource, "WizardStyle=modern", "Windows installer should use the modern Inno wizard style");
+  assertIncludes(installerSource, "CreateInputQueryPage", "Windows installer should ask for shortcut/profile names");
+  assertIncludes(installerSource, "IOLA.cmd", "Windows installer should create a launcher");
+  assertIncludes(installerSource, "IconFilename: \"{app}\\assets\\iola.ico\"", "Windows shortcuts should use the IOLA icon");
+  assertIncludes(installerSource, "payload\\iola-cli.tgz", "Windows installer should embed the packed CLI payload");
+  if (!existsSync(resolve(rootDir, "installer", "windows", "assets", "iola.ico"))) {
+    throw new Error("Windows installer icon should be generated");
+  }
+  if (!existsSync(resolve(rootDir, "installer", "windows", "assets", "wizard-large.bmp"))) {
+    throw new Error("Windows installer wizard image should be generated");
+  }
+}
 
 const commands = await runCli(["commands"]);
 assertIncludes(commands, "iola browser status|install|open|text|html|screenshot|pdf|click|type|eval", "commands");

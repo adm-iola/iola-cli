@@ -6,3 +6,5 @@ npm-debug.log*
 coverage/
 dist/
 .tmp/
+installer/windows/dist/
+installer/windows/payload/*.tgz

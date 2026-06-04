@@ -8,7 +8,8 @@ import os from "node:os";
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = resolve(rootDir, "bin", "iola.js");
 const oauthIconSource = resolve(rootDir, "docs", "assets", "iola-oauth-icon.png");
-const oauthIconTarget = join(os.homedir(), ".iola", "assets", "iola-oauth-icon.png");
+const iolaHome = getIolaHomeDir();
+const oauthIconTarget = join(iolaHome, "assets", "iola-oauth-icon.png");
 const node = process.execPath;
 const frames = ["|", "/", "-", "\\"];
 
@@ -149,4 +150,14 @@ function formatDuration(ms) {
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   return `${minutes}m ${rest}s`;
+}
+
+function getIolaHomeDir() {
+  const raw = String(process.env.IOLA_HOME || "").trim();
+  if (!raw) return join(os.homedir(), ".iola");
+  if (raw === "~") return os.homedir();
+  if (raw.startsWith(`~${process.platform === "win32" ? "\\" : "/"}`) || raw.startsWith("~/")) {
+    return resolve(join(os.homedir(), raw.slice(2)));
+  }
+  return resolve(raw);
 }
