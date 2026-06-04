@@ -9,7 +9,6 @@ $LogoBase64 = "__LOGO_BASE64__"
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
-Add-Type -AssemblyName System.Windows.Forms
 
 $TempRoot = Join-Path $env:TEMP ("iola-premium-installer-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
@@ -25,125 +24,242 @@ $LogoPath = Join-Path $TempRoot "iola-logo.png"
 $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="IOLA CLI Setup" Width="1040" Height="660" WindowStartupLocation="CenterScreen"
-        ResizeMode="NoResize" Background="#07111F" FontFamily="Segoe UI">
+        Title="IOLA CLI Setup" Width="1180" Height="760" MinWidth="1040" MinHeight="680"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
+        Background="#07111F" FontFamily="Segoe UI">
   <Window.Resources>
-    <Style x:Key="PrimaryButton" TargetType="Button">
-      <Setter Property="Foreground" Value="#07111F"/>
-      <Setter Property="Background" Value="#F4C542"/>
-      <Setter Property="BorderBrush" Value="#F4C542"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Padding" Value="18,11"/>
+    <DropShadowEffect x:Key="SoftShadow" Color="#000000" Direction="270" ShadowDepth="18" BlurRadius="42" Opacity="0.34"/>
+
+    <Style x:Key="GlassButton" TargetType="Button">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="Background" Value="#2AFFFFFF"/>
+      <Setter Property="BorderBrush" Value="#55FFFFFF"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="16,10"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border Background="{TemplateBinding Background}" CornerRadius="10" Padding="{TemplateBinding Padding}">
+            <Border Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="14"
+                    Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
-    <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-      <Setter Property="Foreground" Value="#E7EEF8"/>
-      <Setter Property="Background" Value="#253246"/>
-      <Setter Property="BorderBrush" Value="#314158"/>
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource GlassButton}">
+      <Setter Property="Foreground" Value="#07111F"/>
+      <Setter Property="Background" Value="#F4C542"/>
+      <Setter Property="BorderBrush" Value="#FFF1A8"/>
     </Style>
-    <Style TargetType="TextBox">
-      <Setter Property="Background" Value="#101B2D"/>
+    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource GlassButton}">
+      <Setter Property="Background" Value="#22FFFFFF"/>
+      <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+    </Style>
+    <Style x:Key="GlassTextBox" TargetType="TextBox">
+      <Setter Property="Background" Value="#2A08111F"/>
       <Setter Property="Foreground" Value="#F8FAFC"/>
-      <Setter Property="BorderBrush" Value="#314158"/>
+      <Setter Property="BorderBrush" Value="#55FFFFFF"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="12,8"/>
+      <Setter Property="Padding" Value="14,10"/>
       <Setter Property="FontSize" Value="14"/>
+      <Setter Property="CaretBrush" Value="#F4C542"/>
     </Style>
     <Style TargetType="CheckBox">
-      <Setter Property="Foreground" Value="#D7E0EC"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="Margin" Value="0,8,0,0"/>
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Margin" Value="0,10,0,0"/>
+    </Style>
+    <Style TargetType="ListBox">
+      <Setter Property="Background" Value="#2208111F"/>
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="6"/>
+    </Style>
+    <Style TargetType="ComboBox">
+      <Setter Property="Background" Value="#2208111F"/>
+      <Setter Property="Foreground" Value="#07111F"/>
+      <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="8"/>
     </Style>
   </Window.Resources>
+
   <Grid>
     <Grid.Background>
       <ImageBrush ImageSource="__BACKGROUND_PATH__" Stretch="UniformToFill"/>
     </Grid.Background>
-    <Rectangle Fill="#07111F" Opacity="0.72"/>
+    <Rectangle Fill="#07111F" Opacity="0.42"/>
     <Rectangle>
       <Rectangle.Fill>
         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-          <GradientStop Color="#07111F" Offset="0"/>
-          <GradientStop Color="#0B1220" Offset="0.45"/>
-          <GradientStop Color="#0F8B8D" Offset="1"/>
+          <GradientStop Color="#CC07111F" Offset="0"/>
+          <GradientStop Color="#770F8B8D" Offset="0.58"/>
+          <GradientStop Color="#AA07111F" Offset="1"/>
         </LinearGradientBrush>
       </Rectangle.Fill>
-      <Rectangle.Opacity>0.82</Rectangle.Opacity>
     </Rectangle>
 
-    <Grid Margin="48">
+    <Grid Margin="38">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="380"/>
+        <ColumnDefinition Width="390"/>
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
 
-      <StackPanel Grid.Column="0" VerticalAlignment="Stretch">
-        <Image Name="LogoImage" Source="__LOGO_PATH__" Width="88" Height="88" HorizontalAlignment="Left" Margin="0,8,0,24"/>
-        <TextBlock Text="IOLA CLI" Foreground="White" FontSize="46" FontWeight="Bold"/>
-        <TextBlock Text="Городской AI-агент" Foreground="#D7E0EC" FontSize="20" Margin="0,8,0,0"/>
-        <TextBlock Text="Современная установка для Windows: отдельные профили, свои ярлыки, локальные настройки и быстрый запуск мастера." 
-                   TextWrapping="Wrap" Foreground="#B9C5D6" FontSize="15" LineHeight="23" Margin="0,28,46,0"/>
-        <Border Background="#1A2436" CornerRadius="14" Padding="18" Margin="0,36,46,0" Opacity="0.96">
+      <Border Grid.Column="0" CornerRadius="30" Padding="32" Margin="0,0,26,0"
+              Background="#26FFFFFF" BorderBrush="#55FFFFFF" BorderThickness="1"
+              Effect="{StaticResource SoftShadow}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
           <StackPanel>
-            <TextBlock Text="Что будет установлено" Foreground="White" FontWeight="SemiBold" FontSize="15"/>
-            <TextBlock Text="• IOLA CLI {0}&#x0a;• локальный профиль IOLA_HOME&#x0a;• ярлык с вашей иконкой&#x0a;• мастер настройки после установки" 
-                       Foreground="#D7E0EC" FontSize="13" LineHeight="20" Margin="0,10,0,0"/>
+            <Image Source="__LOGO_PATH__" Width="92" Height="92" HorizontalAlignment="Left" Margin="0,0,0,26"/>
+            <TextBlock Text="IOLA CLI" Foreground="White" FontSize="52" FontWeight="Bold"/>
+            <TextBlock Text="Городской AI-агент" Foreground="#EAF2FF" FontSize="21" Margin="0,8,0,0"/>
+            <TextBlock Text="Установка с отдельным профилем, своим ярлыком и запуском мастера настройки после установки."
+                       TextWrapping="Wrap" Foreground="#D8E4F2" FontSize="15" LineHeight="23" Margin="0,34,12,0"/>
           </StackPanel>
-        </Border>
-      </StackPanel>
-
-      <Border Grid.Column="1" Background="#ECF2F9" CornerRadius="22" Padding="30" VerticalAlignment="Center">
-        <StackPanel>
-          <TextBlock Text="Настройка установки" Foreground="#0B1220" FontSize="27" FontWeight="Bold"/>
-          <TextBlock Text="Выберите папку, имя ярлыка и профиль. Правый клик по полю папки открывает команды создания папки." 
-                     Foreground="#475569" FontSize="14" TextWrapping="Wrap" Margin="0,8,0,24"/>
-
-          <TextBlock Text="Папка установки" Foreground="#0B1220" FontWeight="SemiBold"/>
-          <Grid Margin="0,8,0,16">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="10"/>
-              <ColumnDefinition Width="104"/>
-              <ColumnDefinition Width="10"/>
-              <ColumnDefinition Width="104"/>
-            </Grid.ColumnDefinitions>
-            <TextBox Name="InstallDirBox" Grid.Column="0"/>
-            <Button Name="BrowseButton" Grid.Column="2" Content="Обзор" Style="{StaticResource GhostButton}"/>
-            <Button Name="CreateDirButton" Grid.Column="4" Content="Создать" Style="{StaticResource GhostButton}"/>
-          </Grid>
-
-          <TextBlock Text="Имя ярлыка" Foreground="#0B1220" FontWeight="SemiBold"/>
-          <TextBox Name="ShortcutNameBox" Margin="0,8,0,16"/>
-
-          <TextBlock Text="Имя профиля" Foreground="#0B1220" FontWeight="SemiBold"/>
-          <TextBox Name="ProfileNameBox" Margin="0,8,0,12"/>
-
-          <CheckBox Name="DesktopShortcutBox" Content="Создать ярлык на рабочем столе" IsChecked="True"/>
-          <CheckBox Name="LaunchMasterBox" Content="Запустить мастер настройки после установки"/>
-
-          <ProgressBar Name="InstallProgress" Height="10" Minimum="0" Maximum="100" Value="0" Margin="0,24,0,0" Foreground="#0F8B8D" Background="#CFD8E3"/>
-          <TextBlock Name="StatusText" Text="Готов к установке" Foreground="#334155" FontSize="13" Margin="0,10,0,0"/>
-          <Border Background="#0B1220" CornerRadius="12" Padding="14" Margin="0,14,0,20" Height="106">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-              <TextBlock Name="LogText" Text="Проверим Node.js, установим CLI и создадим ярлыки." Foreground="#CFE0F2" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap"/>
-            </ScrollViewer>
+          <Border Grid.Row="2" Background="#22000000" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="22" Padding="20">
+            <StackPanel>
+              <TextBlock Text="Версия" Foreground="#BFD0E6" FontSize="12"/>
+              <TextBlock Text="IOLA CLI {0}" Foreground="White" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,12"/>
+              <TextBlock Text="Папка выбирается внутри установщика. Правый клик в списке папок создает новую папку в текущем каталоге."
+                         TextWrapping="Wrap" Foreground="#D8E4F2" FontSize="13" LineHeight="19"/>
+            </StackPanel>
           </Border>
+        </Grid>
+      </Border>
 
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Name="CancelButton" Content="Закрыть" Width="120" Style="{StaticResource GhostButton}" Margin="0,0,12,0"/>
-            <Button Name="InstallButton" Content="Установить IOLA" Width="170" Style="{StaticResource PrimaryButton}"/>
+      <Border Grid.Column="1" CornerRadius="30" Padding="30"
+              Background="#33FFFFFF" BorderBrush="#66FFFFFF" BorderThickness="1"
+              Effect="{StaticResource SoftShadow}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <StackPanel Grid.Row="0">
+            <TextBlock Text="Настройка установки" Foreground="White" FontSize="30" FontWeight="Bold"/>
+            <TextBlock Text="Выберите папку, имя ярлыка и профиль. Все действия остаются в этом окне."
+                       Foreground="#D8E4F2" FontSize="14" Margin="0,8,0,22"/>
           </StackPanel>
-        </StackPanel>
+
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="0,0,8,0">
+              <TextBlock Text="Папка установки" Foreground="#F8FAFC" FontWeight="SemiBold"/>
+              <Grid Margin="0,8,0,14">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="12"/>
+                  <ColumnDefinition Width="150"/>
+                </Grid.ColumnDefinitions>
+                <TextBox Name="InstallDirBox" Grid.Column="0" Style="{StaticResource GlassTextBox}"/>
+                <Button Name="BrowseButton" Grid.Column="2" Content="Выбрать" Style="{StaticResource GlassButton}"/>
+              </Grid>
+
+              <Border Name="FolderPickerPanel" Visibility="Collapsed" Background="#2A07111F"
+                      BorderBrush="#66FFFFFF" BorderThickness="1" CornerRadius="22" Padding="18" Margin="0,0,0,18">
+                <Grid>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="220"/>
+                    <RowDefinition Height="Auto"/>
+                  </Grid.RowDefinitions>
+                  <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="120"/>
+                      <ColumnDefinition Width="12"/>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="12"/>
+                      <ColumnDefinition Width="110"/>
+                    </Grid.ColumnDefinitions>
+                    <ComboBox Name="DriveBox" Grid.Column="0"/>
+                    <TextBox Name="CurrentPathBox" Grid.Column="2" Style="{StaticResource GlassTextBox}"/>
+                    <Button Name="GoPathButton" Grid.Column="4" Content="Перейти" Style="{StaticResource GlassButton}"/>
+                  </Grid>
+                  <Grid Grid.Row="1" Margin="0,12,0,10">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto"/>
+                      <ColumnDefinition Width="12"/>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="12"/>
+                      <ColumnDefinition Width="110"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Name="UpFolderButton" Grid.Column="0" Content="Вверх" Style="{StaticResource GlassButton}" Width="94"/>
+                    <TextBox Name="NewFolderNameBox" Grid.Column="2" Style="{StaticResource GlassTextBox}" ToolTip="Имя новой папки"/>
+                    <Button Name="NewFolderButton" Grid.Column="4" Content="Новая папка" Style="{StaticResource GlassButton}"/>
+                  </Grid>
+                  <ListBox Name="FolderList" Grid.Row="2" FontSize="14">
+                    <ListBox.ContextMenu>
+                      <ContextMenu>
+                        <MenuItem Header="Создать папку здесь"/>
+                        <MenuItem Header="Выбрать эту папку"/>
+                      </ContextMenu>
+                    </ListBox.ContextMenu>
+                  </ListBox>
+                  <Grid Grid.Row="3" Margin="0,12,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="12"/>
+                      <ColumnDefinition Width="118"/>
+                      <ColumnDefinition Width="12"/>
+                      <ColumnDefinition Width="118"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Двойной клик входит в папку. Правый клик создает папку в текущем каталоге."
+                               Foreground="#D8E4F2" FontSize="12" VerticalAlignment="Center"/>
+                    <Button Name="UseFolderButton" Grid.Column="2" Content="Выбрать" Style="{StaticResource PrimaryButton}"/>
+                    <Button Name="ClosePickerButton" Grid.Column="4" Content="Скрыть" Style="{StaticResource DangerButton}"/>
+                  </Grid>
+                </Grid>
+              </Border>
+
+              <TextBlock Text="Имя ярлыка" Foreground="#F8FAFC" FontWeight="SemiBold"/>
+              <TextBox Name="ShortcutNameBox" Style="{StaticResource GlassTextBox}" Margin="0,8,0,14"/>
+
+              <TextBlock Text="Имя профиля" Foreground="#F8FAFC" FontWeight="SemiBold"/>
+              <TextBox Name="ProfileNameBox" Style="{StaticResource GlassTextBox}" Margin="0,8,0,10"/>
+
+              <CheckBox Name="DesktopShortcutBox" Content="Создать ярлык на рабочем столе" IsChecked="True"/>
+              <CheckBox Name="LaunchMasterBox" Content="Запустить мастер настройки после установки"/>
+
+              <ProgressBar Name="InstallProgress" Height="10" Minimum="0" Maximum="100" Value="0" Margin="0,22,0,0"
+                           Foreground="#F4C542" Background="#33000000"/>
+              <TextBlock Name="StatusText" Text="Готов к установке" Foreground="#F8FAFC" FontSize="13" Margin="0,10,0,0"/>
+              <Border Background="#28000000" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="18" Padding="14" Margin="0,12,0,12" Height="112">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <TextBlock Name="LogText" Text="Проверим Node.js, установим CLI и создадим ярлыки."
+                             Foreground="#EAF2FF" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap"/>
+                </ScrollViewer>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+
+          <Border Grid.Row="2" Background="#22000000" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="20" Padding="14" Margin="0,18,0,0">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="126"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="178"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Готово к установке" Foreground="#D8E4F2" VerticalAlignment="Center" FontSize="13"/>
+              <Button Name="CancelButton" Grid.Column="1" Content="Закрыть" Style="{StaticResource DangerButton}"/>
+              <Button Name="InstallButton" Grid.Column="3" Content="Установить IOLA" Style="{StaticResource PrimaryButton}"/>
+            </Grid>
+          </Border>
+        </Grid>
       </Border>
     </Grid>
   </Grid>
@@ -158,7 +274,6 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 try {
   $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$LogoPath)
 } catch {
-  # The installer must still open if a Windows image codec rejects the icon.
 }
 
 $InstallDirBox = $window.FindName("InstallDirBox")
@@ -169,14 +284,27 @@ $LaunchMasterBox = $window.FindName("LaunchMasterBox")
 $InstallButton = $window.FindName("InstallButton")
 $CancelButton = $window.FindName("CancelButton")
 $BrowseButton = $window.FindName("BrowseButton")
-$CreateDirButton = $window.FindName("CreateDirButton")
 $InstallProgress = $window.FindName("InstallProgress")
 $StatusText = $window.FindName("StatusText")
 $LogText = $window.FindName("LogText")
+$FolderPickerPanel = $window.FindName("FolderPickerPanel")
+$DriveBox = $window.FindName("DriveBox")
+$CurrentPathBox = $window.FindName("CurrentPathBox")
+$GoPathButton = $window.FindName("GoPathButton")
+$UpFolderButton = $window.FindName("UpFolderButton")
+$NewFolderNameBox = $window.FindName("NewFolderNameBox")
+$NewFolderButton = $window.FindName("NewFolderButton")
+$FolderList = $window.FindName("FolderList")
+$UseFolderButton = $window.FindName("UseFolderButton")
+$ClosePickerButton = $window.FindName("ClosePickerButton")
+$ContextNewFolder = $FolderList.ContextMenu.Items[0]
+$ContextUseFolder = $FolderList.ContextMenu.Items[1]
 
+$script:CurrentFolder = Join-Path $env:LOCALAPPDATA "Programs"
 $InstallDirBox.Text = Join-Path $env:LOCALAPPDATA "Programs\IOLA CLI"
 $ShortcutNameBox.Text = "IOLA CLI"
 $ProfileNameBox.Text = "default"
+$NewFolderNameBox.Text = "IOLA CLI"
 
 function Add-Log([string]$Text) {
   $LogText.Text = (($LogText.Text + "`n" + $Text).Trim() -split "`n" | Select-Object -Last 18) -join "`n"
@@ -191,40 +319,98 @@ function Sanitize-Name([string]$Value, [string]$Fallback, [switch]$Profile) {
   return $name
 }
 
-function New-TargetDirectory {
-  $target = $InstallDirBox.Text.Trim()
-  if (-not $target) { return }
-  New-Item -ItemType Directory -Force -Path $target | Out-Null
-  Add-Log "Папка готова: $target"
+function Normalize-FolderPath([string]$Path) {
+  if (-not $Path) { return $script:CurrentFolder }
+  try {
+    return [IO.Path]::GetFullPath($Path)
+  } catch {
+    return $script:CurrentFolder
+  }
 }
 
-$ctx = New-Object System.Windows.Controls.ContextMenu
-$miCreate = New-Object System.Windows.Controls.MenuItem
-$miCreate.Header = "Создать указанную папку"
-$miCreate.Add_Click({ New-TargetDirectory })
-$miOpen = New-Object System.Windows.Controls.MenuItem
-$miOpen.Header = "Открыть родительскую папку"
-$miOpen.Add_Click({
-  $target = $InstallDirBox.Text.Trim()
-  if (-not $target) { return }
-  $parent = Split-Path -Parent $target
-  if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-  Start-Process explorer.exe $parent
-})
-$ctx.Items.Add($miCreate) | Out-Null
-$ctx.Items.Add($miOpen) | Out-Null
-$InstallDirBox.ContextMenu = $ctx
+function Refresh-Drives {
+  $DriveBox.Items.Clear()
+  Get-PSDrive -PSProvider FileSystem | Sort-Object Name | ForEach-Object {
+    $DriveBox.Items.Add($_.Root) | Out-Null
+  }
+}
+
+function Refresh-Folders([string]$Path) {
+  $path = Normalize-FolderPath $Path
+  if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+    $parent = Split-Path -Parent $path
+    if ($parent -and (Test-Path -LiteralPath $parent -PathType Container)) {
+      $path = $parent
+    } else {
+      $path = Join-Path $env:LOCALAPPDATA "Programs"
+    }
+  }
+  $script:CurrentFolder = $path
+  $CurrentPathBox.Text = $path
+  $InstallDirBox.Text = $path
+  $driveRoot = [IO.Path]::GetPathRoot($path)
+  $DriveBox.SelectedItem = $driveRoot
+  $FolderList.Items.Clear()
+  try {
+    Get-ChildItem -LiteralPath $path -Directory -Force -ErrorAction Stop |
+      Sort-Object Name |
+      ForEach-Object { $FolderList.Items.Add($_.Name) | Out-Null }
+  } catch {
+    Add-Log "Нет доступа к папке: $path"
+  }
+}
+
+function Join-CurrentFolder([string]$Child) {
+  if (-not $Child) { return $script:CurrentFolder }
+  return Join-Path $script:CurrentFolder $Child
+}
+
+function Enter-SelectedFolder {
+  $selected = [string]$FolderList.SelectedItem
+  if (-not $selected) { return }
+  Refresh-Folders (Join-CurrentFolder $selected)
+}
+
+function New-ChildFolder {
+  $name = Sanitize-Name $NewFolderNameBox.Text "Новая папка"
+  $target = Join-Path $script:CurrentFolder $name
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  Add-Log "Папка создана: $target"
+  Refresh-Folders $target
+  $NewFolderNameBox.Text = "Новая папка"
+}
+
+function Use-CurrentFolder {
+  $InstallDirBox.Text = $script:CurrentFolder
+  $FolderPickerPanel.Visibility = "Collapsed"
+  Add-Log "Выбрана папка установки: $script:CurrentFolder"
+}
+
+Refresh-Drives
+Refresh-Folders $InstallDirBox.Text
 
 $BrowseButton.Add_Click({
-  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-  $dialog.Description = "Выберите папку установки IOLA CLI"
-  $dialog.ShowNewFolderButton = $true
-  $dialog.SelectedPath = $InstallDirBox.Text
-  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-    $InstallDirBox.Text = $dialog.SelectedPath
+  if ($FolderPickerPanel.Visibility -eq "Visible") {
+    $FolderPickerPanel.Visibility = "Collapsed"
+  } else {
+    $FolderPickerPanel.Visibility = "Visible"
+    Refresh-Folders $InstallDirBox.Text
   }
 })
-$CreateDirButton.Add_Click({ New-TargetDirectory })
+$DriveBox.Add_SelectionChanged({
+  if ($DriveBox.SelectedItem) { Refresh-Folders ([string]$DriveBox.SelectedItem) }
+})
+$GoPathButton.Add_Click({ Refresh-Folders $CurrentPathBox.Text })
+$UpFolderButton.Add_Click({
+  $parent = Split-Path -Parent $script:CurrentFolder
+  if ($parent) { Refresh-Folders $parent }
+})
+$NewFolderButton.Add_Click({ New-ChildFolder })
+$UseFolderButton.Add_Click({ Use-CurrentFolder })
+$ClosePickerButton.Add_Click({ $FolderPickerPanel.Visibility = "Collapsed" })
+$ContextNewFolder.Add_Click({ New-ChildFolder })
+$ContextUseFolder.Add_Click({ Use-CurrentFolder })
+$FolderList.Add_MouseDoubleClick({ Enter-SelectedFolder })
 $CancelButton.Add_Click({ $window.Close() })
 
 $script:InstallJob = $null

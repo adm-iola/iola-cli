@@ -139,8 +139,10 @@ if (installerSource) {
 if (premiumInstallerSource) {
   assertIncludes(premiumInstallerSource, "ImageBrush ImageSource", "Premium Windows installer should use the README image as a full-window background");
   assertIncludes(premiumInstallerSource, "ContextMenu", "Premium Windows installer should expose a right-click folder menu");
-  assertIncludes(premiumInstallerSource, "Создать указанную папку", "Premium Windows installer should allow creating the selected folder from right click");
-  assertIncludes(premiumInstallerSource, "ShowNewFolderButton", "Premium Windows installer folder browser should allow creating folders");
+  assertIncludes(premiumInstallerSource, "Создать папку здесь", "Premium Windows installer should allow creating folders from right click");
+  assertIncludes(premiumInstallerSource, "DriveBox", "Premium Windows installer should provide an in-window drive selector");
+  assertIncludes(premiumInstallerSource, "FolderList", "Premium Windows installer should provide an in-window folder selector");
+  assertIncludes(premiumInstallerSource, "NewFolderButton", "Premium Windows installer should create folders without opening Explorer");
   assertIncludes(premiumInstallerSource, "ProgressBar", "Premium Windows installer should show progress");
   assertIncludes(premiumInstallerSource, "Start-Job", "Premium Windows installer should keep the UI responsive while installing");
 }
