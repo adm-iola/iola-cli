@@ -8,3 +8,4 @@ dist/
 .tmp/
 installer/windows/dist/
 installer/windows/payload/*.tgz
+installer/windows/premium/build/

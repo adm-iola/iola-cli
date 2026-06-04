@@ -1,6 +1,6 @@
 {
   "name": "@iola_adm/iola-cli",
-  "version": "0.2.62",
+  "version": "0.2.63",
   "description": "CLI и AI-агент городского округа Йошкар-Ола.",
   "license": "MIT",
   "homepage": "https://github.com/adm-iola/iola-cli#readme",
@@ -19,6 +19,7 @@
     "postinstall": "node --no-warnings bin/postinstall.js",
     "start": "node --no-warnings bin/iola.js",
     "installer:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./installer/windows/scripts/build-installer.ps1",
+    "installer:windows:premium": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./installer/windows/premium/build-premium-installer.ps1",
     "test": "node --no-warnings --check bin/iola.js && node --no-warnings --check bin/postinstall.js && node --no-warnings --check src/cli.js && node --no-warnings test/smoke-test.js"
   },
   "files": [

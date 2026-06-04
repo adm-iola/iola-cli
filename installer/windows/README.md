@@ -1,6 +1,17 @@
 # Windows installer
 
-Исходники установщика Windows для `iola-cli`.
+Исходники установщиков Windows для `iola-cli`.
+
+Основной пользовательский вариант - premium installer на WPF:
+
+- полноэкранный современный экран установки с фоном из README;
+- свои кнопки, прогресс и лог установки;
+- выбор папки установки;
+- кнопка создания папки;
+- контекстное меню по правому клику на поле папки: создать указанную папку или открыть родителя;
+- выбор имени ярлыка и имени профиля.
+
+Классический Inno Setup installer оставлен как fallback.
 
 ## Что делает установщик
 
@@ -26,6 +37,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\windows\scripts\
 
 ```text
 installer\windows\dist\IOLA-CLI-Setup-<version>.exe
+```
+
+Premium installer:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\windows\premium\build-premium-installer.ps1
+```
+
+Готовый файл:
+
+```text
+installer\windows\dist\IOLA-CLI-Premium-Setup-<version>.exe
 ```
 
 Сборка сначала выполняет `npm pack`, кладет пакет в `installer\windows\payload\iola-cli.tgz`, затем встраивает этот архив в установщик. Поэтому `.exe` ставит ту же версию CLI, из которой был собран.

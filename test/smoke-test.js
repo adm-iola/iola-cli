@@ -11,6 +11,8 @@ const cliSource = await readFile(resolve(rootDir, "src", "cli.js"), "utf8");
 const postinstallSource = await readFile(resolve(rootDir, "bin", "postinstall.js"), "utf8");
 const installerPath = resolve(rootDir, "installer", "windows", "iola-cli.iss");
 const installerSource = existsSync(installerPath) ? await readFile(installerPath, "utf8") : "";
+const premiumInstallerPath = resolve(rootDir, "installer", "windows", "premium", "IOLAInstaller.template.ps1");
+const premiumInstallerSource = existsSync(premiumInstallerPath) ? await readFile(premiumInstallerPath, "utf8") : "";
 
 function runCli(args) {
   return new Promise((resolvePromise, reject) => {
@@ -133,6 +135,14 @@ if (installerSource) {
   if (!existsSync(resolve(rootDir, "installer", "windows", "assets", "wizard-large.bmp"))) {
     throw new Error("Windows installer wizard image should be generated");
   }
+}
+if (premiumInstallerSource) {
+  assertIncludes(premiumInstallerSource, "ImageBrush ImageSource", "Premium Windows installer should use the README image as a full-window background");
+  assertIncludes(premiumInstallerSource, "ContextMenu", "Premium Windows installer should expose a right-click folder menu");
+  assertIncludes(premiumInstallerSource, "Создать указанную папку", "Premium Windows installer should allow creating the selected folder from right click");
+  assertIncludes(premiumInstallerSource, "ShowNewFolderButton", "Premium Windows installer folder browser should allow creating folders");
+  assertIncludes(premiumInstallerSource, "ProgressBar", "Premium Windows installer should show progress");
+  assertIncludes(premiumInstallerSource, "Start-Job", "Premium Windows installer should keep the UI responsive while installing");
 }
 
 const commands = await runCli(["commands"]);
