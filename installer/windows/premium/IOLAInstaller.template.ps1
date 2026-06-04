@@ -24,16 +24,16 @@ $LogoPath = Join-Path $TempRoot "iola-logo.png"
 $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="IOLA CLI Setup" Width="1180" Height="760" MinWidth="1040" MinHeight="680"
+        Title="IOLA CLI Setup" Width="1060" Height="680" MinWidth="960" MinHeight="620"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
         Background="#07111F" FontFamily="Segoe UI">
   <Window.Resources>
-    <DropShadowEffect x:Key="SoftShadow" Color="#000000" Direction="270" ShadowDepth="18" BlurRadius="42" Opacity="0.34"/>
+    <DropShadowEffect x:Key="SoftShadow" Color="#000000" Direction="270" ShadowDepth="18" BlurRadius="46" Opacity="0.48"/>
 
     <Style x:Key="GlassButton" TargetType="Button">
       <Setter Property="Foreground" Value="#F8FAFC"/>
-      <Setter Property="Background" Value="#2AFFFFFF"/>
-      <Setter Property="BorderBrush" Value="#55FFFFFF"/>
+      <Setter Property="Background" Value="#3DFFFFFF"/>
+      <Setter Property="BorderBrush" Value="#73FFFFFF"/>
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="16,10"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
@@ -58,13 +58,13 @@ $xaml = @"
       <Setter Property="BorderBrush" Value="#FFF1A8"/>
     </Style>
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource GlassButton}">
-      <Setter Property="Background" Value="#22FFFFFF"/>
-      <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+      <Setter Property="Background" Value="#2EFFFFFF"/>
+      <Setter Property="BorderBrush" Value="#66FFFFFF"/>
     </Style>
     <Style x:Key="GlassTextBox" TargetType="TextBox">
-      <Setter Property="Background" Value="#2A08111F"/>
+      <Setter Property="Background" Value="#D10B1220"/>
       <Setter Property="Foreground" Value="#F8FAFC"/>
-      <Setter Property="BorderBrush" Value="#55FFFFFF"/>
+      <Setter Property="BorderBrush" Value="#7AFFFFFF"/>
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="14,10"/>
       <Setter Property="FontSize" Value="14"/>
@@ -76,14 +76,14 @@ $xaml = @"
       <Setter Property="Margin" Value="0,10,0,0"/>
     </Style>
     <Style TargetType="ListBox">
-      <Setter Property="Background" Value="#2208111F"/>
+      <Setter Property="Background" Value="#CF0B1220"/>
       <Setter Property="Foreground" Value="#F8FAFC"/>
-      <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+      <Setter Property="BorderBrush" Value="#66FFFFFF"/>
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="6"/>
     </Style>
     <Style TargetType="ComboBox">
-      <Setter Property="Background" Value="#2208111F"/>
+      <Setter Property="Background" Value="#F2F6FB"/>
       <Setter Property="Foreground" Value="#07111F"/>
       <Setter Property="BorderBrush" Value="#44FFFFFF"/>
       <Setter Property="BorderThickness" Value="1"/>
@@ -95,52 +95,38 @@ $xaml = @"
     <Grid.Background>
       <ImageBrush ImageSource="__BACKGROUND_PATH__" Stretch="UniformToFill"/>
     </Grid.Background>
-    <Rectangle Fill="#07111F" Opacity="0.42"/>
+    <Rectangle Fill="#07111F" Opacity="0.56"/>
     <Rectangle>
       <Rectangle.Fill>
         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
           <GradientStop Color="#CC07111F" Offset="0"/>
-          <GradientStop Color="#770F8B8D" Offset="0.58"/>
-          <GradientStop Color="#AA07111F" Offset="1"/>
+          <GradientStop Color="#660F8B8D" Offset="0.58"/>
+          <GradientStop Color="#D807111F" Offset="1"/>
         </LinearGradientBrush>
       </Rectangle.Fill>
     </Rectangle>
 
-    <Grid Margin="38">
+    <Grid Margin="26">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="390"/>
+        <ColumnDefinition Width="330"/>
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
 
-      <Border Grid.Column="0" CornerRadius="30" Padding="32" Margin="0,0,26,0"
-              Background="#26FFFFFF" BorderBrush="#55FFFFFF" BorderThickness="1"
+      <Border Grid.Column="0" CornerRadius="30" Padding="30" Margin="0,0,22,0"
+              Background="#BF07111F" BorderBrush="#73FFFFFF" BorderThickness="1"
               Effect="{StaticResource SoftShadow}">
-        <Grid>
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
-          <StackPanel>
-            <Image Source="__LOGO_PATH__" Width="92" Height="92" HorizontalAlignment="Left" Margin="0,0,0,26"/>
-            <TextBlock Text="IOLA CLI" Foreground="White" FontSize="52" FontWeight="Bold"/>
-            <TextBlock Text="Городской AI-агент" Foreground="#EAF2FF" FontSize="21" Margin="0,8,0,0"/>
-            <TextBlock Text="Установка с отдельным профилем, своим ярлыком и запуском мастера настройки после установки."
-                       TextWrapping="Wrap" Foreground="#D8E4F2" FontSize="15" LineHeight="23" Margin="0,34,12,0"/>
-          </StackPanel>
-          <Border Grid.Row="2" Background="#22000000" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="22" Padding="20">
-            <StackPanel>
-              <TextBlock Text="Версия" Foreground="#BFD0E6" FontSize="12"/>
-              <TextBlock Text="IOLA CLI {0}" Foreground="White" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,12"/>
-              <TextBlock Text="Папка выбирается внутри установщика. Правый клик в списке папок создает новую папку в текущем каталоге."
-                         TextWrapping="Wrap" Foreground="#D8E4F2" FontSize="13" LineHeight="19"/>
-            </StackPanel>
-          </Border>
-        </Grid>
+        <StackPanel VerticalAlignment="Center">
+          <Image Source="__LOGO_PATH__" Width="88" Height="88" HorizontalAlignment="Left" Margin="0,0,0,24"/>
+          <TextBlock Text="IOLA CLI" Foreground="White" FontSize="46" FontWeight="Bold"/>
+          <TextBlock Text="Городской AI-агент" Foreground="#EAF2FF" FontSize="20" Margin="0,8,0,0"/>
+            <TextBlock Text="Установка с локальным профилем внутри выбранной папки, своим ярлыком и запуском мастера настройки."
+                     TextWrapping="Wrap" Foreground="#D8E4F2" FontSize="15" LineHeight="23" Margin="0,30,8,0"/>
+          <TextBlock Text="IOLA CLI {0}" Foreground="#F4C542" FontSize="17" FontWeight="SemiBold" Margin="0,34,0,0"/>
+        </StackPanel>
       </Border>
 
-      <Border Grid.Column="1" CornerRadius="30" Padding="30"
-              Background="#33FFFFFF" BorderBrush="#66FFFFFF" BorderThickness="1"
+      <Border Grid.Column="1" CornerRadius="30" Padding="26"
+              Background="#CC07111F" BorderBrush="#80FFFFFF" BorderThickness="1"
               Effect="{StaticResource SoftShadow}">
         <Grid>
           <Grid.RowDefinitions>
@@ -150,9 +136,9 @@ $xaml = @"
           </Grid.RowDefinitions>
 
           <StackPanel Grid.Row="0">
-            <TextBlock Text="Настройка установки" Foreground="White" FontSize="30" FontWeight="Bold"/>
+            <TextBlock Text="Настройка установки" Foreground="White" FontSize="28" FontWeight="Bold"/>
             <TextBlock Text="Выберите папку, имя ярлыка и профиль. Все действия остаются в этом окне."
-                       Foreground="#D8E4F2" FontSize="14" Margin="0,8,0,22"/>
+                       Foreground="#D8E4F2" FontSize="14" Margin="0,6,0,18"/>
           </StackPanel>
 
           <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -168,13 +154,13 @@ $xaml = @"
                 <Button Name="BrowseButton" Grid.Column="2" Content="Выбрать" Style="{StaticResource GlassButton}"/>
               </Grid>
 
-              <Border Name="FolderPickerPanel" Visibility="Collapsed" Background="#2A07111F"
-                      BorderBrush="#66FFFFFF" BorderThickness="1" CornerRadius="22" Padding="18" Margin="0,0,0,18">
+              <Border Name="FolderPickerPanel" Visibility="Collapsed" Background="#E607111F"
+                      BorderBrush="#80FFFFFF" BorderThickness="1" CornerRadius="22" Padding="18" Margin="0,0,0,18">
                 <Grid>
                   <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="220"/>
+                    <RowDefinition Height="178"/>
                     <RowDefinition Height="Auto"/>
                   </Grid.RowDefinitions>
                   <Grid Grid.Row="0">
@@ -237,7 +223,7 @@ $xaml = @"
               <ProgressBar Name="InstallProgress" Height="10" Minimum="0" Maximum="100" Value="0" Margin="0,22,0,0"
                            Foreground="#F4C542" Background="#33000000"/>
               <TextBlock Name="StatusText" Text="Готов к установке" Foreground="#F8FAFC" FontSize="13" Margin="0,10,0,0"/>
-              <Border Background="#28000000" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="18" Padding="14" Margin="0,12,0,12" Height="112">
+              <Border Background="#CC050A12" BorderBrush="#66FFFFFF" BorderThickness="1" CornerRadius="18" Padding="14" Margin="0,12,0,8" Height="84">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                   <TextBlock Name="LogText" Text="Проверим Node.js, установим CLI и создадим ярлыки."
                              Foreground="#EAF2FF" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap"/>
@@ -246,7 +232,7 @@ $xaml = @"
             </StackPanel>
           </ScrollViewer>
 
-          <Border Grid.Row="2" Background="#22000000" BorderBrush="#44FFFFFF" BorderThickness="1" CornerRadius="20" Padding="14" Margin="0,18,0,0">
+          <Border Grid.Row="2" Background="#B20B1220" BorderBrush="#73FFFFFF" BorderThickness="1" CornerRadius="20" Padding="14" Margin="0,18,0,0">
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
@@ -254,7 +240,7 @@ $xaml = @"
                 <ColumnDefinition Width="12"/>
                 <ColumnDefinition Width="178"/>
               </Grid.ColumnDefinitions>
-              <TextBlock Text="Готово к установке" Foreground="#D8E4F2" VerticalAlignment="Center" FontSize="13"/>
+              <TextBlock Text="" Foreground="#D8E4F2" VerticalAlignment="Center" FontSize="13"/>
               <Button Name="CancelButton" Grid.Column="1" Content="Закрыть" Style="{StaticResource DangerButton}"/>
               <Button Name="InstallButton" Grid.Column="3" Content="Установить IOLA" Style="{StaticResource PrimaryButton}"/>
             </Grid>
@@ -302,7 +288,7 @@ $ContextUseFolder = $FolderList.ContextMenu.Items[1]
 
 $script:CurrentFolder = Join-Path $env:LOCALAPPDATA "Programs"
 $InstallDirBox.Text = Join-Path $env:LOCALAPPDATA "Programs\IOLA CLI"
-$ShortcutNameBox.Text = "IOLA CLI"
+$ShortcutNameBox.Text = "Iola CLI"
 $ProfileNameBox.Text = "default"
 $NewFolderNameBox.Text = "IOLA CLI"
 
@@ -455,9 +441,9 @@ $InstallButton.Add_Click({
     [System.Windows.MessageBox]::Show("Укажите папку установки.", "IOLA CLI Setup") | Out-Null
     return
   }
-  $shortcutName = Sanitize-Name $ShortcutNameBox.Text "IOLA CLI"
+  $shortcutName = Sanitize-Name $ShortcutNameBox.Text "Iola CLI"
   $profileName = Sanitize-Name $ProfileNameBox.Text "default" -Profile
-  $profileDir = Join-Path $env:APPDATA ("IOLA\profiles\" + $profileName)
+  $profileDir = Join-Path $installDir ("profiles\" + $profileName)
   $desktopShortcut = [bool]$DesktopShortcutBox.IsChecked
   $launchMaster = [bool]$LaunchMasterBox.IsChecked
   $script:LogFile = Join-Path $TempRoot "install.log"
@@ -485,7 +471,7 @@ $InstallButton.Add_Click({
       $shortcut.TargetPath = "$env:ComSpec"
       $shortcut.Arguments = "/k `"$Target`""
       $shortcut.WorkingDirectory = Split-Path -Parent $Target
-      $shortcut.IconLocation = $Icon
+      $shortcut.IconLocation = "$Icon,0"
       $shortcut.Save()
     }
 
@@ -521,14 +507,15 @@ node "$cliEntry" %*
 endlocal
 "@
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "assets") | Out-Null
-    Copy-Item -LiteralPath $IconPath -Destination (Join-Path $InstallDir "assets\iola.ico") -Force
+    $installedIcon = Join-Path $InstallDir "assets\iola.ico"
+    Copy-Item -LiteralPath $IconPath -Destination $installedIcon -Force
 
     Step 82 "Создаем ярлыки"
     $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\IOLA CLI"
     New-Item -ItemType Directory -Force -Path $startMenuDir | Out-Null
-    MakeShortcut (Join-Path $startMenuDir "$ShortcutName.lnk") $launcher (Join-Path $InstallDir "assets\iola.ico")
+    MakeShortcut (Join-Path $startMenuDir "$ShortcutName.lnk") $launcher $installedIcon
     if ($DesktopShortcut) {
-      MakeShortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "$ShortcutName.lnk") $launcher (Join-Path $InstallDir "assets\iola.ico")
+      MakeShortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "$ShortcutName.lnk") $launcher $installedIcon
     }
 
     Step 94 "Финальная настройка"

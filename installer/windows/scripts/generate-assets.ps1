@@ -74,8 +74,51 @@ function New-IolaPng([int]$size, [string]$path) {
   $bmp.Dispose()
 }
 
+function Convert-PngToIcoDib([string]$pngFile) {
+  $source = [System.Drawing.Bitmap]::FromFile($pngFile)
+  try {
+    $width = $source.Width
+    $height = $source.Height
+    $andStride = ([Math]::Floor(($width + 31) / 32)) * 4
+    $xorSize = $width * $height * 4
+    $andSize = $andStride * $height
+    $ms = New-Object System.IO.MemoryStream
+    $bw = New-Object System.IO.BinaryWriter $ms
+    $bw.Write([UInt32]40)
+    $bw.Write([Int32]$width)
+    $bw.Write([Int32]($height * 2))
+    $bw.Write([UInt16]1)
+    $bw.Write([UInt16]32)
+    $bw.Write([UInt32]0)
+    $bw.Write([UInt32]($xorSize + $andSize))
+    $bw.Write([Int32]0)
+    $bw.Write([Int32]0)
+    $bw.Write([UInt32]0)
+    $bw.Write([UInt32]0)
+    for ($y = $height - 1; $y -ge 0; $y--) {
+      for ($x = 0; $x -lt $width; $x++) {
+        $pixel = $source.GetPixel($x, $y)
+        $bw.Write([byte]$pixel.B)
+        $bw.Write([byte]$pixel.G)
+        $bw.Write([byte]$pixel.R)
+        $bw.Write([byte]$pixel.A)
+      }
+    }
+    for ($i = 0; $i -lt $andSize; $i++) {
+      $bw.Write([byte]0)
+    }
+    return $ms.ToArray()
+  } finally {
+    $source.Dispose()
+  }
+}
+
 function Write-IcoFromPngs([string[]]$pngFiles, [string]$icoPath) {
-  $images = foreach ($file in $pngFiles) { [System.IO.File]::ReadAllBytes($file) }
+  $images = [System.Collections.Generic.List[byte[]]]::new()
+  foreach ($file in $pngFiles) {
+    [byte[]]$dib = Convert-PngToIcoDib $file
+    $images.Add($dib)
+  }
   $fs = [System.IO.File]::Create($icoPath)
   try {
     $bw = New-Object System.IO.BinaryWriter $fs
