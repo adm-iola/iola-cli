@@ -114,6 +114,8 @@ assertIncludes(cliSource, "body: JSON.stringify({ claim_token: claimToken })", "
 assertNotIncludes(cliSource, "?claim_token=", "Yakunin-Router claim token should not be sent in query string");
 assertIncludes(cliSource, "sanitizeCommandArgs", "debug command logs should sanitize sensitive arguments");
 assertIncludes(cliSource, "process.env.IOLA_HOME", "CLI should support profile-specific IOLA_HOME");
+assertIncludes(cliSource, "RUSSIAN_TRUSTED_CA_BUNDLE", "CLI should use the local Russian trusted CA bundle");
+assertIncludes(cliSource, "NODE_EXTRA_CA_CERTS", "CLI should restart with extra CA certificates when available");
 assertNotIncludes(cliSource, "Сервисы через запятую [identity,disk]", "Yandex setup should not ask for services during connector setup");
 if (!packageJson.files.includes("docs/assets/iola-oauth-icon.png")) {
   throw new Error("package files should include the Yandex OAuth icon");
@@ -126,6 +128,9 @@ assertIncludes(postinstallSource, "Локальная модель и browser ru
 assertNotIncludes(postinstallSource, "ai\", \"setup\", \"iola", "postinstall should not install the local model automatically");
 assertNotIncludes(postinstallSource, "browser\", \"install", "postinstall should not install browser runtime automatically");
 assertIncludes(postinstallSource, "process.env.IOLA_HOME", "postinstall should respect profile-specific IOLA_HOME");
+assertIncludes(postinstallSource, "russian_trusted_root_ca_pem.crt", "postinstall should install the Russian Trusted Root CA certificate");
+assertIncludes(postinstallSource, "russian_trusted_sub_ca_pem.crt", "postinstall should install the Russian Trusted Sub CA certificate");
+assertIncludes(postinstallSource, "russian-trusted-ca-bundle.pem", "postinstall should write a CA bundle for Node.js");
 if (installerSource) {
   assertIncludes(installerSource, "WizardStyle=modern", "Windows installer should use the modern Inno wizard style");
   assertIncludes(installerSource, "CreateInputQueryPage", "Windows installer should ask for shortcut/profile names");

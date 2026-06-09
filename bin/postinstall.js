@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import os from "node:os";
 
@@ -10,8 +10,20 @@ const cliPath = resolve(rootDir, "bin", "iola.js");
 const oauthIconSource = resolve(rootDir, "docs", "assets", "iola-oauth-icon.png");
 const iolaHome = getIolaHomeDir();
 const oauthIconTarget = join(iolaHome, "assets", "iola-oauth-icon.png");
+const certsDir = join(iolaHome, "certs");
+const trustedCaBundle = join(certsDir, "russian-trusted-ca-bundle.pem");
 const node = process.execPath;
 const frames = ["|", "/", "-", "\\"];
+const russianTrustedCertificates = [
+  {
+    name: "russian_trusted_root_ca_pem.crt",
+    url: "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt",
+  },
+  {
+    name: "russian_trusted_sub_ca_pem.crt",
+    url: "https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt",
+  },
+];
 
 const steps = [
   {
@@ -22,6 +34,12 @@ const steps = [
   {
     title: "Установка иконки Yandex OAuth",
     local: installOauthIcon,
+  },
+  {
+    title: "Установка сертификатов НУЦ Минцифры для GigaChat",
+    local: installRussianTrustedCertificates,
+    optional: true,
+    retryHint: "Повторите позже: iola security doctor или переустановите пакет при доступном интернете.",
   },
 ];
 
@@ -96,6 +114,41 @@ function installOauthIcon() {
   if (!existsSync(oauthIconSource)) return;
   mkdirSync(dirname(oauthIconTarget), { recursive: true });
   copyFileSync(oauthIconSource, oauthIconTarget);
+}
+
+async function installRussianTrustedCertificates() {
+  mkdirSync(certsDir, { recursive: true });
+  const certificateTexts = [];
+  for (const certificate of russianTrustedCertificates) {
+    const target = join(certsDir, certificate.name);
+    if (!existsSync(target) || !isPemCertificate(readFileSync(target, "utf8"))) {
+      const text = await downloadText(certificate.url, 20_000);
+      if (!isPemCertificate(text)) throw new Error(`Некорректный PEM certificate: ${certificate.url}`);
+      writeFileSync(target, normalizePem(text), "utf8");
+    }
+    certificateTexts.push(normalizePem(readFileSync(target, "utf8")));
+  }
+  writeFileSync(trustedCaBundle, `${certificateTexts.join("\n")}\n`, "utf8");
+}
+
+function isPemCertificate(text) {
+  return /-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/u.test(String(text || ""));
+}
+
+function normalizePem(text) {
+  return String(text || "").trim().replace(/\r\n/g, "\n");
+}
+
+async function downloadText(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function run(command, args, onOutput, timeoutMs = 0) {

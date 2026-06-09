@@ -26,6 +26,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const LAST_GOOD_CONFIG_FILE = path.join(CONFIG_DIR, "config.last-good.json");
 const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
 const DB_FILE = path.join(CONFIG_DIR, "iola.db");
+const RUSSIAN_TRUSTED_CA_BUNDLE = path.join(CONFIG_DIR, "certs", "russian-trusted-ca-bundle.pem");
 const DB_SCHEMA_VERSION = 8;
 const IOLA_LOCAL_MODEL = "iola-router:qwen3-1.7b-v4-q8";
 const IOLA_LOCAL_OLLAMA_MODEL = IOLA_LOCAL_MODEL;
@@ -783,6 +784,8 @@ const COMMANDS = new Map([
 ]);
 
 export async function main(argv) {
+  await ensureSystemCaRuntime(argv);
+
   if (argv.length === 0) {
     await runDefaultCli();
     return;
@@ -830,6 +833,47 @@ export async function main(argv) {
   }
 
   await handler(runtime.debugFile ? [...args, "--debug-file", runtime.debugFile] : args);
+}
+
+async function ensureSystemCaRuntime(argv) {
+  if (process.env.IOLA_DISABLE_SYSTEM_CA_REEXEC === "1") return;
+  if (process.env.IOLA_SYSTEM_CA_REEXEC === "1") return;
+  if (!process.argv[1]) return;
+
+  const nextExecArgv = [...process.execArgv];
+  const nextEnv = { ...process.env, IOLA_SYSTEM_CA_REEXEC: "1" };
+  let shouldReexec = false;
+
+  if (existsSync(RUSSIAN_TRUSTED_CA_BUNDLE) && process.env.NODE_EXTRA_CA_CERTS !== RUSSIAN_TRUSTED_CA_BUNDLE) {
+    nextEnv.NODE_EXTRA_CA_CERTS = RUSSIAN_TRUSTED_CA_BUNDLE;
+    shouldReexec = true;
+  }
+
+  const canUseSystemCa = process.allowedNodeEnvironmentFlags?.has?.("--use-system-ca");
+  if (canUseSystemCa && !process.env.NODE_OPTIONS?.includes("--use-system-ca") && !process.execArgv.includes("--use-system-ca")) {
+    nextExecArgv.push("--use-system-ca");
+    shouldReexec = true;
+  }
+
+  if (!shouldReexec) return;
+
+  const child = spawn(process.execPath, [...nextExecArgv, process.argv[1], ...argv], {
+    cwd: process.cwd(),
+    env: nextEnv,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+
+  const result = await new Promise((resolve) => {
+    child.on("error", (error) => resolve({ error }));
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
+  if (result.error) return;
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+    return;
+  }
+  process.exit(result.code ?? 0);
 }
 
 async function maybeRefreshIolaModelForCommand(command, args = []) {
@@ -18581,11 +18625,22 @@ function enableSystemCaForGigaChat() {
       ...tls.getCACertificates("system"),
       ...tls.getCACertificates("bundled"),
       ...tls.getCACertificates("extra"),
+      ...loadRussianTrustedCaBundle(),
     ];
     if (certificates.length > 0) tls.setDefaultCACertificates([...new Set(certificates)]);
   } catch {
     // Older Node builds may not expose system CA management. The fetch error below
     // will include the concrete TLS/network cause and the manual workaround.
+  }
+}
+
+function loadRussianTrustedCaBundle() {
+  try {
+    if (!existsSync(RUSSIAN_TRUSTED_CA_BUNDLE)) return [];
+    const text = readFileSync(RUSSIAN_TRUSTED_CA_BUNDLE, "utf8").trim();
+    return text ? [text] : [];
+  } catch {
+    return [];
   }
 }
 
@@ -18595,7 +18650,7 @@ function formatProviderFetchError(provider, error) {
   const causeMessage = cause?.message || "";
   const details = `${error?.message || "fetch failed"}${causeMessage ? ` (${causeCode}${causeMessage})` : ""}`;
   if (/SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT|CERT_/i.test(`${cause?.code || ""} ${causeMessage}`)) {
-    return `${provider} network error: ${details}\nNode не доверяет цепочке сертификатов провайдера. CLI пробует использовать системные сертификаты ОС автоматически; если ошибка повторяется, обновите Node.js или запустите CLI с NODE_OPTIONS=--use-system-ca.`;
+    return `${provider} network error: ${details}\nNode не доверяет цепочке сертификатов провайдера. CLI автоматически использует системные сертификаты ОС и локальный bundle НУЦ Минцифры из ${RUSSIAN_TRUSTED_CA_BUNDLE}. Если ошибка повторяется, обновите Node.js или переустановите CLI при доступном интернете.`;
   }
   return `${provider} network error: ${details}`;
 }
